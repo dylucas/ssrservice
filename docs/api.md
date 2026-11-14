@@ -19,12 +19,14 @@
 { "error": { "code": "invalid_request", "message": "...", "fields": {} } }
 ```
 
+- `message` 面向调用方：校验错误、端口占用、权限不足会说明原因；`500 internal_error` 只返回通用文案，`409 conflict` 只说明冲突字段（例如重名用户），内部细节（SQLite 约束名、文件路径）只写日志。
+
 - 时间字段为 UTC Unix 秒（`expires_at`、`created_at` 等）；前端按本地时区展示。
 - 会话 Cookie 名 `sspanel_session`，`HttpOnly`、`SameSite=Strict`，HTTPS 时带 `Secure`。
 - 变更请求若带 `Origin` 头，必须与 `Host` 同源，否则返回 `403 invalid_origin`。
 - 登录失败限制：默认 5 次/分钟/IP，超出返回 `429 too_many_attempts`。真实客户端 IP 只在请求来自 `panel.trusted_proxies` 时采用 `X-Forwarded-For`。
 - `/api/v1` 的 JSON 请求体上限为 1 MiB，超出返回 `413 payload_too_large`。
-- 面板静态资源在请求带 `Accept-Encoding: gzip` 时返回 `Content-Encoding: gzip`，并始终带 `Vary: Accept-Encoding`；`HEAD` 与 `Range` 请求返回未压缩文件。API 的 JSON 响应不压缩。
+- 面板静态资源在请求带 `Accept-Encoding: gzip` 时返回 `Content-Encoding: gzip`，并始终带 `Vary: Accept-Encoding`；`HEAD` 与 `Range` 请求返回未压缩文件。API 的 JSON 响应默认不压缩，只有两个不含凭据的用户列表端点是例外（见下一条）。
 - `/api/v1` 的全部响应带 `Cache-Control: no-store` 与 `Pragma: no-cache`：响应可能包含用户 PSK、订阅 token 等信息，不允许任何缓存保存副本。
 - 只有 `GET /clients` 与 `GET /inbounds/:id/clients` 两个列表端点在响应体 ≥ 4 KiB 且请求带 `Accept-Encoding: gzip` 时返回 `Content-Encoding: gzip`（这两个响应不含凭据，压缩没有 BREACH 类风险）。其余 API 响应不压缩；所有可能被压缩的响应都带 `Vary: Accept-Encoding`。
 
@@ -118,6 +120,7 @@
 - 单用户方法（`2022-blake3-chacha20-poly1305`）的 `server_psk` 必须为空，且入站只能有一个启用用户。
 - 端口冲突返回 `409 conflict`；权限不足/地址非法返回 `400`。
 - `domain` 与 `domain_port` 可选，用于让该入站使用独立的分享域名（见下节）。
+- 列表与详情在入站**已启用但未能启动**（端口被占用、权限不足等）时带 `last_error` 说明原因；字段缺省表示运行时与记录一致。
 
 ### 关联域名
 
@@ -188,7 +191,8 @@ curl -b cookies.txt -X PUT http://127.0.0.1:2096/api/v1/inbounds/1 \
 }
 ```
 
-- `psk` 留空自动生成；传统 AEAD 方法接受任意非空密码，SS2022 要求 base64 且长度匹配。
+- `psk` 语义按方法区分：**创建**（`POST`）时留空表示自动生成；**更新**（`PUT`）时留空表示保留现有 PSK，不能用来清空密码。传统 AEAD 方法接受任意非空密码，SS2022 要求 base64 且长度匹配。
+- 单用户方法（`2022-blake3-chacha20-poly1305`）的每个入站最多只能有一个启用用户；创建、更新、`toggle` 与导入都会校验，改方法时若已有多个启用用户也会返回 `400`。
 - `quota_bytes=0` 不限；`expires_at=0` 永不过期；`ip_limit=0` 不限。
 - `reset_policy` 为 `none` 或 `monthly`；`reset_day` 为 `0`（跟随全局）或 `1–28`。
 
@@ -299,10 +303,11 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 - 响应为**部分成功**语义：
 
 ```json
-{ "created": 2, "skipped": 0, "failed": [{ "line": 3, "name": "bob", "error": "name already exists in this inbound" }] }
+{ "created": 2, "failed": [{ "line": 3, "name": "bob", "error": "name already exists in this inbound" }] }
 ```
 
-- 只有参数错误（内容为空、超行数上限、入站不存在）才返回 4xx；行级失败属于正常结果。
+- `failed[].line` 是**粘贴文本中的原始行号**（1 起），中间的空行不会让后续行号前移。
+- 只有参数错误（内容为空、超行数上限、入站不存在）才返回 4xx；行级失败属于正常结果，逐行给出原因，因此没有单独的「跳过数」汇总字段。
 - 整个批次只重建一次入站监听，不会因用户数增加而反复重建。
 
 ## 审计日志

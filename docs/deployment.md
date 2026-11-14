@@ -19,24 +19,27 @@ sspanel 是一个单二进制程序：Web 面板、Shadowsocks 内核和 SQLite 
 ```bash
 make dist
 scp dist/sspanel-linux-amd64 root@server:/tmp/sspanel
+scp -r deploy root@server:/tmp/sspanel-deploy
 ```
 
 在服务器上：
 
 ```bash
-sudo mkdir -p /opt/sspanel && cd /opt/sspanel
 sudo cp /tmp/sspanel /usr/local/bin/sspanel
 sudo chmod 0755 /usr/local/bin/sspanel
 
-# 复制单元文件与安装脚本
-sudo ./deploy/install.sh /usr/local/bin/sspanel
+# install.sh 需要同目录下的 sspanel.service，所以从复制过去的 deploy/ 里执行
+cd /tmp/sspanel-deploy
+sudo ./install.sh /usr/local/bin/sspanel
 ```
+
+`install.sh` 只依赖 `deploy/` 目录里的 `sspanel.service`，不依赖仓库其余部分。
 
 `install.sh` 会：
 
 1. 创建系统用户 `sspanel`（nologin）。
 2. 安装二进制到 `/usr/local/bin/sspanel`。
-3. 创建 `/etc/sspanel/config.yaml`（已存在则保留）和 `/var/lib/sspanel`。
+3. 创建 `/etc/sspanel/config.yaml`（已存在则保留）和 `/var/lib/sspanel`，权限分别为 `0600` 和 `0700`。
 4. 安装并启动 `sspanel.service`，随后做一次 `/healthz` 检查。
 
 查看初始管理员密码：
@@ -193,6 +196,8 @@ sudo systemctl start sspanel
 
 备份文件包含管理员密码哈希和全部用户 PSK，请按敏感数据保管。
 
+数据库文件本身由程序在打开时收紧到 `0600`（`-wal` / `-shm` 同），进程 umask 为 `0077`；systemd 单元也设置了 `UMask=0077`。用 `stat -c '%a %n' /var/lib/sspanel/sspanel.db` 可以确认。
+
 ## 7. 升级
 
 ```bash
@@ -204,12 +209,26 @@ sudo systemctl start sspanel
 
 数据库迁移在启动时自动执行，且有事务保护；迁移失败会拒绝启动，不会留下半成品 schema。
 
+升级前建议先跑一次检查，它会指出会导致启动失败的存量数据：
+
+```bash
+sudo -u sspanel /usr/local/bin/sspanel check --config /etc/sspanel/config.yaml
+```
+
+其中一类是单用户方法（`2022-blake3-chacha20-poly1305`）的入站存在多个启用用户——这种配置无法正确计量，程序会拒绝启动该入站并给出被启用的用户名，请先禁用多余的用户。
+
+`sspanel repair` 用于修复数据面之外的问题：先跑 `PRAGMA integrity_check`，再从明细表重建按天流量汇总。它只应在汇总表与明细不一致时使用，正常写入会事务性地维护两者。
+
+```bash
+sudo -u sspanel /usr/local/bin/sspanel repair --config /etc/sspanel/config.yaml
+```
+
 ## 8. 故障排查
 
 | 现象 | 排查方向 |
 |---|---|
 | 面板 502 / 无法连接 | `systemctl status sspanel`；确认 `panel.listen` 与反代 upstream 一致 |
-| 入站显示已启用但连不上 | 检查端口是否被防火墙拦截；`ss -lntup | grep <port>` |
+| 入站显示已启用但连不上 | 先看面板入站列表是否显示「启动失败」及其 `last_error`（`GET /inbounds` 的 `last_error` 字段）；再检查防火墙；`ss -lntup | grep <port>` |
 | SS2022 客户端握手失败 | 服务器时钟偏差 >30s；客户端不支持 SS2022；PSK 长度/编码错误 |
 | 面板提示端口占用 | 该端口已有其他程序或另一个入站；`lsof -i:<port>` |
 | 流量没有统计 | 计数每 10 秒落库；刷新面板查看；确认客户端实际有数据传输 |
