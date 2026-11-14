@@ -221,6 +221,7 @@ func (s *Server) Handler() http.Handler {
 	api.GET("/settings", s.handleGetSettings)
 	api.PUT("/settings", s.handleUpdateSettings)
 	api.GET("/backup", s.handleBackup)
+	api.GET("/audit", s.handleListAudit)
 
 	// Public subscriptions.
 	router.GET("/sub/:token", s.handleSubscription)

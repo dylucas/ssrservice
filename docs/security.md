@@ -21,6 +21,7 @@ sspanel 面向**单机、自托管、个人或小团队**场景。它不是多�
 | API 缓存 | `/api/v1` 响应统一带 `Cache-Control: no-store` 与 `Pragma: no-cache`，避免浏览器或中间缓存留存含 PSK、订阅 token 的响应 |
 | 批量接口 | 用户列表只返回摘要，不含 `psk`/`sub_token`/`link`，凭据只在单个用户端点返回，减少秘密在批量响应中的暴露面 |
 | 日志 | `password`/`psk`/`token` 不写入日志；`/sub/<token>` 路径脱敏 |
+| 审计 | 写操作与登录记录到 `audit_logs`，只存固定的 `key=value` 摘要，不含密码、用户/服务器 PSK、订阅 token；保留 90 天且最多 5 万条 |
 
 建议：
 
@@ -82,6 +83,7 @@ timedatectl status          # 确认 System clock synchronized: yes
 
 - 数据库包含：管理员密码哈希、会话签名密钥、入站服务器 PSK、用户 PSK、订阅 token、流量记录。
 - `traffic_daily` 保存每用户每日明细，`traffic_daily_totals` 保存按天汇总（仅两个字节计数，不含任何标识或凭据），两者在同一事务内更新；`RebuildDailyTotals` 可从明细重建汇总。
+- `audit_logs` 保存面板操作审计：时间、操作人、动作、对象、摘要与来源 IP，不含任何凭据。
 - 数据库文件权限应为 `0600`，目录 `0700`（程序首次创建时会设置）。
 - 备份文件等同敏感数据，请加密存储并限制访问。
 - 订阅 token 泄露后，在用户列表「重置订阅」即可作废旧链接。

@@ -135,7 +135,7 @@
 | POST | `/clients/:id/token` | 轮换订阅 token |
 | POST | `/clients/:id/kick` | 断开该用户全部连接 |
 | GET | `/clients/:id/link` | 分享链接与订阅路径 |
-| GET | `/clients/:id/usage?days=30` | 每日流量 |
+| GET | `/clients/:id/usage?days=30` | 每日流量（`days` 取 1–365） |
 
 用户请求体：
 
@@ -178,6 +178,42 @@
 - 只要链接：`GET /clients/:id/link`。
 
 > 兼容性说明：早期版本的列表条目包含 `psk`/`sub_token`/`link`，依赖这些字段的脚本请改调详情端点。
+
+## 审计日志
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/audit` | 查询审计记录（需要会话） |
+
+查询参数：`limit`（默认 100，最大 500）、`offset`、`action`、`username`、`since`/`until`（Unix 秒，`since` 含、`until` 不含）。
+
+```json
+{
+  "items": [{
+    "id": 12, "created_at": 1790000000, "admin_id": 1, "username": "admin",
+    "action": "client.create", "target_type": "client", "target_id": 3,
+    "detail": "inbound_id=1 name=\"alice\" enabled=true quota_bytes=0",
+    "ip": "203.0.113.5"
+  }],
+  "total": 1, "limit": 100, "offset": 0,
+  "actions": ["auth.login", "auth.login.failed", "client.create", "..."]
+}
+```
+
+记录范围：
+
+| 动作 | 说明 |
+|---|---|
+| `auth.login` / `auth.login.failed` / `auth.logout` | 登录成功、失败（含尝试的用户名）与退出 |
+| `admin.password` | 修改管理员密码 |
+| `inbound.create` / `.update` / `.delete` / `.toggle` / `.restart` | 入站变更 |
+| `client.create` / `.update` / `.delete` / `.toggle` / `.reset` / `.token` / `.kick` | 用户变更 |
+| `client.import` / `client.export` | 导入导出 |
+| `settings.update` | 系统设置变更 |
+
+- 只记录**成功**的操作；失败的登录例外（记 `auth.login.failed`）。
+- `detail` 为固定的 `key=value` 摘要，**不包含**密码、用户 PSK、服务器 PSK、订阅 token。
+- 保留策略：90 天，且最多 5 万条（超出按时间删除最旧记录）。
 
 ## 设置
 

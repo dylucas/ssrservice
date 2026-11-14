@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/ydong/ssrservice/internal/model"
 	"github.com/ydong/ssrservice/internal/service"
 )
 
@@ -48,6 +49,14 @@ func (s *Server) handleUpdateClient(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	// Note: the PSK is deliberately absent from the detail.
+	s.audit(c, auditEntry{
+		Action: model.AuditClientUpdate, TargetType: "client", TargetID: client.ID,
+		Detail: auditFields("name", client.Name, "enabled", client.Enabled,
+			"quota_bytes", client.QuotaBytes, "expires_at", client.ExpiresAt,
+			"ip_limit", client.IPLimit, "reset_policy", client.ResetPolicy,
+			"reset_day", client.ResetDay),
+	})
 	c.JSON(http.StatusOK, client)
 }
 
@@ -60,6 +69,7 @@ func (s *Server) handleDeleteClient(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	s.audit(c, auditEntry{Action: model.AuditClientDelete, TargetType: "client", TargetID: id})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -76,6 +86,10 @@ func (s *Server) handleToggleClient(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	s.audit(c, auditEntry{
+		Action: model.AuditClientToggle, TargetType: "client", TargetID: id,
+		Detail: auditFields("enabled", req.Enabled),
+	})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -88,6 +102,7 @@ func (s *Server) handleResetClient(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	s.audit(c, auditEntry{Action: model.AuditClientReset, TargetType: "client", TargetID: id})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -101,6 +116,8 @@ func (s *Server) handleResetClientToken(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	// Note: the new token is deliberately absent from the detail.
+	s.audit(c, auditEntry{Action: model.AuditClientToken, TargetType: "client", TargetID: id})
 	c.JSON(http.StatusOK, gin.H{"sub_token": token, "subscription_url": "/sub/" + token})
 }
 
@@ -113,6 +130,7 @@ func (s *Server) handleKickClient(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	s.audit(c, auditEntry{Action: model.AuditClientKick, TargetType: "client", TargetID: id})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

@@ -202,3 +202,63 @@ const (
 
 // NowUnix returns the current unix time in seconds.
 func NowUnix() int64 { return time.Now().Unix() }
+
+// Audit actions recorded in the audit trail. They are stable identifiers the
+// panel filters on, so treat them as part of the API surface.
+const (
+	AuditAuthLogin       = "auth.login"
+	AuditAuthLoginFailed = "auth.login.failed"
+	AuditAuthLogout      = "auth.logout"
+	AuditAdminPassword   = "admin.password"
+	AuditInboundCreate   = "inbound.create"
+	AuditInboundUpdate   = "inbound.update"
+	AuditInboundDelete   = "inbound.delete"
+	AuditInboundToggle   = "inbound.toggle"
+	AuditInboundRestart  = "inbound.restart"
+	AuditSettingsUpdate  = "settings.update"
+	AuditClientCreate    = "client.create"
+	AuditClientUpdate    = "client.update"
+	AuditClientDelete    = "client.delete"
+	AuditClientToggle    = "client.toggle"
+	AuditClientReset     = "client.reset"
+	AuditClientToken     = "client.token"
+	AuditClientKick      = "client.kick"
+	AuditClientImport    = "client.import"
+	AuditClientExport    = "client.export"
+)
+
+// AuditActions lists every recorded action in display order.
+var AuditActions = []string{
+	AuditAuthLogin,
+	AuditAuthLoginFailed,
+	AuditAuthLogout,
+	AuditAdminPassword,
+	AuditInboundCreate,
+	AuditInboundUpdate,
+	AuditInboundDelete,
+	AuditInboundToggle,
+	AuditInboundRestart,
+	AuditClientCreate,
+	AuditClientUpdate,
+	AuditClientDelete,
+	AuditClientToggle,
+	AuditClientReset,
+	AuditClientToken,
+	AuditClientKick,
+	AuditClientImport,
+	AuditClientExport,
+	AuditSettingsUpdate,
+}
+
+// AuditLog is one recorded panel mutation or login attempt.
+type AuditLog struct {
+	ID         int64  `json:"id"`
+	CreatedAt  int64  `json:"created_at"`
+	AdminID    int64  `json:"admin_id"`
+	Username   string `json:"username"`
+	Action     string `json:"action"`
+	TargetType string `json:"target_type"`
+	TargetID   int64  `json:"target_id"`
+	Detail     string `json:"detail"`
+	IP         string `json:"ip"`
+}

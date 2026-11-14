@@ -6,7 +6,9 @@ import (
 	"github.com/ydong/ssrservice/internal/model"
 )
 
-// startResetLoop launches the scheduled monthly traffic reset worker.
+// startResetLoop launches the scheduled monthly traffic reset worker. The same
+// one minute tick also drives the (much rarer) audit retention sweep, so no
+// extra goroutine is needed for it.
 func (s *Service) startResetLoop() {
 	s.resetWG.Add(1)
 	go func() {
@@ -14,12 +16,18 @@ func (s *Service) startResetLoop() {
 		timer := time.NewTimer(time.Minute)
 		defer timer.Stop()
 		s.runScheduledResets()
+		s.pruneAudit()
+		ticks := 0
 		for {
 			select {
 			case <-s.resetStop:
 				return
 			case <-timer.C:
 				s.runScheduledResets()
+				ticks++
+				if ticks%auditPruneInterval == 0 {
+					s.pruneAudit()
+				}
 				timer.Reset(time.Minute)
 			}
 		}

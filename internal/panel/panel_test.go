@@ -1253,3 +1253,157 @@ func TestDashboardTrafficMatchesDetail(t *testing.T) {
 		t.Fatalf("today totals = %+v", got)
 	}
 }
+
+// TestAuditLogsMutations verifies every mutation writes an audit row, and that no
+// credential value ever reaches the trail.
+func TestAuditLogsMutations(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	port := freeTestPort(t)
+
+	created := tp.do(http.MethodPost, "/api/v1/inbounds", map[string]any{
+		"remark": "audited", "listen": "127.0.0.1", "port": port,
+		"method": model.Method2022AES128GCM, "enabled": true,
+	}, nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create inbound: %d %s", created.Code, created.Body.String())
+	}
+	in := decode[model.Inbound](t, created)
+
+	clientRec := tp.do(http.MethodPost, "/api/v1/inbounds/"+itoa(in.ID)+"/clients", map[string]any{
+		"name": "audit-user", "enabled": true, "quota_bytes": 2048,
+	}, nil)
+	if clientRec.Code != http.StatusCreated {
+		t.Fatalf("create client: %d %s", clientRec.Code, clientRec.Body.String())
+	}
+	client := decode[model.Client](t, clientRec)
+
+	if rec := tp.do(http.MethodPost, "/api/v1/clients/"+itoa(client.ID)+"/toggle",
+		map[string]any{"enabled": false}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("toggle client: %d", rec.Code)
+	}
+	if rec := tp.do(http.MethodPut, "/api/v1/settings", map[string]any{
+		"public_host": "", "public_port": 0, "subscription_enabled": true,
+		"allow_private_targets": false, "reset_day": 1, "timezone": "UTC",
+	}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("update settings: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec := tp.do(http.MethodGet, "/api/v1/audit", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items   []model.AuditLog `json:"items"`
+		Total   int64            `json:"total"`
+		Actions []string         `json:"actions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	if payload.Total != int64(len(payload.Items)) || payload.Total == 0 {
+		t.Fatalf("unexpected audit totals: total=%d len=%d", payload.Total, len(payload.Items))
+	}
+
+	wantActions := map[string]bool{
+		model.AuditAuthLogin:      false,
+		model.AuditInboundCreate:  false,
+		model.AuditClientCreate:   false,
+		model.AuditClientToggle:   false,
+		model.AuditSettingsUpdate: false,
+	}
+	for _, entry := range payload.Items {
+		if _, ok := wantActions[entry.Action]; ok {
+			wantActions[entry.Action] = true
+		}
+		if entry.Username != "admin" {
+			t.Fatalf("audit row has no actor: %+v", entry)
+		}
+		if entry.IP == "" {
+			t.Fatalf("audit row has no IP: %+v", entry)
+		}
+	}
+	for action, seen := range wantActions {
+		if !seen {
+			t.Fatalf("missing audit action %q (got %d rows)", action, len(payload.Items))
+		}
+	}
+
+	// The trail must never contain a credential value.
+	body := rec.Body.String()
+	for _, secret := range []string{client.PSK, client.SubToken, in.ServerPSK, "audit-pass-123"} {
+		if secret != "" && strings.Contains(body, secret) {
+			t.Fatalf("audit trail leaked a credential")
+		}
+	}
+	if len(payload.Actions) == 0 {
+		t.Fatal("audit response must list the known actions")
+	}
+}
+
+// TestAuditLoginFailure verifies a failed login is recorded without the password.
+func TestAuditLoginFailure(t *testing.T) {
+	tp := newTestPanel(t)
+	// A fresh panel has no session; attempt a wrong password.
+	rec := tp.do(http.MethodPost, "/api/v1/auth/login",
+		map[string]any{"username": "admin", "password": "wrong-password-value"}, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("login: %d", rec.Code)
+	}
+	tp.login()
+
+	rec = tp.do(http.MethodGet, "/api/v1/audit?action="+model.AuditAuthLoginFailed, nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, model.AuditAuthLoginFailed) {
+		t.Fatalf("failed login was not audited: %s", body)
+	}
+	if !strings.Contains(body, "admin") {
+		t.Fatalf("failed login should record the attempted username: %s", body)
+	}
+	if strings.Contains(body, "wrong-password-value") {
+		t.Fatal("audit trail leaked the attempted password")
+	}
+}
+
+// TestAuditFilterByAction exercises the server side filter and paging echo.
+func TestAuditFilterByAction(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	for i := 0; i < 3; i++ {
+		port := freeTestPort(t)
+		if rec := tp.do(http.MethodPost, "/api/v1/inbounds", map[string]any{
+			"remark": "filtered", "listen": "127.0.0.1", "port": port,
+			"method": model.Method2022AES128GCM, "enabled": true,
+		}, nil); rec.Code != http.StatusCreated {
+			t.Fatalf("create inbound: %d", rec.Code)
+		}
+	}
+
+	rec := tp.do(http.MethodGet, "/api/v1/audit?action="+model.AuditInboundCreate+"&limit=2", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items  []model.AuditLog `json:"items"`
+		Total  int64            `json:"total"`
+		Limit  int              `json:"limit"`
+		Offset int              `json:"offset"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Total != 3 {
+		t.Fatalf("total = %d, want 3", payload.Total)
+	}
+	if len(payload.Items) != 2 || payload.Limit != 2 || payload.Offset != 0 {
+		t.Fatalf("unexpected page: len=%d limit=%d offset=%d", len(payload.Items), payload.Limit, payload.Offset)
+	}
+	for _, entry := range payload.Items {
+		if entry.Action != model.AuditInboundCreate {
+			t.Fatalf("action filter leaked %q", entry.Action)
+		}
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/ydong/ssrservice/internal/auth"
+	"github.com/ydong/ssrservice/internal/model"
 )
 
 var nowFunc = time.Now
@@ -30,11 +31,14 @@ func (s *Server) handleLogin(c *gin.Context) {
 	admin, err := s.svc.Store().AdminByUsername(req.Username)
 	if err != nil || !auth.VerifyPassword(admin.PasswordHash, req.Password) {
 		s.limiter.Fail(ip, now)
+		// The attempted password is never recorded.
+		s.auditLogin(c, req.Username, nil, model.AuditAuthLoginFailed)
 		writeError(c, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 		return
 	}
 	s.limiter.Reset(ip)
 	_ = s.svc.Store().TouchAdminLogin(admin.ID)
+	s.auditLogin(c, admin.Username, admin, model.AuditAuthLogin)
 
 	cookie, expires, err := s.sessions.Issue(admin.ID, admin.PasswordHash, now)
 	if err != nil {
@@ -54,6 +58,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 }
 
 func (s *Server) handleLogout(c *gin.Context) {
+	s.audit(c, auditEntry{Action: model.AuditAuthLogout, TargetType: "admin"})
 	s.clearSessionCookie(c)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -101,6 +106,8 @@ func (s *Server) handleChangePassword(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	// Neither the old nor the new password is recorded.
+	s.audit(c, auditEntry{Action: model.AuditAdminPassword, TargetType: "admin", TargetID: admin.ID})
 	// Re-issue the cookie so the current session survives the version change.
 	now := nowFunc()
 	cookie, expires, err := s.sessions.Issue(admin.ID, hash, now)

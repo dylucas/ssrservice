@@ -38,6 +38,11 @@ func (s *Server) handleCreateInbound(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	s.audit(c, auditEntry{
+		Action: model.AuditInboundCreate, TargetType: "inbound", TargetID: in.ID,
+		Detail: auditFields("remark", in.Remark, "listen", in.Listen, "port", in.Port,
+			"method", in.Method, "udp", in.UDPEnabled, "enabled", in.Enabled),
+	})
 	c.JSON(http.StatusCreated, in)
 }
 
@@ -68,6 +73,11 @@ func (s *Server) handleUpdateInbound(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	s.audit(c, auditEntry{
+		Action: model.AuditInboundUpdate, TargetType: "inbound", TargetID: in.ID,
+		Detail: auditFields("remark", in.Remark, "listen", in.Listen, "port", in.Port,
+			"method", in.Method, "udp", in.UDPEnabled, "enabled", in.Enabled),
+	})
 	c.JSON(http.StatusOK, in)
 }
 
@@ -80,6 +90,7 @@ func (s *Server) handleDeleteInbound(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	s.audit(c, auditEntry{Action: model.AuditInboundDelete, TargetType: "inbound", TargetID: id})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -96,6 +107,10 @@ func (s *Server) handleToggleInbound(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	s.audit(c, auditEntry{
+		Action: model.AuditInboundToggle, TargetType: "inbound", TargetID: id,
+		Detail: auditFields("enabled", req.Enabled),
+	})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -108,6 +123,7 @@ func (s *Server) handleRestartInbound(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	s.audit(c, auditEntry{Action: model.AuditInboundRestart, TargetType: "inbound", TargetID: id})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -139,6 +155,14 @@ func (s *Server) handleCreateClient(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
+	// Note: the PSK is deliberately absent from the detail.
+	s.audit(c, auditEntry{
+		Action: model.AuditClientCreate, TargetType: "client", TargetID: client.ID,
+		Detail: auditFields("inbound_id", id, "name", client.Name, "enabled", client.Enabled,
+			"quota_bytes", client.QuotaBytes, "expires_at", client.ExpiresAt,
+			"ip_limit", client.IPLimit, "reset_policy", client.ResetPolicy,
+			"reset_day", client.ResetDay),
+	})
 	c.JSON(http.StatusCreated, client)
 }
 

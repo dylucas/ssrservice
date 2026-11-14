@@ -183,6 +183,23 @@ PY
 
 api GET /api/v1/dashboard >/dev/null
 
+log "checking audit log"
+AUDIT_JSON=$(api GET /api/v1/audit?limit=50)
+AUDIT_JSON="$AUDIT_JSON" CLIENT_PSK="$CLIENT_PSK" SERVER_PSK="$SERVER_PSK" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["AUDIT_JSON"])
+items = payload["items"]
+assert items, "audit log is empty after mutations"
+actions = {item["action"] for item in items}
+for expected in ("auth.login", "inbound.create", "client.create"):
+    assert expected in actions, f"missing audit action {expected}: {sorted(actions)}"
+body = json.dumps(payload)
+for name in ("CLIENT_PSK", "SERVER_PSK"):
+    secret = os.environ.get(name, "")
+    assert secret and secret not in body, f"audit log leaked {name}"
+print(f"audit rows: {payload['total']}, actions: {len(actions)}")
+PY
+
 log "checking frontend"
 curl -fsS "http://127.0.0.1:$PANEL_PORT/" | grep -q 'id="sspanel-config"' || fail "frontend config not injected"
 
