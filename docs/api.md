@@ -24,6 +24,7 @@
 - 变更请求若带 `Origin` 头，必须与 `Host` 同源，否则返回 `403 invalid_origin`。
 - 登录失败限制：默认 5 次/分钟/IP，超出返回 `429 too_many_attempts`。真实客户端 IP 只在请求来自 `panel.trusted_proxies` 时采用 `X-Forwarded-For`。
 - `/api/v1` 的 JSON 请求体上限为 1 MiB，超出返回 `413 payload_too_large`。
+- 面板静态资源在请求带 `Accept-Encoding: gzip` 时返回 `Content-Encoding: gzip`，并始终带 `Vary: Accept-Encoding`；`HEAD` 与 `Range` 请求返回未压缩文件。API 的 JSON 响应不压缩。
 
 ## 认证
 

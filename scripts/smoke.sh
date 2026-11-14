@@ -106,6 +106,22 @@ api GET /api/v1/dashboard >/dev/null
 
 log "checking frontend"
 curl -fsS "http://127.0.0.1:$PANEL_PORT/" | grep -q 'id="sspanel-config"' || fail "frontend config not injected"
+
+log "checking asset compression"
+ASSET=$(curl -fsS "http://127.0.0.1:$PANEL_PORT/" | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1)
+[[ -n "$ASSET" ]] || fail "could not locate the main asset"
+# A GET (not HEAD) is used here: HEAD deliberately falls through to the plain
+# file server, which does not encode.
+GZ_HEADERS=$(curl -fsS -D - -o /dev/null -H 'Accept-Encoding: gzip' "http://127.0.0.1:$PANEL_PORT/$ASSET")
+grep -qi 'content-encoding: gzip' <<<"$GZ_HEADERS" || fail "asset was not gzip encoded"
+grep -qi 'vary:.*accept-encoding' <<<"$GZ_HEADERS" || fail "asset response lacks Vary: Accept-Encoding"
+PLAIN_SHA=$(curl -fsS "http://127.0.0.1:$PANEL_PORT/$ASSET" | shasum -a 256 | cut -d' ' -f1)
+GZIP_SHA=$(curl -fsS --compressed "http://127.0.0.1:$PANEL_PORT/$ASSET" | shasum -a 256 | cut -d' ' -f1)
+[[ "$PLAIN_SHA" == "$GZIP_SHA" ]] || fail "compressed asset differs from the plain one"
+PLAIN_SIZE=$(curl -fsS "http://127.0.0.1:$PANEL_PORT/$ASSET" | wc -c | tr -d ' ')
+GZIP_SIZE=$(curl -fsS -H 'Accept-Encoding: gzip' "http://127.0.0.1:$PANEL_PORT/$ASSET" | wc -c | tr -d ' ')
+[[ "$GZIP_SIZE" -lt "$PLAIN_SIZE" ]] || fail "compressed asset is not smaller ($GZIP_SIZE vs $PLAIN_SIZE)"
+log "asset gzip: $PLAIN_SIZE -> $GZIP_SIZE bytes"
 curl -fsS "http://127.0.0.1:$PANEL_PORT/settings" | grep -q '<div id="app">' || fail "SPA fallback broken"
 
 log "stopping server"

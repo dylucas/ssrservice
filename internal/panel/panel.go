@@ -44,6 +44,8 @@ type Server struct {
 	monitor        *system.Collector
 	httpSrv        *http.Server
 	trustedProxies []*net.IPNet
+	// assets caches gzip variants of the embedded frontend assets.
+	assets *assetCache
 }
 
 // runtimeConfig is serialized into index.html.
@@ -72,6 +74,7 @@ func New(cfg *config.Config, svc *service.Service, logger *slog.Logger, sessions
 		limiter:        auth.NewLoginLimiter(cfg.Security.LoginRateLimit, time.Minute),
 		monitor:        system.NewCollector(),
 		trustedProxies: proxies,
+		assets:         newAssetCache(),
 	}
 }
 
@@ -254,6 +257,14 @@ func (s *Server) Addr() string {
 	return net.JoinHostPort(s.cfg.Panel.Listen, strconv.Itoa(s.cfg.Panel.Port))
 }
 
+// basePathAssets returns the URL prefix of the hashed asset directory for the
+// configured base path ("/assets/" by default, "/panel/assets/" when mounted
+// under a sub path).
+func basePathAssets(basePath string) string {
+	base := strings.TrimSuffix(basePath, "/")
+	return base + "/" + cachedAssetPrefix
+}
+
 func (s *Server) accessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -262,7 +273,13 @@ func (s *Server) accessLog() gin.HandlerFunc {
 		if strings.HasPrefix(path, s.cfg.Panel.BasePath+"sub/") || strings.HasPrefix(path, "/sub/") {
 			path = "/sub/<redacted>"
 		}
-		s.logger.Info("http request",
+		// Hashed assets are requested several times per page load; logging them
+		// at info level would bury the API requests an operator cares about.
+		log := s.logger.Info
+		if strings.HasPrefix(path, basePathAssets(s.cfg.Panel.BasePath)) {
+			log = s.logger.Debug
+		}
+		log("http request",
 			"method", c.Request.Method,
 			"path", path,
 			"status", c.Writer.Status(),
@@ -310,6 +327,13 @@ func (s *Server) mountFrontend(engine *gin.Engine, router *gin.RouterGroup) {
 				// Vite fingerprints these filenames, so they can be cached
 				// forever.
 				c.Header("Cache-Control", "public, max-age=31536000, immutable")
+				// The response representation depends on Accept-Encoding, so
+				// shared caches must key on it even when this client gets the
+				// plain file.
+				c.Header("Vary", "Accept-Encoding")
+			}
+			if s.serveCompressedAsset(c, assets, path) {
+				return
 			}
 			c.Request.URL.Path = "/" + path
 			fileServer.ServeHTTP(c.Writer, c.Request)
