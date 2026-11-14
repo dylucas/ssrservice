@@ -6,6 +6,7 @@ import (
 
 	"github.com/ydong/ssrservice/internal/model"
 	"github.com/ydong/ssrservice/internal/ssserver"
+	"github.com/ydong/ssrservice/internal/store"
 )
 
 func TestValidateListenAddressIPv6(t *testing.T) {
@@ -74,39 +75,31 @@ func TestResolveHostPortFallsBackToLoopback(t *testing.T) {
 	}
 }
 
-// TestAggregateClients covers the one-pass aggregation used by the inbound
-// list: per-inbound counts, totals and distinct online IPs.
-func TestAggregateClients(t *testing.T) {
-	clients := []model.Client{
-		{ID: 1, InboundID: 10, Enabled: true, UpBytes: 100, DownBytes: 200},
-		{ID: 2, InboundID: 10, Enabled: false, UpBytes: 1, DownBytes: 2},
-		{ID: 3, InboundID: 20, Enabled: true, UpBytes: 3, DownBytes: 4},
-		{ID: 4, InboundID: 20, Enabled: true, UpBytes: 5, DownBytes: 6},
+// TestInboundViewOf covers the view assembly: a missing aggregate (an inbound
+// without clients) leaves zero counters but still carries the online IP count.
+func TestInboundViewOf(t *testing.T) {
+	in := model.Inbound{ID: 10, Remark: "香港"}
+	agg := store.InboundAggregate{
+		InboundID: 10, ClientCount: 3, EnabledClientCount: 2,
+		UpBytes: 100, DownBytes: 200,
 	}
-	online := map[int64][]string{
-		1: {"203.0.113.1", "203.0.113.2"},
-		2: {"203.0.113.1"}, // shares an IP with client 1
-		3: {"203.0.113.9"},
+	view := inboundViewOf(in, &agg, 4)
+	if view.ClientCount != 3 || view.EnabledClientCount != 2 {
+		t.Fatalf("unexpected counts: %+v", view)
 	}
-	aggregates := aggregateClients(clients, online)
-
-	total := InboundView{}
-	aggregates[10].apply(&total)
-	if total.ClientCount != 2 || total.EnabledClientCount != 1 {
-		t.Fatalf("unexpected counts for inbound 10: %+v", total)
+	if view.UpBytes != 100 || view.DownBytes != 200 || view.OnlineIPs != 4 {
+		t.Fatalf("unexpected totals: %+v", view)
 	}
-	if total.UpBytes != 101 || total.DownBytes != 202 {
-		t.Fatalf("unexpected totals for inbound 10: %+v", total)
-	}
-	// Clients 1 and 2 share 203.0.113.1, so only two distinct IPs remain.
-	if total.OnlineIPs != 2 {
-		t.Fatalf("online split count = %d, want 2", total.OnlineIPs)
+	if view.ID != 10 || view.Remark != "香港" {
+		t.Fatalf("inbound fields not copied: %+v", view)
 	}
 
-	empty := InboundView{}
-	aggregates[99].apply(&empty)
-	if empty.ClientCount != 0 || empty.OnlineIPs != 0 {
-		t.Fatalf("missing aggregate must leave zero values: %+v", empty)
+	empty := inboundViewOf(in, nil, 2)
+	if empty.ClientCount != 0 || empty.UpBytes != 0 || empty.DownBytes != 0 {
+		t.Fatalf("missing aggregate must leave zero counters: %+v", empty)
+	}
+	if empty.OnlineIPs != 2 {
+		t.Fatalf("online IPs must still be reported: %+v", empty)
 	}
 }
 

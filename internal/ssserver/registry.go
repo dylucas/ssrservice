@@ -170,6 +170,31 @@ func (r *registry) onlineIPs() map[int64][]string {
 	return result
 }
 
+// onlineIPsByInbound returns the number of distinct source IPs per inbound.
+//
+// It is derived from the live sessions, which already carry both the inbound id
+// and the source IP, so there is no second counter that could drift away from
+// the per-client one. The result is the same as unioning the per-client IP sets
+// of an inbound's clients: a client belongs to exactly one inbound.
+func (r *registry) onlineIPsByInbound() map[int64]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sets := make(map[int64]map[string]struct{})
+	for _, s := range r.sessions {
+		set := sets[s.inboundID]
+		if set == nil {
+			set = make(map[string]struct{})
+			sets[s.inboundID] = set
+		}
+		set[s.ip] = struct{}{}
+	}
+	counts := make(map[int64]int, len(sets))
+	for inboundID, set := range sets {
+		counts[inboundID] = len(set)
+	}
+	return counts
+}
+
 // sessionCount returns the number of live sessions.
 func (r *registry) sessionCount() int {
 	r.mu.Lock()

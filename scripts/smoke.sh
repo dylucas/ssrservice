@@ -124,6 +124,32 @@ if grep -qi 'content-encoding: gzip' <<<"$LIST_HEADERS"; then
   log "client list gzip: ${#PLAIN_JSON} -> ${#GZIP_JSON} bytes"
 fi
 
+log "checking inbound aggregates match the client list"
+INBOUNDS_JSON=$(api GET /api/v1/inbounds)
+CLIENTS_JSON=$(api GET /api/v1/clients)
+INBOUNDS_JSON="$INBOUNDS_JSON" CLIENTS_JSON="$CLIENTS_JSON" python3 - <<'PY'
+import json, os
+inbounds = json.loads(os.environ["INBOUNDS_JSON"])["items"]
+clients = json.loads(os.environ["CLIENTS_JSON"])["items"]
+expected = {}
+for c in clients:
+    agg = expected.setdefault(c["inbound_id"], {"count": 0, "enabled": 0, "up": 0, "down": 0})
+    agg["count"] += 1
+    agg["enabled"] += 1 if c["enabled"] else 0
+    agg["up"] += c["up_bytes"]
+    agg["down"] += c["down_bytes"]
+for inbound in inbounds:
+    want = expected.get(inbound["id"], {"count": 0, "enabled": 0, "up": 0, "down": 0})
+    assert inbound["client_count"] == want["count"], inbound
+    assert inbound["enabled_client_count"] == want["enabled"], inbound
+    # Traffic counters come from the database snapshot that the runtime
+    # flushes every 10s, while the client list adds the live in-memory
+    # counters on top. So the inbound aggregate must never exceed the client
+    # list, but it may lag behind it until the next flush.
+    assert inbound["up_bytes"] <= want["up"], inbound
+    assert inbound["down_bytes"] <= want["down"], inbound
+PY
+
 log "checking dashboard"
 api GET /api/v1/dashboard >/dev/null
 

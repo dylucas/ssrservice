@@ -627,6 +627,11 @@ func (m *Manager) OnlineIPs() map[int64][]string {
 	return m.registry.onlineIPs()
 }
 
+// OnlineIPsByInbound returns the number of distinct source IPs per inbound.
+func (m *Manager) OnlineIPsByInbound() map[int64]int {
+	return m.registry.onlineIPsByInbound()
+}
+
 // SessionCount returns the number of live sessions.
 func (m *Manager) SessionCount() int {
 	return m.registry.sessionCount()

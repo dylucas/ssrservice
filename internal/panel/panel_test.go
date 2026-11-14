@@ -1089,3 +1089,98 @@ func benchmarkClientSummaries(n int) []service.ClientSummary {
 	}
 	return items
 }
+
+// TestInboundsAggregatesMatchClientList verifies the per-inbound counters the
+// panel renders equal the sum over the client list, so the SQL aggregation that
+// replaced the in-Go loop cannot drift from the client data.
+func TestInboundsAggregatesMatchClientList(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+
+	// Two inbounds with different client mixes (one disabled, one with traffic).
+	first := tp.seedClients(3)
+	second := tp.seedClients(2)
+
+	reloaded, err := tp.store.ListInbounds()
+	if err != nil {
+		t.Fatalf("inbounds: %v", err)
+	}
+	for _, in := range reloaded {
+		for _, c := range mustClientsOf(t, tp, in.ID) {
+			if c.Name == "seeded-0" && in.ID == second {
+				if err := tp.store.SetClientEnabled(c.ID, false); err != nil {
+					t.Fatalf("disable: %v", err)
+				}
+			}
+			if err := tp.store.SaveUsage([]model.UsageSnapshot{{
+				ClientID: c.ID, UpBytes: 100, DownBytes: 200, Day: "2026-07-01",
+				DayUpBytes: 100, DayDownBytes: 200,
+			}}); err != nil {
+				t.Fatalf("usage: %v", err)
+			}
+		}
+	}
+
+	rec := tp.do(http.MethodGet, "/api/v1/inbounds", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbounds: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			ID                 int64 `json:"id"`
+			ClientCount        int   `json:"client_count"`
+			EnabledClientCount int   `json:"enabled_client_count"`
+			UpBytes            int64 `json:"up_bytes"`
+			DownBytes          int64 `json:"down_bytes"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Derive the expected values from the client list endpoint.
+	items := tp.listClientsBody(http.Header{})
+	type want struct {
+		total, enabled int
+		up, down       int64
+	}
+	expected := make(map[int64]want)
+	for _, item := range items {
+		id := int64(item["inbound_id"].(float64))
+		w := expected[id]
+		w.total++
+		if item["enabled"].(bool) {
+			w.enabled++
+		}
+		w.up += int64(item["up_bytes"].(float64))
+		w.down += int64(item["down_bytes"].(float64))
+		expected[id] = w
+	}
+
+	seen := 0
+	for _, in := range payload.Items {
+		w, ok := expected[in.ID]
+		if !ok {
+			w = want{}
+		}
+		if in.ClientCount != w.total || in.EnabledClientCount != w.enabled ||
+			in.UpBytes != w.up || in.DownBytes != w.down {
+			t.Fatalf("inbound %d aggregate mismatch: got {count:%d enabled:%d up:%d down:%d}, want %+v",
+				in.ID, in.ClientCount, in.EnabledClientCount, in.UpBytes, in.DownBytes, w)
+		}
+		seen++
+	}
+	if seen < 2 || first == 0 || second == 0 {
+		t.Fatalf("expected both seeded inbounds in the response, saw %d", seen)
+	}
+}
+
+// mustClientsOf returns the clients of one inbound.
+func mustClientsOf(t *testing.T, tp *testPanel, inboundID int64) []model.Client {
+	t.Helper()
+	clients, err := tp.store.ListClients(inboundID)
+	if err != nil {
+		t.Fatalf("clients: %v", err)
+	}
+	return clients
+}

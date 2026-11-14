@@ -305,3 +305,66 @@ func TestSaveUsageBatch(t *testing.T) {
 		t.Fatalf("unexpected daily totals: %+v", totals)
 	}
 }
+
+// TestInboundAggregates verifies the grouped SQL aggregation the inbound list
+// renders: counts, enabled counts and traffic totals per inbound.
+func TestInboundAggregates(t *testing.T) {
+	st := newTestStore(t)
+	mkInbound := func(port int) model.Inbound {
+		in := model.Inbound{Listen: "127.0.0.1", Port: port, Method: model.Method2022AES128GCM, Enabled: true}
+		if err := st.CreateInbound(&in); err != nil {
+			t.Fatalf("inbound: %v", err)
+		}
+		return in
+	}
+	a := mkInbound(9001)
+	b := mkInbound(9002)
+	empty := mkInbound(9003)
+
+	seed := []struct {
+		inbound model.Inbound
+		name    string
+		enabled bool
+		up      int64
+		down    int64
+	}{
+		{a, "a1", true, 100, 200},
+		{a, "a2", false, 1, 2},
+		{b, "b1", true, 3, 4},
+		{b, "b2", true, 5, 6},
+	}
+	for i, s := range seed {
+		c := model.Client{InboundID: s.inbound.ID, Name: s.name, PSK: "x", Enabled: s.enabled,
+			SubToken: "tok-" + s.name, UpBytes: s.up, DownBytes: s.down}
+		if err := st.CreateClient(&c); err != nil {
+			t.Fatalf("client %d: %v", i, err)
+		}
+	}
+
+	all, err := st.InboundAggregates(0)
+	if err != nil {
+		t.Fatalf("aggregates: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected aggregates for 2 inbounds, got %d: %+v", len(all), all)
+	}
+	if agg := all[a.ID]; agg.ClientCount != 2 || agg.EnabledClientCount != 1 ||
+		agg.UpBytes != 101 || agg.DownBytes != 202 {
+		t.Fatalf("unexpected aggregate for inbound a: %+v", agg)
+	}
+	if agg := all[b.ID]; agg.ClientCount != 2 || agg.EnabledClientCount != 2 ||
+		agg.UpBytes != 8 || agg.DownBytes != 10 {
+		t.Fatalf("unexpected aggregate for inbound b: %+v", agg)
+	}
+	if _, ok := all[empty.ID]; ok {
+		t.Fatalf("inbound without clients must not appear: %+v", all[empty.ID])
+	}
+
+	one, err := st.InboundAggregates(b.ID)
+	if err != nil {
+		t.Fatalf("single aggregate: %v", err)
+	}
+	if len(one) != 1 || one[b.ID].ClientCount != 2 {
+		t.Fatalf("filtered aggregate returned %+v", one)
+	}
+}

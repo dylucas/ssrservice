@@ -111,6 +111,11 @@
 
 入站响应额外字段：`client_count`、`enabled_client_count`、`up_bytes`、`down_bytes`、`online_ips`。
 
+口径说明：
+
+- `up_bytes` / `down_bytes` 是**已落库**的累计值，由运行时每 10 秒写入一次；`GET /clients` 与 `GET /dashboard` 会在落库值之上叠加内存中的实时计数，因此入站流量最多可能比它们滞后一个落库周期。需要即时数值请用仪表盘或用户详情。
+- `online_ips` 是"该入站内去重后的来源 IP 数"，与仪表盘的 `online_ips`（各用户去重 IP 数之和）口径不同：多个用户共用同一出口 IP 时，前者计 1，后者按用户分别计数。
+
 ## 用户
 
 | 方法 | 路径 | 说明 |

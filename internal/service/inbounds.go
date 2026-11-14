@@ -32,68 +32,42 @@ type InboundView struct {
 	OnlineIPs          int   `json:"online_ips"`
 }
 
-// inboundAggregate accumulates the per-inbound counters in one pass over the
-// client rows, so listing N inbounds is O(inbounds + clients) instead of
-// scanning the whole client list once per inbound.
-type inboundAggregate struct {
-	clientCount  int
-	enabledCount int
-	upBytes      int64
-	downBytes    int64
-	ips          map[string]struct{}
-}
-
-// aggregateClients groups clients by inbound id and sums their counters.
-func aggregateClients(clients []model.Client, online map[int64][]string) map[int64]*inboundAggregate {
-	aggregates := make(map[int64]*inboundAggregate)
-	for _, c := range clients {
-		agg := aggregates[c.InboundID]
-		if agg == nil {
-			agg = &inboundAggregate{ips: make(map[string]struct{})}
-			aggregates[c.InboundID] = agg
-		}
-		agg.clientCount++
-		if c.Enabled {
-			agg.enabledCount++
-		}
-		agg.upBytes += c.UpBytes
-		agg.downBytes += c.DownBytes
-		for _, ip := range online[c.ID] {
-			agg.ips[ip] = struct{}{}
-		}
+// inboundViewOf fills an inbound view from the store aggregate (nil when the
+// inbound has no clients) and its online IP count.
+func inboundViewOf(in model.Inbound, agg *store.InboundAggregate, onlineIPs int) InboundView {
+	view := InboundView{Inbound: in, OnlineIPs: onlineIPs}
+	if agg != nil {
+		view.ClientCount = agg.ClientCount
+		view.EnabledClientCount = agg.EnabledClientCount
+		view.UpBytes = agg.UpBytes
+		view.DownBytes = agg.DownBytes
 	}
-	return aggregates
-}
-
-// apply copies the aggregate counters into an inbound view. A nil aggregate
-// (an inbound without clients) leaves the zero values in place.
-func (a *inboundAggregate) apply(view *InboundView) {
-	if a == nil {
-		return
-	}
-	view.ClientCount = a.clientCount
-	view.EnabledClientCount = a.enabledCount
-	view.UpBytes = a.upBytes
-	view.DownBytes = a.downBytes
-	view.OnlineIPs = len(a.ips)
+	return view
 }
 
 // ListInbounds returns all inbounds with aggregate counters.
+//
+// The counters come from one grouped SQL query and the online IP counts from the
+// live sessions: listing a handful of inbounds used to read every client row
+// into Go just to sum it.
 func (s *Service) ListInbounds() ([]InboundView, error) {
 	inbounds, err := s.store.ListInbounds()
 	if err != nil {
 		return nil, err
 	}
-	clients, err := s.store.ListClients(0)
+	aggregates, err := s.store.InboundAggregates(0)
 	if err != nil {
 		return nil, err
 	}
-	aggregates := aggregateClients(clients, s.mgr.OnlineIPs())
+	online := s.mgr.OnlineIPsByInbound()
 	views := make([]InboundView, 0, len(inbounds))
 	for _, in := range inbounds {
-		view := InboundView{Inbound: in}
-		aggregates[in.ID].apply(&view)
-		views = append(views, view)
+		agg, ok := aggregates[in.ID]
+		if !ok {
+			views = append(views, inboundViewOf(in, nil, online[in.ID]))
+			continue
+		}
+		views = append(views, inboundViewOf(in, &agg, online[in.ID]))
 	}
 	return views, nil
 }
@@ -104,12 +78,15 @@ func (s *Service) GetInbound(id int64) (*InboundView, error) {
 	if err != nil {
 		return nil, err
 	}
-	clients, err := s.store.ListClients(id)
+	aggregates, err := s.store.InboundAggregates(id)
 	if err != nil {
 		return nil, err
 	}
-	view := InboundView{Inbound: *in}
-	aggregateClients(clients, s.mgr.OnlineIPs())[id].apply(&view)
+	onlineIPs := s.mgr.OnlineIPsByInbound()[id]
+	view := inboundViewOf(*in, nil, onlineIPs)
+	if agg, ok := aggregates[id]; ok {
+		view = inboundViewOf(*in, &agg, onlineIPs)
+	}
 	return &view, nil
 }
 
