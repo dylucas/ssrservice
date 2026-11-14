@@ -7,7 +7,7 @@
     @opened="load"
   >
     <div v-loading="loading">
-      <el-form label-width="88px">
+      <el-form label-width="auto">
         <el-form-item label="ss:// 链接">
           <el-input :model-value="link" readonly type="textarea" :rows="3" class="mono" />
         </el-form-item>
@@ -174,11 +174,11 @@ async function copy(value: string) {
   width: 100%;
 }
 .qr {
-  width: 220px;
-  height: 220px;
+  width: var(--sspanel-qr-size);
+  height: var(--sspanel-qr-size);
   border: 1px solid var(--sspanel-border);
   border-radius: var(--sspanel-radius-sm);
-  padding: 6px;
+  padding: var(--sspanel-space-2);
   background: var(--sspanel-surface);
 }
 </style>

@@ -1,11 +1,18 @@
 /* Design tokens and shared utility classes.
  *
  * Rules for this file:
- * - every colour, radius, shadow and shared size is a custom property declared
- *   in :root. Component <style> blocks must reference these variables instead of
- *   hardcoding values, which web/tests/styles.test.ts enforces.
+ * - every colour, radius, shadow, shared size and spacing step is a custom
+ *   property declared in :root. Component <style> blocks must reference these
+ *   variables instead of hardcoding values, which web/tests/styles.test.ts
+ *   enforces (colours, font sizes, radii and spacing).
  * - text colours are chosen for WCAG AA: the ratios noted below are asserted by
  *   that test, so lightening a "muted" colour to taste will fail CI.
+ * - Element Plus is themed through the same tokens (the --el-* block at the end
+ *   of :root), so a component's default styling stops drifting from ours. Rules
+ *   that override a component's own custom properties live at the bottom of this
+ *   file and are prefixed with `html`, because the page-specific components ship
+ *   their CSS in a lazily loaded chunk that loads *after* this file and would
+ *   otherwise win on equal specificity.
  */
 :root {
   /* Brand. #1f6feb already appeared in the brand mark gradient, gives white
@@ -13,15 +20,28 @@
    * and is re-exported as the Element Plus primary below. */
   --sspanel-primary: #1f6feb;
   --sspanel-primary-soft: #409eff;
+  /* Darker primary for text that has to sit on the tinted surface: #1f6feb on
+   * --sspanel-primary-tint is only 3.92:1, this reaches 5.71:1. It is also the
+   * primary-dark-2 shade Element uses for pressed states. */
+  --sspanel-primary-strong: #1657bb;
+  /* Tinted primary surface: stat icons and Element Plus' primary-light-9. */
+  --sspanel-primary-tint: #e3edfc;
 
   /* Surfaces */
   --sspanel-bg: #f5f7fa;
   --sspanel-surface: #ffffff;
+  --sspanel-surface-sunken: #f8fafc;
+  --sspanel-surface-hover: #f2f6fb;
   --sspanel-aside-bg: #1f2d3d;
   --sspanel-aside-footer-bg: #16222e;
-  --sspanel-aside-hover: #2a3b4d;
+  /* Hover and active item shades. Both are darker than the old #2a3b4d: the
+   * muted aside text only reached 4.40:1 on it, which the contrast test now
+   * rejects (4.60:1 and 4.74:1 respectively on these). */
+  --sspanel-aside-hover: #27384b;
+  --sspanel-aside-active: #1d3557;
   --sspanel-brand-divider: rgba(255, 255, 255, 0.06);
   --sspanel-border: #e7ebf0;
+  --sspanel-border-strong: #d8e0ea;
   --sspanel-login-bg-inner: #20344d;
   --sspanel-login-bg-outer: #101a26;
 
@@ -32,23 +52,74 @@
   --sspanel-aside-text: #cfd8e3; /*  9.72 on --sspanel-aside-bg */
   --sspanel-aside-muted: #93a2b3; /*  5.37 on --sspanel-aside-bg */
 
+  /* Semantic colours, with the derived shades Element Plus needs spelled out.
+   * Element's own defaults (#67c23a, #e6a23c, #f56c6c, #909399) only reach
+   * 2.04-2.80:1 against the light-9 tint they are paired with, which is where a
+   * 12px status tag sits; these keep the hue and reach 4.65/5.13/4.81/5.26:1
+   * while still clearing 5.30/5.93/5.62/6.00:1 for white text on the base. The
+   * ratios are asserted by the test file, so the pairs cannot drift apart. */
+  --sspanel-success: #347a2a;
+  --sspanel-success-light-3: #71a26a;
+  --sspanel-success-light-5: #9abc94;
+  --sspanel-success-light-7: #c2d7bf;
+  --sspanel-success-light-8: #d6e4d4;
+  --sspanel-success-light-9: #ebf2ea;
+  --sspanel-success-dark-2: #2a6222;
+
+  --sspanel-warning: #8a5a00;
+  --sspanel-warning-light-3: #ad8c4c;
+  --sspanel-warning-light-5: #c4ac80;
+  --sspanel-warning-light-7: #dcceb2;
+  --sspanel-warning-light-8: #e8decc;
+  --sspanel-warning-light-9: #f3eee6;
+  --sspanel-warning-dark-2: #6e4800;
+
+  --sspanel-danger: #c62828;
+  --sspanel-danger-light-3: #d76868;
+  --sspanel-danger-light-5: #e29494;
+  --sspanel-danger-light-7: #eebebe;
+  --sspanel-danger-light-8: #f4d4d4;
+  --sspanel-danger-light-9: #f9eaea;
+  --sspanel-danger-dark-2: #9e2020;
+
+  --sspanel-info: #5b6470;
+  --sspanel-info-light-3: #8c929b;
+  --sspanel-info-light-5: #adb2b8;
+  --sspanel-info-light-7: #ced0d4;
+  --sspanel-info-light-8: #dee0e2;
+  --sspanel-info-light-9: #eff0f1;
+  --sspanel-info-dark-2: #49505a;
+
   /* Elevation and shape */
   --sspanel-shadow: 0 1px 2px rgba(31, 45, 61, 0.06);
+  --sspanel-shadow-overlay: 0 16px 40px rgba(31, 45, 61, 0.16);
   --sspanel-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.35);
+  /* The dialog backdrop. Element's default is 50% black, which reads heavier
+   * than the rest of the panel; this is a slate tint at 45%. */
+  --sspanel-overlay-soft: rgba(15, 23, 42, 0.45);
   --sspanel-radius: 10px;
   --sspanel-radius-lg: 14px;
+  --sspanel-radius-sm: 8px;
+  --sspanel-radius-xs: 2px;
+  /* Tags, pagination buttons and other inline chips. */
+  --sspanel-radius-chip: 6px;
   --sspanel-gap: 14px;
 
   /* Type scale. Values are the ones already in use; naming them is what lets the
-   * tests forbid naked font-size values in component styles. */
+   * tests forbid naked font-size values in component styles. --sspanel-fs-base
+   * exists because Element Plus' own base size is 14px: mapping it to the same
+   * step is what keeps library text and panel text the same size. */
   --sspanel-fs-xs: 12px; /* hints, mono text, table meta */
   --sspanel-fs-sm: 13px; /* secondary body text, subtitles */
+  --sspanel-fs-base: 14px; /* library components, table body */
   --sspanel-fs-md: 15px; /* card titles */
-  --sspanel-fs-lg: 18px; /* stat values on narrow screens */
+  --sspanel-fs-lg: 18px; /* stat values on narrow screens, dialog titles */
   --sspanel-fs-xl: 20px; /* page titles */
-  --sspanel-fs-2xl: 22px; /* stat values, login brand */
+  --sspanel-fs-2xl: 22px; /* stat values, login brand, empty-state icon */
+  --sspanel-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
 
-  /* Spacing scale (4px base). */
+  /* Spacing scale (2px base below 12px, then the 4px rhythm the panel uses). */
   --sspanel-space-1: 4px;
   --sspanel-space-2: 6px;
   --sspanel-space-3: 8px;
@@ -59,10 +130,7 @@
   --sspanel-space-8: 20px;
   --sspanel-space-9: 24px;
   --sspanel-space-10: 32px;
-
-  /* Small radius for inline chips and QR frames, larger for cards and dialogs. */
-  --sspanel-radius-sm: 8px;
-  --sspanel-radius-xs: 2px;
+  --sspanel-space-11: 40px;
 
   /* Control widths, so select/input sizing stops being an inline style. */
   --sspanel-control-sm: 140px;
@@ -80,19 +148,114 @@
   /* Sizes */
   --sspanel-header-height: 56px;
   --sspanel-chart-height: 300px;
+  --sspanel-aside-width: 208px;
+  --sspanel-aside-collapsed-width: 64px;
+  --sspanel-menu-item-height: 42px;
+  --sspanel-qr-size: 220px;
 
-  /* Element Plus primary override. The derived shades are declared explicitly:
-   * overriding only the base colour leaves hover/disabled states on the old hue. */
+  /* Element Plus bridge.
+   *
+   * Only variables Element declares on :root are set here; component-level ones
+   * (--el-table-*, --el-dialog-*, --el-pagination-*) are set in the override
+   * block at the bottom of this file, because Element re-declares those on the
+   * component itself and a :root value would lose to that.
+   *
+   * The primary shades are declared explicitly: overriding only the base colour
+   * leaves hover/disabled states on the old hue. */
   --el-color-primary: var(--sspanel-primary);
+  --el-color-primary-rgb: 31, 111, 235;
   --el-color-primary-light-3: #3d81d9;
   --el-color-primary-light-5: #6ba0e5;
   --el-color-primary-light-7: #98bfee;
   --el-color-primary-light-8: #b0cdf3;
-  --el-color-primary-light-9: #e3edfc;
-  --el-color-primary-dark-2: #1657bb;
+  --el-color-primary-light-9: var(--sspanel-primary-tint);
+  --el-color-primary-dark-2: var(--sspanel-primary-strong);
 
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', sans-serif;
+  --el-color-success: var(--sspanel-success);
+  --el-color-success-rgb: 52, 122, 42;
+  --el-color-success-light-3: var(--sspanel-success-light-3);
+  --el-color-success-light-5: var(--sspanel-success-light-5);
+  --el-color-success-light-7: var(--sspanel-success-light-7);
+  --el-color-success-light-8: var(--sspanel-success-light-8);
+  --el-color-success-light-9: var(--sspanel-success-light-9);
+  --el-color-success-dark-2: var(--sspanel-success-dark-2);
+
+  --el-color-warning: var(--sspanel-warning);
+  --el-color-warning-rgb: 138, 90, 0;
+  --el-color-warning-light-3: var(--sspanel-warning-light-3);
+  --el-color-warning-light-5: var(--sspanel-warning-light-5);
+  --el-color-warning-light-7: var(--sspanel-warning-light-7);
+  --el-color-warning-light-8: var(--sspanel-warning-light-8);
+  --el-color-warning-light-9: var(--sspanel-warning-light-9);
+  --el-color-warning-dark-2: var(--sspanel-warning-dark-2);
+
+  --el-color-danger: var(--sspanel-danger);
+  --el-color-danger-rgb: 198, 40, 40;
+  --el-color-danger-light-3: var(--sspanel-danger-light-3);
+  --el-color-danger-light-5: var(--sspanel-danger-light-5);
+  --el-color-danger-light-7: var(--sspanel-danger-light-7);
+  --el-color-danger-light-8: var(--sspanel-danger-light-8);
+  --el-color-danger-light-9: var(--sspanel-danger-light-9);
+  --el-color-danger-dark-2: var(--sspanel-danger-dark-2);
+
+  /* ElMessage.error and the form validation text read the error family, not the
+   * danger one, so it has to be mapped as well. */
+  --el-color-error: var(--sspanel-danger);
+  --el-color-error-rgb: 198, 40, 40;
+  --el-color-error-light-3: var(--sspanel-danger-light-3);
+  --el-color-error-light-5: var(--sspanel-danger-light-5);
+  --el-color-error-light-7: var(--sspanel-danger-light-7);
+  --el-color-error-light-8: var(--sspanel-danger-light-8);
+  --el-color-error-light-9: var(--sspanel-danger-light-9);
+  --el-color-error-dark-2: var(--sspanel-danger-dark-2);
+
+  --el-color-info: var(--sspanel-info);
+  --el-color-info-rgb: 91, 100, 112;
+  --el-color-info-light-3: var(--sspanel-info-light-3);
+  --el-color-info-light-5: var(--sspanel-info-light-5);
+  --el-color-info-light-7: var(--sspanel-info-light-7);
+  --el-color-info-light-8: var(--sspanel-info-light-8);
+  --el-color-info-light-9: var(--sspanel-info-light-9);
+  --el-color-info-dark-2: var(--sspanel-info-dark-2);
+
+  /* Text. Element's placeholder (#a8abb2) is 2.5:1, so it moves to our hint. */
+  --el-text-color-primary: var(--sspanel-text);
+  --el-text-color-regular: var(--sspanel-text);
+  --el-text-color-secondary: var(--sspanel-text-muted);
+  --el-text-color-placeholder: var(--sspanel-text-hint);
+
+  /* Borders and fills */
+  --el-border-color: var(--sspanel-border);
+  --el-border-color-light: var(--sspanel-border);
+  --el-border-color-lighter: var(--sspanel-border);
+  --el-border-color-extra-light: var(--sspanel-border);
+  --el-border-color-dark: var(--sspanel-border-strong);
+  --el-border-color-darker: var(--sspanel-border-strong);
+  --el-fill-color: var(--sspanel-surface-hover);
+  --el-fill-color-light: var(--sspanel-surface-hover);
+  --el-fill-color-lighter: var(--sspanel-surface-sunken);
+  --el-fill-color-dark: var(--sspanel-border);
+  --el-fill-color-darker: var(--sspanel-border-strong);
+  --el-fill-color-blank: var(--sspanel-surface);
+  --el-disabled-bg-color: var(--sspanel-surface-hover);
+  --el-bg-color: var(--sspanel-surface);
+  --el-bg-color-page: var(--sspanel-bg);
+  --el-bg-color-overlay: var(--sspanel-surface);
+
+  /* Elevation and shape */
+  --el-box-shadow: var(--sspanel-shadow-overlay);
+  --el-box-shadow-light: var(--sspanel-shadow);
+  --el-overlay-color-lighter: var(--sspanel-overlay-soft);
+  --el-border-radius-base: var(--sspanel-radius-sm);
+  --el-border-radius-small: var(--sspanel-radius-chip);
+
+  /* Type */
+  --el-font-family: var(--sspanel-font);
+  --el-font-size-base: var(--sspanel-fs-base);
+  --el-font-size-small: var(--sspanel-fs-sm);
+  --el-font-size-extra-small: var(--sspanel-fs-xs);
+
+  font-family: var(--sspanel-font);
 }
 
 html,
@@ -105,10 +268,22 @@ body,
 
 body {
   color: var(--sspanel-text);
+  font-size: var(--sspanel-fs-base);
 }
 
+/* Native form controls do not inherit the page font: without this an <input>
+ * renders in the UA default (Arial) while the text around it uses the system UI
+ * font, which is what made the login form look pasted in. */
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+/* Page frame ---------------------------------------------------------------- */
+
 .page {
-  padding: var(--sspanel-space-8) var(--sspanel-space-9) 40px;
+  padding: var(--sspanel-space-8) var(--sspanel-space-9) var(--sspanel-space-11);
 }
 
 .page-header {
@@ -118,6 +293,13 @@ body {
   margin-bottom: var(--sspanel-space-7);
   gap: var(--sspanel-space-5);
   flex-wrap: wrap;
+}
+
+/* Title + subtitle column of a page header. */
+.page-heading {
+  min-width: 0;
+  /* Long subtitles wrap instead of running past the viewport on a phone. */
+  flex: 1 1 auto;
 }
 
 .page-title {
@@ -130,52 +312,7 @@ body {
   color: var(--sspanel-text-muted);
   font-size: var(--sspanel-fs-sm);
   margin-top: var(--sspanel-space-1);
-}
-
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: var(--sspanel-gap);
-  margin-bottom: var(--sspanel-space-7);
-}
-
-.stat-card {
-  background: var(--sspanel-surface);
-  border-radius: var(--sspanel-radius);
-  padding: var(--sspanel-space-7) var(--sspanel-space-7);
-  box-shadow: var(--sspanel-shadow);
-}
-
-.stat-label {
-  color: var(--sspanel-text-muted);
-  font-size: var(--sspanel-fs-sm);
-}
-
-.stat-value {
-  font-size: var(--sspanel-fs-2xl);
-  font-weight: 650;
-  margin-top: var(--sspanel-space-2);
-  word-break: break-all;
-}
-
-.stat-hint {
-  color: var(--sspanel-text-hint);
-  font-size: var(--sspanel-fs-xs);
-  margin-top: var(--sspanel-space-1);
-}
-
-.card {
-  background: var(--sspanel-surface);
-  border-radius: var(--sspanel-radius);
-  padding: var(--sspanel-space-7);
-  box-shadow: var(--sspanel-shadow);
-  margin-bottom: var(--sspanel-space-7);
-}
-
-.card-title {
-  font-size: var(--sspanel-fs-md);
-  font-weight: 600;
-  margin: 0 0 var(--sspanel-space-6);
+  overflow-wrap: anywhere;
 }
 
 /* Action row in a page header. */
@@ -185,6 +322,35 @@ body {
   gap: var(--sspanel-space-4);
   flex-wrap: wrap;
 }
+
+/* Cards --------------------------------------------------------------------- */
+
+.card {
+  background: var(--sspanel-surface);
+  border-radius: var(--sspanel-radius);
+  padding: var(--sspanel-space-7);
+  box-shadow: var(--sspanel-shadow);
+  margin-bottom: var(--sspanel-space-7);
+}
+
+/* Card header: title on the left, a count or an action on the right. The gap
+ * between them lives here, so the title can stay margin-free and be reused as a
+ * plain heading elsewhere. */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sspanel-space-4);
+  margin-bottom: var(--sspanel-space-6);
+}
+
+.card-title {
+  font-size: var(--sspanel-fs-md);
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Toolbars ------------------------------------------------------------------ */
 
 .toolbar {
   display: flex;
@@ -199,9 +365,159 @@ body {
   margin-bottom: var(--sspanel-space-5);
 }
 
-/* Spreads the two ends of a toolbar apart (used by the usage dialog). */
+/* Spreads the two ends of a toolbar apart. */
 .toolbar--split {
   justify-content: space-between;
+}
+
+/* A run of controls that belongs together inside a toolbar. */
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: var(--sspanel-space-4);
+  flex-wrap: wrap;
+}
+
+/* Control row above a chart inside a dialog, where there is no card. */
+.dialog-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sspanel-space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--sspanel-space-5);
+}
+
+/* Statistic cards ----------------------------------------------------------- */
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sspanel-gap);
+  margin-bottom: var(--sspanel-space-7);
+}
+
+.stat-card {
+  background: var(--sspanel-surface);
+  border-radius: var(--sspanel-radius);
+  padding: var(--sspanel-space-7);
+  box-shadow: var(--sspanel-shadow);
+}
+
+.stat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sspanel-space-3);
+}
+
+.stat-label {
+  color: var(--sspanel-text-muted);
+  font-size: var(--sspanel-fs-sm);
+}
+
+/* Every card uses the brand tint rather than a per-status colour: colour is
+ * reserved for state (tags, alerts), so the dashboard stays quiet and the
+ * numbers stay the loudest thing on it. */
+.stat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--sspanel-radius-sm);
+  background: var(--sspanel-primary-tint);
+  color: var(--sspanel-primary-strong);
+  font-size: var(--sspanel-fs-lg);
+}
+
+.stat-value {
+  font-size: var(--sspanel-fs-2xl);
+  font-weight: 650;
+  margin-top: var(--sspanel-space-2);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+.stat-hint {
+  color: var(--sspanel-text-hint);
+  font-size: var(--sspanel-fs-xs);
+  margin-top: var(--sspanel-space-1);
+}
+
+/* Definition grid used by the dashboard's system resources card. */
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sspanel-space-5);
+}
+
+.resource-item {
+  background: var(--sspanel-surface-sunken);
+  border: 1px solid var(--sspanel-border);
+  border-radius: var(--sspanel-radius-sm);
+  padding: var(--sspanel-space-5);
+}
+
+.resource-label {
+  color: var(--sspanel-text-muted);
+  font-size: var(--sspanel-fs-sm);
+}
+
+.resource-value {
+  margin-top: var(--sspanel-space-2);
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.resource-hint {
+  margin-top: var(--sspanel-space-1);
+  color: var(--sspanel-text-hint);
+  font-size: var(--sspanel-fs-xs);
+}
+
+/* Progress bar inside a resource item. */
+.resource-bar {
+  margin-top: var(--sspanel-space-3);
+}
+
+/* Empty states --------------------------------------------------------------
+ * Rendered through components/EmptyState.vue, which is mounted in el-table's
+ * #empty slot: that slot is a <span>, so the root here must be a span. */
+
+.table-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sspanel-space-4);
+  padding: var(--sspanel-space-11) var(--sspanel-space-6);
+  color: var(--sspanel-text-muted);
+}
+
+.table-empty-icon {
+  font-size: var(--sspanel-fs-2xl);
+  color: var(--sspanel-text-hint);
+}
+
+.table-empty-text {
+  font-size: var(--sspanel-fs-sm);
+}
+
+/* Utility classes ----------------------------------------------------------- */
+
+/* Brand mark used by the sidebar and the login card. */
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--sspanel-radius-sm);
+  background: linear-gradient(135deg, var(--sspanel-primary-soft), var(--sspanel-primary));
+  color: var(--sspanel-surface);
+  font-size: var(--sspanel-fs-sm);
+  font-weight: 700;
 }
 
 /* Brand wordmark next to the logo. Kept on one line while the sidebar collapses. */
@@ -215,6 +531,17 @@ body {
   max-width: 640px;
 }
 
+/* Action row of a form, outside the card that holds the fields. The card above
+ * already carries its own bottom margin, so only the gap to the next block is
+ * declared here. */
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sspanel-space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--sspanel-space-7);
+}
+
 /* Vertical rhythm helper for standalone blocks. */
 .mb-4 {
   margin-bottom: var(--sspanel-space-7);
@@ -222,6 +549,12 @@ body {
 
 /* Inline spacing helper for a control that follows a field on the same line. */
 .ml-4 {
+  margin-left: var(--sspanel-space-4);
+}
+
+/* A dropdown that follows text buttons in a table row. Element spaces adjacent
+ * buttons itself, but the dropdown wrapper breaks that adjacency. */
+.row-more {
   margin-left: var(--sspanel-space-4);
 }
 
@@ -236,6 +569,20 @@ body {
 
 .w-control-lg {
   width: var(--sspanel-control-lg);
+}
+
+/* A control that fills its container (forms, dialog footers). */
+.w-full {
+  width: 100%;
+}
+
+/* el-date-picker and el-select size themselves through a two-class selector in a
+ * lazily loaded chunk (`.el-date-editor.el-input`), which outranks the plain
+ * utility above and would also win on source order. This restates the fill with
+ * enough specificity for just those two components. */
+html .el-date-editor.w-full,
+html .el-select.w-full {
+  width: 100%;
 }
 
 .mono {
@@ -264,6 +611,19 @@ body {
   font-size: var(--sspanel-fs-xs);
 }
 
+.progress-row {
+  min-width: 170px;
+}
+
+/* Table footers (clients, audit) share one alignment. */
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--sspanel-space-5);
+}
+
+/* Login --------------------------------------------------------------------- */
+
 .login-page {
   min-height: 100vh;
   display: flex;
@@ -282,20 +642,27 @@ body {
   max-width: 100%;
   background: var(--sspanel-surface);
   border-radius: var(--sspanel-radius-lg);
-  padding: var(--sspanel-space-10) var(--sspanel-space-10);
+  padding: var(--sspanel-space-10);
   box-shadow: var(--sspanel-shadow-lg);
+}
+
+/* Logo plus wordmark at the top of the login card. */
+.login-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sspanel-space-5);
+  margin-bottom: var(--sspanel-space-9);
 }
 
 .login-brand {
   font-size: var(--sspanel-fs-2xl);
   font-weight: 700;
-  margin-bottom: var(--sspanel-space-1);
 }
 
 .login-sub {
   color: var(--sspanel-text-muted);
   font-size: var(--sspanel-fs-sm);
-  margin-bottom: var(--sspanel-space-9);
+  margin-top: var(--sspanel-space-1);
 }
 
 .login-footer {
@@ -305,20 +672,29 @@ body {
   text-align: center;
 }
 
-.progress-row {
-  min-width: 170px;
-}
-
-.el-table .cell {
-  word-break: break-word;
-}
-
 /* Chart: one inline SVG component serves the dashboard and the per-client usage
  * dialog. Geometry lives in utils/chart.ts; this file owns only presentation. */
 .traffic-chart {
   position: relative;
   width: 100%;
   height: var(--sspanel-chart-height);
+}
+
+/* Series legend above the plot. It sits outside the measured box, so the box's
+ * height stays the drawing height. */
+.chart-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--sspanel-space-6);
+  margin-bottom: var(--sspanel-space-5);
+  color: var(--sspanel-text-muted);
+  font-size: var(--sspanel-fs-xs);
+}
+
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sspanel-space-2);
 }
 
 /* The series colour is resolved once per variant, so each class below is
@@ -331,6 +707,22 @@ svg [data-variant='up'] {
 
 svg [data-variant='down'] {
   --chart-color: var(--sspanel-chart-down);
+}
+
+/* Legend and tooltip swatches. They are ordinary HTML outside the <svg>, so the
+ * attribute selector above does not reach them: each variant gets its own class. */
+.chart-key {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--sspanel-radius-xs);
+}
+
+.chart-key-up {
+  background: var(--sspanel-chart-up);
+}
+
+.chart-key-down {
+  background: var(--sspanel-chart-down);
 }
 
 .chart-grid {
@@ -400,13 +792,6 @@ svg [data-variant='down'] {
   color: var(--sspanel-text-muted);
 }
 
-.chart-swatch {
-  width: 8px;
-  height: 8px;
-  background: var(--chart-color);
-  border-radius: var(--sspanel-radius-xs);
-}
-
 .chart-wrap {
   position: relative;
   min-height: var(--sspanel-chart-height);
@@ -420,11 +805,71 @@ svg [data-variant='down'] {
   color: var(--sspanel-text-hint);
 }
 
-/* Table footers (clients, audit) share one alignment. */
-.pagination {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: var(--sspanel-space-5);
+/* Element Plus overrides ----------------------------------------------------
+ *
+ * These set custom properties Element declares on the component itself, so they
+ * need to outrank it. `html` supplies one extra element to the selector, which
+ * is enough to win regardless of which CSS chunk loads first; relying on source
+ * order does not work, because the page-specific components are split into a
+ * lazily loaded chunk that is appended after this file. */
+
+html .el-table {
+  --el-table-border-color: var(--sspanel-border);
+  --el-table-text-color: var(--sspanel-text);
+  --el-table-header-text-color: var(--sspanel-text-muted);
+  --el-table-header-bg-color: var(--sspanel-surface-sunken);
+  --el-table-row-hover-bg-color: var(--sspanel-surface-hover);
+  --el-table-current-row-bg-color: var(--sspanel-primary-tint);
+  --el-table-bg-color: var(--sspanel-surface);
+  --el-table-tr-bg-color: var(--sspanel-surface);
+}
+
+html .el-table th.el-table__cell,
+html .el-table td.el-table__cell {
+  padding: var(--sspanel-space-4) 0;
+}
+
+html .el-table th.el-table__cell {
+  font-size: var(--sspanel-fs-xs);
+  font-weight: 600;
+}
+
+/* Element lets a cell wrap anywhere; the client and audit tables put monospace
+ * lists and key=value summaries in cells, which must break. */
+html .el-table .cell {
+  line-height: 22px;
+  word-break: break-word;
+}
+
+/* The default empty text is 50% wide with a fixed 60px line height, which
+ * crushes the icon + message + action block EmptyState renders; a full-width
+ * block also centres that block regardless of how long the message is. */
+html .el-table .el-table__empty-text {
+  width: 100%;
+  line-height: inherit;
+  color: var(--sspanel-text-muted);
+}
+
+html .el-pagination {
+  --el-pagination-border-radius: var(--sspanel-radius-chip);
+  --el-pagination-font-size: var(--sspanel-fs-sm);
+  --el-pagination-button-bg-color: var(--sspanel-surface-sunken);
+}
+
+html .el-dialog {
+  --el-dialog-border-radius: var(--sspanel-radius-lg);
+  --el-dialog-padding-primary: var(--sspanel-space-8);
+  --el-dialog-title-font-size: var(--sspanel-fs-lg);
+  --el-dialog-box-shadow: var(--sspanel-shadow-overlay);
+}
+
+html .el-tag {
+  --el-tag-border-radius: var(--sspanel-radius-chip);
+  --el-tag-font-size: var(--sspanel-fs-xs);
+}
+
+html .el-alert {
+  --el-alert-border-radius-base: var(--sspanel-radius-sm);
 }
 
 @media (max-width: 782px) {
@@ -437,6 +882,9 @@ svg [data-variant='down'] {
   .page-header {
     align-items: flex-start;
   }
+  .page-actions {
+    width: 100%;
+  }
   .stat-value {
     font-size: var(--sspanel-fs-lg);
   }
@@ -448,6 +896,9 @@ svg [data-variant='down'] {
     /* The tables keep fixed action columns, so on a narrow screen the card has to
      * scroll sideways rather than squeeze the flexible columns into vertical text. */
     overflow-x: auto;
+  }
+  .card-head {
+    flex-wrap: wrap;
   }
   .login-card {
     padding: var(--sspanel-space-9) var(--sspanel-space-8);

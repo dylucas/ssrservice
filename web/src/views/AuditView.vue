@@ -1,39 +1,50 @@
 <template>
   <div class="page">
-    <div class="page-header">
-      <div>
-        <h2 class="page-title">审计日志</h2>
-        <div class="page-subtitle">面板写操作与登录记录，保留 90 天（最多 5 万条）</div>
-      </div>
-      <div class="page-actions">
+    <PageHeader title="审计日志" subtitle="面板写操作与登录记录，保留 90 天（最多 5 万条）">
+      <template #actions>
         <el-button :icon="Refresh" :loading="loading" @click="reload">刷新</el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="card">
-      <div class="toolbar card-toolbar">
-        <el-select v-model="filters.action" placeholder="全部动作" clearable class="w-control-md">
-          <el-option v-for="action in actions" :key="action" :label="actionLabel(action)" :value="action" />
-        </el-select>
-        <el-input
-          v-model="filters.username"
-          placeholder="操作人"
-          clearable
-          class="w-control-md"
-          @keyup.enter="reload"
-        />
-        <el-date-picker
-          v-model="range"
-          type="daterange"
-          value-format="x"
-          start-placeholder="开始日期"
-          end-placeholder="结束日期"
-          class="w-control-lg"
-        />
-        <el-button type="primary" @click="reload">查询</el-button>
+      <div class="card-head">
+        <h3 class="card-title">操作记录</h3>
+        <span class="muted">共 {{ total }} 条</span>
       </div>
 
-      <el-table :data="logs" v-loading="loading" row-key="id" empty-text="暂无审计记录">
+      <div class="toolbar toolbar--split card-toolbar">
+        <div class="toolbar-group">
+          <el-select v-model="filters.action" placeholder="全部动作" clearable class="w-control-md">
+            <el-option v-for="action in actions" :key="action" :label="actionLabel(action)" :value="action" />
+          </el-select>
+          <el-input
+            v-model="filters.username"
+            placeholder="操作人"
+            clearable
+            class="w-control-md"
+            @keyup.enter="reload"
+          />
+          <el-date-picker
+            v-model="range"
+            type="daterange"
+            value-format="x"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            class="w-control-lg"
+          />
+        </div>
+        <div class="toolbar-group">
+          <el-button type="primary" @click="reload">查询</el-button>
+        </div>
+      </div>
+
+      <el-table :data="logs" v-loading="loading" row-key="id">
+        <template #empty>
+          <EmptyState v-if="hasFilters" text="没有符合条件的记录" :icon="Search">
+            <el-button size="small" @click="clearFilters">清除筛选条件</el-button>
+          </EmptyState>
+          <EmptyState v-else text="暂无审计记录" :icon="Document" />
+        </template>
         <el-table-column label="时间" width="170">
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
@@ -51,7 +62,7 @@
         </el-table-column>
         <el-table-column label="详情" min-width="260">
           <template #default="{ row }">
-            <span class="mono detail">{{ row.detail || '—' }}</span>
+            <span class="mono muted">{{ row.detail || '—' }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="ip" label="IP" width="140" />
@@ -73,14 +84,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 // Page-specific Element Plus components; see src/element-parts.ts.
 import { ElDatePicker, ElOption, ElPagination, ElSelect, ElTable, ElTableColumn } from '@/element-parts'
 import { ElMessage } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { Document, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { AuditLog } from '@/types'
 import { formatDateTime } from '@/utils/format'
+import EmptyState from '@/components/EmptyState.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 const loading = ref(false)
 const logs = ref<AuditLog[]>([])
@@ -90,6 +103,12 @@ const page = ref(1)
 const pageSize = 100
 const range = ref<[string, string] | null>(null)
 const filters = reactive({ action: '', username: '' })
+
+// hasFilters picks the empty-state copy: an empty result under a filter is a
+// dead end with a way out, an empty log is just a new installation.
+const hasFilters = computed(
+  () => filters.action !== '' || filters.username.trim() !== '' || range.value !== null,
+)
 
 const actionLabels: Record<string, string> = {
   'auth.login': '登录',
@@ -162,17 +181,18 @@ function reload() {
   load()
 }
 
+/** clearFilters drops every filter and re-queries the first page. */
+function clearFilters() {
+  filters.action = ''
+  filters.username = ''
+  range.value = null
+  page.value = 1
+  load()
+}
+
 watch([() => filters.action, () => filters.username], () => {
   page.value = 1
 })
 
 onMounted(load)
 </script>
-
-<style scoped>
-.detail {
-  font-size: var(--sspanel-fs-xs);
-  word-break: break-all;
-  color: var(--sspanel-text-muted);
-}
-</style>

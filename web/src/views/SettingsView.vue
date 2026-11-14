@@ -1,67 +1,79 @@
 <template>
   <div class="page">
-    <div class="page-header">
-      <div>
-        <h2 class="page-title">系统设置</h2>
-        <div class="page-subtitle">分享链接、订阅与安全策略</div>
-      </div>
-      <div class="page-actions">
+    <PageHeader title="系统设置" subtitle="分享链接、订阅与安全策略">
+      <template #actions>
         <el-button :icon="Refresh" :loading="loading" :disabled="forced" @click="load">刷新</el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
-    <el-alert
-      v-if="auth.admin?.must_change_password"
-      type="warning"
-      show-icon
-      :closable="false"
-      title="当前仍在使用初始密码，请立即修改。"
-      class="mb-4"
-    />
+    <div class="form-narrow">
+      <el-alert
+        v-if="auth.admin?.must_change_password"
+        type="warning"
+        show-icon
+        :closable="false"
+        title="当前仍在使用初始密码，请立即修改。"
+        class="mb-4"
+      />
 
-    <div v-if="!forced" class="card">
-      <h3 class="card-title">分享与订阅</h3>
-      <el-form :model="form" label-width="150px" class="form-narrow">
-        <el-form-item label="公共主机名">
-          <el-input v-model="form.public_host" placeholder="例如 node.example.com，留空使用入站监听地址" />
-          <div class="hint">全局默认值。单个入站可在「入站管理 → 编辑 → 关联域名」中覆盖它。</div>
-        </el-form-item>
-        <el-form-item label="公共端口">
-          <el-input-number v-model="form.public_port" :min="0" :max="65535" controls-position="right" />
-          <span class="hint">0 表示使用入站端口</span>
-        </el-form-item>
-        <el-form-item label="启用订阅">
-          <el-switch v-model="form.subscription_enabled" />
-        </el-form-item>
-        <el-form-item label="允许内网目标">
-          <el-switch v-model="form.allow_private_targets" />
-          <div class="hint">开启后客户端可经代理访问内网；云元数据地址始终拒绝。</div>
-        </el-form-item>
-        <el-form-item label="全局月度重置日">
-          <el-input-number v-model="form.reset_day" :min="0" :max="28" controls-position="right" />
-          <span class="hint">0 表示不自动重置，1–28 日 00:00</span>
-        </el-form-item>
-        <el-form-item label="时区">
-          <el-select v-model="form.timezone" filterable allow-create class="w-control-lg">
-            <el-option v-for="zone in zones" :key="zone" :label="zone" :value="zone" />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" :loading="saving" :disabled="!loaded" @click="save">保存设置</el-button>
-        </el-form-item>
+      <el-form v-if="!forced" :model="form" label-width="auto">
+        <div class="card">
+          <div class="card-head">
+            <h3 class="card-title">分享与订阅</h3>
+          </div>
+          <el-form-item label="公共主机名">
+            <el-input v-model="form.public_host" placeholder="例如 node.example.com，留空使用入站监听地址" />
+            <div class="hint">全局默认值。单个入站可在「入站管理 → 编辑 → 关联域名」中覆盖它。</div>
+          </el-form-item>
+          <el-form-item label="公共端口">
+            <el-input-number v-model="form.public_port" :min="0" :max="65535" controls-position="right" />
+            <span class="hint">0 表示使用入站端口</span>
+          </el-form-item>
+          <el-form-item label="启用订阅">
+            <el-switch v-model="form.subscription_enabled" />
+          </el-form-item>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3 class="card-title">安全策略</h3>
+          </div>
+          <el-form-item label="允许内网目标">
+            <el-switch v-model="form.allow_private_targets" />
+            <div class="hint">开启后客户端可经代理访问内网；云元数据地址始终拒绝。</div>
+          </el-form-item>
+          <el-form-item label="全局月度重置日">
+            <el-input-number v-model="form.reset_day" :min="0" :max="28" controls-position="right" />
+            <span class="hint">0 表示不自动重置，1–28 日 00:00</span>
+          </el-form-item>
+          <el-form-item label="时区">
+            <el-select v-model="form.timezone" filterable allow-create class="w-control-lg">
+              <el-option v-for="zone in zones" :key="zone" :label="zone" :value="zone" />
+            </el-select>
+          </el-form-item>
+        </div>
       </el-form>
-    </div>
 
-    <div v-if="!forced" class="card">
-      <h3 class="card-title">数据备份</h3>
-      <p class="muted">下载 SQLite 数据库快照。恢复时请停止服务，替换数据库文件后重新启动。</p>
-      <el-button :icon="Download" @click="downloadBackup">下载备份</el-button>
-    </div>
+      <div v-if="!forced" class="form-actions">
+        <el-button type="primary" :loading="saving" :disabled="!loaded" @click="save">保存设置</el-button>
+        <span class="muted">改动会立即生效，无需重启服务。</span>
+      </div>
 
-    <div class="card">
-      <h3 class="card-title">安全</h3>
-      <p v-if="forced" class="muted">首次登录必须先修改初始密码，之后才能读取或修改其他设置。</p>
-      <el-button @click="passwordVisible = true">修改管理员密码</el-button>
+      <div class="card">
+        <div class="card-head">
+          <h3 class="card-title">安全</h3>
+        </div>
+        <p v-if="forced" class="muted">首次登录必须先修改初始密码，之后才能读取或修改其他设置。</p>
+        <el-button @click="passwordVisible = true">修改管理员密码</el-button>
+      </div>
+
+      <div v-if="!forced" class="card">
+        <div class="card-head">
+          <h3 class="card-title">数据备份</h3>
+        </div>
+        <p class="muted">下载 SQLite 数据库快照。恢复时请停止服务，替换数据库文件后重新启动。</p>
+        <el-button :icon="Download" @click="downloadBackup">下载备份</el-button>
+      </div>
     </div>
 
     <PasswordDialog v-model="passwordVisible" @saved="onPasswordSaved" />
@@ -78,6 +90,7 @@ import { Download, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import type { Settings } from '@/types'
+import PageHeader from '@/components/PageHeader.vue'
 import PasswordDialog from '@/components/PasswordDialog.vue'
 
 const auth = useAuthStore()
@@ -186,4 +199,3 @@ onMounted(() => {
   load()
 })
 </script>
-

@@ -7,7 +7,7 @@
     @opened="load"
     @closed="reset"
   >
-    <div class="toolbar toolbar--split card-toolbar">
+    <div class="dialog-toolbar">
       <el-radio-group v-model="days" size="small" @change="load">
         <el-radio-button :value="7">7 天</el-radio-button>
         <el-radio-button :value="30">30 天</el-radio-button>
@@ -21,8 +21,6 @@
     </div>
 
     <div v-loading="loading" class="chart-wrap">
-      <!-- The empty state lives in TrafficChart: it owns the "no traffic in this
-           window" decision, which is the same one the dashboard needs. -->
       <TrafficChart
         :labels="chartLabels"
         :series="chartSeries"

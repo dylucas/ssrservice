@@ -1,35 +1,61 @@
 <template>
   <div class="page">
-    <div class="page-header">
-      <div>
-        <h2 class="page-title">用户管理</h2>
-        <div class="page-subtitle">按用户统计流量、限制配额与到期时间</div>
-      </div>
-      <div class="page-actions">
-        <el-input
-          v-model="search"
-          :prefix-icon="Search"
-          placeholder="搜索用户名 / 备注"
-          clearable
-          class="w-control-md"
-        />
-        <el-select v-model="statusFilter" class="w-control-sm">
-          <el-option label="全部状态" value="all" />
-          <el-option v-for="(meta, key) in statusMeta" :key="key" :label="meta.label" :value="key" />
-        </el-select>
-        <el-select v-model="inboundFilter" class="w-control-md" @change="onFilterChange">
-          <el-option label="全部入站" :value="0" />
-          <el-option v-for="item in inbounds" :key="item.id" :label="`${item.remark || '入站'} (:${item.port})`" :value="item.id" />
-        </el-select>
+    <PageHeader title="用户管理" subtitle="按用户统计流量、限制配额与到期时间">
+      <template #actions>
         <el-button :icon="Refresh" :loading="loading" @click="reload">刷新</el-button>
-        <el-button :icon="Download" @click="exportClients">导出</el-button>
-        <el-button :icon="Upload" :disabled="!inbounds.length" @click="openImport">导入</el-button>
-        <el-button type="primary" :icon="Plus" :disabled="!inbounds.length" @click="openCreate">新建用户</el-button>
-      </div>
-    </div>
+        <el-button type="primary" :icon="Plus" :disabled="!inbounds.length" @click="openCreate">
+          新建用户
+        </el-button>
+      </template>
+    </PageHeader>
 
     <div class="card">
-      <el-table :data="clients" v-loading="loading" row-key="id" :empty-text="emptyText">
+      <div class="card-head">
+        <h3 class="card-title">用户列表</h3>
+        <span class="muted">共 {{ total }} 个用户</span>
+      </div>
+
+      <div class="toolbar toolbar--split card-toolbar">
+        <div class="toolbar-group">
+          <el-input
+            v-model="search"
+            :prefix-icon="Search"
+            placeholder="搜索用户名 / 备注"
+            clearable
+            class="w-control-lg"
+          />
+          <el-select v-model="statusFilter" class="w-control-sm" @change="onFilterChange">
+            <el-option label="全部状态" value="all" />
+            <el-option v-for="(meta, key) in statusMeta" :key="key" :label="meta.label" :value="key" />
+          </el-select>
+          <el-select v-model="inboundFilter" class="w-control-md" @change="onFilterChange">
+            <el-option label="全部入站" :value="0" />
+            <el-option v-for="item in inbounds" :key="item.id" :label="`${item.remark || '入站'} (:${item.port})`" :value="item.id" />
+          </el-select>
+        </div>
+        <div class="toolbar-group">
+          <el-button :icon="Upload" :disabled="!inbounds.length" @click="openImport">导入</el-button>
+          <el-button :icon="Download" @click="exportClients">导出</el-button>
+        </div>
+      </div>
+
+      <el-table :data="clients" v-loading="loading" row-key="id">
+        <template #empty>
+          <EmptyState v-if="hasFilters" text="没有符合条件的用户" :icon="Search">
+            <el-button size="small" @click="clearFilters">清除筛选条件</el-button>
+          </EmptyState>
+          <EmptyState v-else text="暂无用户，先创建一个" :icon="UserIcon">
+            <el-button
+              type="primary"
+              size="small"
+              :icon="Plus"
+              :disabled="!inbounds.length"
+              @click="openCreate"
+            >
+              新建用户
+            </el-button>
+          </EmptyState>
+        </template>
         <el-table-column label="用户" min-width="150">
           <template #default="{ row }">
             <div>{{ row.name }}</div>
@@ -70,7 +96,11 @@
             <el-button size="small" text type="primary" @click="openLink(asClient(row))">链接</el-button>
             <el-button size="small" text @click="openUsage(asClient(row))">趋势</el-button>
             <el-button size="small" text @click="openEdit(asClient(row))">编辑</el-button>
-            <el-dropdown trigger="click" @command="(command: string) => onRowCommand(command, asClient(row))">
+            <el-dropdown
+              class="row-more"
+              trigger="click"
+              @command="(command: string) => onRowCommand(command, asClient(row))"
+            >
               <el-button size="small" text>
                 更多<el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
@@ -122,12 +152,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 // Page-specific Element Plus components; see src/element-parts.ts.
 import { ElOption, ElPagination, ElProgress, ElSelect, ElTable, ElTableColumn } from '@/element-parts'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Download, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
+import {
+  ArrowDown,
+  Download,
+  Plus,
+  Refresh,
+  Search,
+  Upload,
+  User as UserIcon,
+} from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { ClientListParams, ClientSummary, Inbound } from '@/types'
 import { formatDate, percent, quotaLabel, statusMeta } from '@/utils/format'
@@ -142,6 +180,8 @@ import ClientForm from '@/components/ClientForm.vue'
 import ClientLinkDialog from '@/components/ClientLinkDialog.vue'
 import ClientUsageDialog from '@/components/ClientUsageDialog.vue'
 import ClientImportDialog from '@/components/ClientImportDialog.vue'
+import EmptyState from '@/components/EmptyState.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 // el-table's slot row is typed as DefaultRow, but this table is always bound to
 // ClientSummary rows. Narrowing here keeps the handlers strongly typed instead of
@@ -165,10 +205,12 @@ const statusFilter = ref<'all' | ClientSummary['status']>('all')
 const page = ref(1)
 const pageSize = CLIENT_PAGE_SIZE
 
-const emptyText = computed(() =>
-  total.value === 0 && !hasClientFilter({ status: statusFilter.value, query: search.value })
-    ? '暂无用户'
-    : '没有符合条件的用户',
+// hasFilters drives the empty state: "nothing matches" and "nothing exists yet"
+// are different dead ends, and only the first one has a way out.
+const hasFilters = computed(
+  () =>
+    hasClientFilter({ status: statusFilter.value, query: search.value }) ||
+    inboundFilter.value > 0,
 )
 
 // loadSeq makes the last request win: typing in the search box can start a
@@ -260,6 +302,24 @@ async function reload(): Promise<boolean> {
 /** onFilterChange returns to the first page, which is where a new filter starts. */
 function onFilterChange() {
   page.value = 1
+  load()
+}
+
+/**
+ * clearFilters resets every filter at once.
+ *
+ * Resetting the search box also wakes its debounce watcher, which would fire a
+ * second request 300ms behind the one below; the flag makes that flush a no-op.
+ */
+function clearFilters() {
+  clearingFilters = true
+  search.value = ''
+  statusFilter.value = 'all'
+  inboundFilter.value = 0
+  page.value = 1
+  void nextTick(() => {
+    clearingFilters = false
+  })
   load()
 }
 
@@ -433,17 +493,17 @@ async function remove(row: ClientSummary) {
 // Debounce the search box: one request per meaningful pause instead of one per
 // keystroke, which matters because every request is now a filtered page query.
 let searchTimer: number | undefined
+// clearingFilters suppresses the one debounced request a programmatic reset
+// would otherwise queue behind the explicit load() that clearFilters runs.
+let clearingFilters = false
+
 watch(search, () => {
+  if (clearingFilters) return
   if (searchTimer) window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => {
     page.value = 1
     load()
   }, 300)
-})
-
-watch(statusFilter, () => {
-  page.value = 1
-  load()
 })
 
 onMounted(async () => {

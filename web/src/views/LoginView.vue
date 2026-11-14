@@ -1,8 +1,13 @@
 <template>
   <div class="login-page">
     <div class="login-card">
-      <div class="login-brand">sspanel</div>
-      <div class="login-sub">Shadowsocks 服务端管理面板</div>
+      <div class="login-head">
+        <span class="brand-mark">SS</span>
+        <div>
+          <div class="login-brand">sspanel</div>
+          <div class="login-sub">Shadowsocks 服务端管理面板</div>
+        </div>
+      </div>
       <el-form ref="formRef" :model="form" :rules="rules" @keyup.enter="submit">
         <el-form-item prop="username">
           <el-input v-model="form.username" size="large" placeholder="用户名" :prefix-icon="User" />
@@ -17,7 +22,7 @@
             :prefix-icon="Lock"
           />
         </el-form-item>
-        <el-button type="primary" size="large" style="width: 100%" :loading="loading" @click="submit">
+        <el-button class="w-full" type="primary" size="large" :loading="loading" @click="submit">
           登录
         </el-button>
       </el-form>

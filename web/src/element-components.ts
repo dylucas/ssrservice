@@ -43,8 +43,6 @@ export const elementComponents = [
 export const elementParts = [
   'ElAlert',
   'ElDatePicker',
-  'ElDescriptions',
-  'ElDescriptionsItem',
   'ElInputNumber',
   'ElOption',
   'ElPagination',

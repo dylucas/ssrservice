@@ -6,7 +6,7 @@
     @update:model-value="emit('update:modelValue', $event)"
     @closed="reset"
   >
-    <el-form ref="formRef" :model="form" :rules="rules" label-width="96px">
+    <el-form ref="formRef" :model="form" :rules="rules" label-width="auto">
       <el-form-item label="备注" prop="remark">
         <el-input v-model="form.remark" maxlength="64" placeholder="例如：香港节点 8388" />
       </el-form-item>
@@ -25,10 +25,10 @@
         <span class="unit">0 表示跟随全局端口，再回退到入站端口</span>
       </el-form-item>
       <el-form-item label="加密方法" prop="method">
-        <el-select v-model="form.method" style="width: 100%" @change="onMethodChange">
+        <el-select v-model="form.method" class="w-full" @change="onMethodChange">
           <el-option v-for="item in methods" :key="item" :label="item" :value="item" />
         </el-select>
-        <div class="muted method-hint">{{ methodHint }}</div>
+        <div class="hint">{{ methodHint }}</div>
       </el-form-item>
       <el-form-item v-if="needsServerPSK" label="服务器 PSK" prop="server_psk">
         <el-input v-model="form.server_psk" placeholder="留空自动生成">
@@ -205,9 +205,3 @@ async function submit() {
   }
 }
 </script>
-
-<style scoped>
-.method-hint {
-  margin-top: 4px;
-}
-</style>

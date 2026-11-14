@@ -6,7 +6,7 @@
     @update:model-value="emit('update:modelValue', $event)"
     @closed="reset"
   >
-    <el-form ref="formRef" :model="form" :rules="rules" label-width="104px">
+    <el-form ref="formRef" :model="form" :rules="rules" label-width="auto">
       <el-form-item label="用户名" prop="name">
         <el-input v-model="form.name" maxlength="64" placeholder="例如：alice" />
       </el-form-item>
@@ -28,7 +28,7 @@
           type="datetime"
           placeholder="永久有效"
           clearable
-          style="width: 100%"
+          class="w-full"
         />
       </el-form-item>
       <el-form-item label="IP 限制">

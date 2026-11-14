@@ -13,8 +13,6 @@
 export {
   ElAlert,
   ElDatePicker,
-  ElDescriptions,
-  ElDescriptionsItem,
   ElInputNumber,
   ElOption,
   ElPagination,
@@ -31,8 +29,6 @@ export {
 // pulls in its own dependencies (base, scrollbar, tooltip, ...).
 import 'element-plus/es/components/alert/style/css'
 import 'element-plus/es/components/date-picker/style/css'
-import 'element-plus/es/components/descriptions/style/css'
-import 'element-plus/es/components/descriptions-item/style/css'
 import 'element-plus/es/components/input-number/style/css'
 import 'element-plus/es/components/option/style/css'
 import 'element-plus/es/components/pagination/style/css'

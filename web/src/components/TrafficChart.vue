@@ -1,104 +1,116 @@
 <template>
-  <div ref="rootEl" class="traffic-chart">
-    <!-- An empty series and an all-zero series both mean "no traffic in this
-         window". Drawing an axis scaled 0..1 B for them would print nonsense
-         labels like "256 B" per tick, so the empty state is the honest answer. -->
-    <div v-if="!hasTraffic" class="empty-state">该区间还没有流量记录</div>
-    <template v-else>
-      <svg
-        v-if="width > 0"
-        :viewBox="`0 0 ${width} ${height}`"
-        :width="width"
-        :height="height"
-        role="img"
-        :aria-label="ariaLabel || '上传与下载流量趋势'"
-        @pointermove="onPointerMove"
-        @pointerleave="onPointerLeave"
-      >
-        <!-- Grid and y axis labels -->
-        <g>
-          <line
-            v-for="tick in ticks"
-            :key="`grid-${tick.value}`"
-            :x1="area.x"
-            :x2="area.x + area.width"
-            :y1="tick.y"
-            :y2="tick.y"
-            class="chart-grid"
-          />
-          <text
-            v-for="tick in ticks"
-            :key="`y-${tick.value}`"
-            :x="area.x - 8"
-            :y="tick.y"
-            class="chart-axis-text"
-            text-anchor="end"
-            dominant-baseline="middle"
-          >
-            {{ formatBytes(tick.value) }}
-          </text>
-        </g>
-
-        <!-- x axis labels -->
-        <text
-          v-for="index in xLabels"
-          :key="`x-${index}`"
-          :x="xAt(index, labels.length, area)"
-          :y="height - 6"
-          class="chart-axis-text"
-          text-anchor="middle"
+  <div>
+    <!-- The legend sits outside the measured box so the chart's height stays the
+         drawing height. Legend and tooltip share the swatch classes; they are
+         plain HTML outside the <svg>, where the [data-variant] attribute selector
+         does not reach, which is why the swatches used to render transparent. -->
+    <div v-if="hasTraffic" class="chart-legend">
+      <span v-for="entry in series" :key="entry.name" class="chart-legend-item">
+        <span :class="['chart-key', keyClass(entry.variant)]" />
+        {{ entry.name }}
+      </span>
+    </div>
+    <div ref="rootEl" class="traffic-chart">
+      <!-- An empty series and an all-zero series both mean "no traffic in this
+           window". Drawing an axis scaled 0..1 B for them would print nonsense
+           labels like "256 B" per tick, so the empty state is the honest answer. -->
+      <div v-if="!hasTraffic" class="empty-state">该区间还没有流量记录</div>
+      <template v-else>
+        <svg
+          v-if="width > 0"
+          :viewBox="`0 0 ${width} ${height}`"
+          :width="width"
+          :height="height"
+          role="img"
+          :aria-label="ariaLabel || '上传与下载流量趋势'"
+          @pointermove="onPointerMove"
+          @pointerleave="onPointerLeave"
         >
-          {{ labels[index] }}
-        </text>
+          <!-- Grid and y axis labels -->
+          <g>
+            <line
+              v-for="tick in ticks"
+              :key="`grid-${tick.value}`"
+              :x1="area.x"
+              :x2="area.x + area.width"
+              :y1="tick.y"
+              :y2="tick.y"
+              class="chart-grid"
+            />
+            <text
+              v-for="tick in ticks"
+              :key="`y-${tick.value}`"
+              :x="area.x - 8"
+              :y="tick.y"
+              class="chart-axis-text"
+              text-anchor="end"
+              dominant-baseline="middle"
+            >
+              {{ formatBytes(tick.value) }}
+            </text>
+          </g>
 
-        <!-- Every area before every line, so no fill can cover a stroke. -->
-        <path
-          v-for="entry in geometry"
-          :key="`area-${entry.series.variant}`"
-          :d="entry.area"
-          class="chart-area"
-          :data-variant="entry.series.variant"
-        />
-        <path
-          v-for="entry in geometry"
-          :key="`line-${entry.series.variant}`"
-          :d="entry.line"
-          class="chart-line"
-          :data-variant="entry.series.variant"
-        />
+          <!-- x axis labels -->
+          <text
+            v-for="index in xLabels"
+            :key="`x-${index}`"
+            :x="xAt(index, labels.length, area)"
+            :y="height - 6"
+            class="chart-axis-text"
+            text-anchor="middle"
+          >
+            {{ labels[index] }}
+          </text>
 
-        <!-- Hover marker: a vertical guide plus one dot per series. -->
-        <g v-if="active >= 0">
-          <line
-            :x1="hoverX"
-            :x2="hoverX"
-            :y1="area.y"
-            :y2="area.y + area.height"
-            class="chart-marker"
+          <!-- Every area before every line, so no fill can cover a stroke. -->
+          <path
+            v-for="entry in geometry"
+            :key="`area-${entry.series.variant}`"
+            :d="entry.area"
+            class="chart-area"
+            :data-variant="entry.series.variant"
           />
-          <circle
-            v-for="entry in hoverDots"
-            :key="`dot-${entry.variant}`"
-            :cx="hoverX"
-            :cy="entry.y"
-            r="3"
-            class="chart-dot"
-            :data-variant="entry.variant"
+          <path
+            v-for="entry in geometry"
+            :key="`line-${entry.series.variant}`"
+            :d="entry.line"
+            class="chart-line"
+            :data-variant="entry.series.variant"
           />
-        </g>
-      </svg>
 
-      <!-- Fixed in the top-right corner: a tooltip that follows the pointer would
-           have to flip sides at the edges and would cover the curve it explains. -->
-      <div v-if="active >= 0" class="chart-tooltip">
-        <div class="chart-tooltip-title">{{ labels[active] }}</div>
-        <div v-for="series in series" :key="series.name" class="chart-tooltip-row">
-          <span class="chart-swatch" :data-variant="series.variant" />
-          <span class="chart-tooltip-name">{{ series.name }}</span>
-          <strong>{{ formatBytes(series.values[active] ?? 0) }}</strong>
+          <!-- Hover marker: a vertical guide plus one dot per series. -->
+          <g v-if="active >= 0">
+            <line
+              :x1="hoverX"
+              :x2="hoverX"
+              :y1="area.y"
+              :y2="area.y + area.height"
+              class="chart-marker"
+            />
+            <circle
+              v-for="entry in hoverDots"
+              :key="`dot-${entry.variant}`"
+              :cx="hoverX"
+              :cy="entry.y"
+              r="3"
+              class="chart-dot"
+              :data-variant="entry.variant"
+            />
+          </g>
+        </svg>
+
+        <!-- Fixed in the top-right corner: a tooltip that follows the pointer would
+             have to flip sides at the edges and would cover the curve it explains. -->
+        <div v-if="active >= 0" class="chart-tooltip">
+          <div class="chart-tooltip-title">{{ labels[active] }}</div>
+          <div v-for="series in series" :key="series.name" class="chart-tooltip-row">
+            <span :class="['chart-key', keyClass(series.variant)]" />
+            <span class="chart-tooltip-name">{{ series.name }}</span>
+            <strong>{{ formatBytes(series.values[active] ?? 0) }}</strong>
+          </div>
         </div>
-      </div>
-    </template>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -176,6 +188,17 @@ const hoverDots = computed(() => {
 })
 
 const hoverX = computed(() => xAt(active.value, props.labels.length, area.value))
+
+/**
+ * keyClass maps a series variant to its swatch class.
+ *
+ * The <svg> paths are coloured by an attribute selector ([data-variant='up']),
+ * which cannot reach the HTML legend and tooltip swatches. A static class per
+ * variant is what gives those two the same colour as the line.
+ */
+function keyClass(variant: ChartSeries['variant']): string {
+  return variant === 'down' ? 'chart-key-down' : 'chart-key-up'
+}
 
 // The hover index is a stale coordinate once the series shrinks (30 -> 7 days,
 // a poll returning a shorter window): entry.points[active] would be undefined

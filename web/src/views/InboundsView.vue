@@ -1,18 +1,25 @@
 <template>
   <div class="page">
-    <div class="page-header">
-      <div>
-        <h2 class="page-title">入站管理</h2>
-        <div class="page-subtitle">每个入站是一个独立端口上的 Shadowsocks 监听器</div>
-      </div>
-      <div class="page-actions">
+    <PageHeader title="入站管理" subtitle="每个入站是一个独立端口上的 Shadowsocks 监听器">
+      <template #actions>
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreate">新建入站</el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="card">
-      <el-table :data="inbounds" v-loading="loading" row-key="id" empty-text="暂无入站，点击右上角创建">
+      <div class="card-head">
+        <h3 class="card-title">入站列表</h3>
+        <span class="muted">共 {{ inbounds.length }} 个</span>
+      </div>
+      <el-table :data="inbounds" v-loading="loading" row-key="id">
+        <template #empty>
+          <EmptyState text="暂无入站，先创建一个监听器" :icon="Connection">
+            <el-button type="primary" size="small" :icon="Plus" @click="openCreate">
+              新建入站
+            </el-button>
+          </EmptyState>
+        </template>
         <el-table-column prop="remark" label="备注" min-width="140">
           <template #default="{ row }">
             <div>{{ row.remark || '未命名' }}</div>
@@ -53,12 +60,25 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="goClients(asInbound(row))">用户</el-button>
             <el-button size="small" text @click="openEdit(asInbound(row))">编辑</el-button>
-            <el-button size="small" text @click="restart(asInbound(row))">重启</el-button>
-            <el-button size="small" text type="danger" @click="remove(asInbound(row))">删除</el-button>
+            <el-dropdown
+              class="row-more"
+              trigger="click"
+              @command="(command: string) => onRowCommand(command, asInbound(row))"
+            >
+              <el-button size="small" text>
+                更多<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="restart">重启监听</el-dropdown-item>
+                  <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -79,11 +99,13 @@ import { onMounted, ref } from 'vue'
 import { ElSwitch, ElTable, ElTableColumn } from '@/element-parts'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { ArrowDown, Connection, Plus, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { Inbound } from '@/types'
 import { formatBytes } from '@/utils/format'
+import EmptyState from '@/components/EmptyState.vue'
 import InboundForm from '@/components/InboundForm.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 // el-table's slot row is typed as DefaultRow, but this table is always bound to
 // Inbound rows. Narrowing here keeps the handlers strongly typed instead of
@@ -135,6 +157,18 @@ function openEdit(row: Inbound) {
 
 function goClients(row: Inbound) {
   router.push({ name: 'clients', query: { inbound: String(row.id) } })
+}
+
+/** onRowCommand dispatches the "more" menu to the existing row handlers. */
+function onRowCommand(command: string, row: Inbound) {
+  switch (command) {
+    case 'restart':
+      restart(row)
+      break
+    case 'delete':
+      remove(row)
+      break
+  }
 }
 
 async function toggle(row: Inbound, enabled: boolean) {

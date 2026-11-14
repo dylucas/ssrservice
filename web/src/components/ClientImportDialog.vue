@@ -6,9 +6,9 @@
     @update:model-value="emit('update:modelValue', $event)"
     @closed="reset"
   >
-    <el-form label-width="96px">
+    <el-form label-width="auto">
       <el-form-item label="目标入站">
-        <el-select v-model="inboundId" style="width: 100%">
+        <el-select v-model="inboundId" class="w-full">
           <el-option
             v-for="item in inbounds"
             :key="item.id"
@@ -137,9 +137,9 @@ function reset() {
 
 <style scoped>
 .result {
-  margin-top: 8px;
+  margin-top: var(--sspanel-space-3);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sspanel-space-3);
 }
 </style>

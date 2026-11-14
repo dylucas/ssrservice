@@ -1,40 +1,42 @@
 <template>
   <div class="page">
-    <div class="page-header">
-      <div>
-        <h2 class="page-title">仪表盘</h2>
-        <div class="page-subtitle">运行状态与最近 30 天流量</div>
-      </div>
-      <div class="page-actions">
+    <PageHeader title="仪表盘" subtitle="运行状态与最近 30 天流量">
+      <template #actions>
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-label">总上传 / 下载</div>
-        <div class="stat-value">{{ formatBytes(data.up_bytes) }} / {{ formatBytes(data.down_bytes) }}</div>
-        <div class="stat-hint">累计流量</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">入站 / 用户</div>
-        <div class="stat-value">{{ data.inbounds }} / {{ data.clients }}</div>
-        <div class="stat-hint">启用中 {{ data.enabled_inbounds }} / {{ data.enabled_clients }}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">在线 IP / 会话</div>
-        <div class="stat-value">{{ data.online_ips }} / {{ data.sessions }}</div>
-        <div class="stat-hint">实时连接</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">运行时长</div>
-        <div class="stat-value">{{ formatDuration(data.uptime_seconds) }}</div>
-        <div class="stat-hint">版本 {{ data.version }}</div>
-      </div>
+      <StatCard
+        label="总上传 / 下载"
+        :value="`${formatBytes(data.up_bytes)} / ${formatBytes(data.down_bytes)}`"
+        hint="累计流量"
+        :icon="DataLine"
+      />
+      <StatCard
+        label="入站 / 用户"
+        :value="`${data.inbounds} / ${data.clients}`"
+        :hint="`启用中 ${data.enabled_inbounds} / ${data.enabled_clients}`"
+        :icon="Connection"
+      />
+      <StatCard
+        label="在线 IP / 会话"
+        :value="`${data.online_ips} / ${data.sessions}`"
+        hint="实时连接"
+        :icon="UserFilled"
+      />
+      <StatCard
+        label="运行时长"
+        :value="formatDuration(data.uptime_seconds)"
+        :hint="`版本 ${data.version}`"
+        :icon="Timer"
+      />
     </div>
 
     <div class="card">
-      <h3 class="card-title">流量趋势（30 天）</h3>
+      <div class="card-head">
+        <h3 class="card-title">流量趋势（30 天）</h3>
+      </div>
       <TrafficChart
         :labels="chartLabels"
         :series="chartSeries"
@@ -43,22 +45,42 @@
     </div>
 
     <div class="card">
-      <h3 class="card-title">系统资源</h3>
-      <el-descriptions :column="3" border>
-        <el-descriptions-item label="操作系统">{{ data.system.os }} / {{ data.system.arch }}</el-descriptions-item>
-        <el-descriptions-item label="CPU 核心">{{ data.system.num_cpu }}</el-descriptions-item>
-        <el-descriptions-item label="CPU 使用率">
-          {{ data.system.host_metrics ? data.system.cpu_percent.toFixed(1) + '%' : '不支持' }}
-        </el-descriptions-item>
-        <el-descriptions-item label="内存">
-          <template v-if="data.system.mem_total">
-            {{ formatBytes(data.system.mem_used) }} / {{ formatBytes(data.system.mem_total) }}
-          </template>
-          <template v-else>不支持</template>
-        </el-descriptions-item>
-        <el-descriptions-item label="Go 堆内存">{{ formatBytes(data.system.heap_alloc) }}</el-descriptions-item>
-        <el-descriptions-item label="Goroutine">{{ data.system.goroutines }}</el-descriptions-item>
-      </el-descriptions>
+      <div class="card-head">
+        <h3 class="card-title">系统资源</h3>
+        <span class="muted">{{ data.system.os }} / {{ data.system.arch }}</span>
+      </div>
+      <div class="resource-grid">
+        <div class="resource-item">
+          <div class="resource-label">CPU 使用率</div>
+          <div class="resource-value">
+            {{ data.system.host_metrics ? `${data.system.cpu_percent.toFixed(1)}%` : '不支持' }}
+          </div>
+          <div v-if="data.system.host_metrics" class="resource-bar">
+            <el-progress :percentage="cpuPercent" :show-text="false" :stroke-width="6" />
+          </div>
+          <div class="resource-hint">
+            逻辑核心 {{ data.system.num_cpu }} 个 · Goroutine {{ data.system.goroutines }}
+          </div>
+        </div>
+        <div class="resource-item">
+          <div class="resource-label">内存</div>
+          <div class="resource-value">
+            <template v-if="data.system.mem_total">
+              {{ formatBytes(data.system.mem_used) }} / {{ formatBytes(data.system.mem_total) }}
+            </template>
+            <template v-else>不支持</template>
+          </div>
+          <div v-if="data.system.mem_total" class="resource-bar">
+            <el-progress :percentage="memPercent" :show-text="false" :stroke-width="6" />
+          </div>
+          <div class="resource-hint">宿主机内存占用</div>
+        </div>
+        <div class="resource-item">
+          <div class="resource-label">Go 堆内存</div>
+          <div class="resource-value">{{ formatBytes(data.system.heap_alloc) }}</div>
+          <div class="resource-hint">运行时分配</div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -66,10 +88,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 // Page-specific Element Plus components; see src/element-parts.ts.
-import { ElDescriptions, ElDescriptionsItem } from '@/element-parts'
+import { ElProgress } from '@/element-parts'
 import { ElMessage } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { Connection, DataLine, Refresh, Timer, UserFilled } from '@element-plus/icons-vue'
 import { api } from '@/api'
+import PageHeader from '@/components/PageHeader.vue'
+import StatCard from '@/components/StatCard.vue'
 import TrafficChart from '@/components/TrafficChart.vue'
 import type { Dashboard } from '@/types'
 import { formatBytes, formatDuration } from '@/utils/format'
@@ -112,6 +136,17 @@ const chartSeries = computed(() => [
   { name: '上传', variant: 'up' as const, values: data.traffic_30d.map((item) => item.up_bytes) },
   { name: '下载', variant: 'down' as const, values: data.traffic_30d.map((item) => item.down_bytes) },
 ])
+
+// el-progress wants an integer percentage and clamps to 0..100 itself, but a
+// host that reports no metrics at all would otherwise show a 0% bar that looks
+// like "idle" rather than "unknown": the bars are only rendered when the value
+// exists.
+const cpuPercent = computed(() => Math.round(data.system.cpu_percent))
+const memPercent = computed(() =>
+  data.system.mem_total > 0
+    ? Math.round((data.system.mem_used / data.system.mem_total) * 100)
+    : 0,
+)
 
 async function load() {
   if (inFlight) return

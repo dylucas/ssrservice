@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { basePath } from '@/api'
+import { appTitle, titleOf } from '@/nav'
 import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
@@ -36,6 +37,13 @@ router.beforeEach(async (to) => {
     return { name: 'settings', query: { force: 'password' } }
   }
   return true
+})
+
+// Keep the document title in step with the sidebar. The menu lives in nav.ts, so
+// the title and the highlighted entry cannot disagree.
+router.afterEach((to) => {
+  const section = titleOf(to.path)
+  document.title = section ? `${section} · sspanel` : appTitle
 })
 
 export default router

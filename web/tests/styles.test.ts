@@ -8,10 +8,12 @@ import { describe, expect, it } from 'vitest'
 // These tests do not render anything: they read the CSS and the component
 // sources and check the invariants that would otherwise erode silently as the
 // panel grows:
-//   1. every colour lives in the token block of styles.css,
+//   1. every colour and spacing step lives in the token block of styles.css,
 //   2. component <style> blocks reference tokens instead of literals,
-//   3. the text tokens actually meet WCAG AA against the surfaces they sit on,
-//   4. shared utility classes are defined once.
+//   3. Element Plus is themed through those same tokens,
+//   4. the text and semantic colours actually meet WCAG AA,
+//   5. shared utility classes are defined once,
+//   6. templates carry no inline styles and no fixed dialog widths.
 // The comparison is a computed contrast ratio, so lightening a "muted" colour to
 // taste fails here instead of shipping unreadable text.
 
@@ -186,7 +188,9 @@ describe('template and token hygiene', () => {
       const local = new Set(
         [...style.matchAll(/\.([a-zA-Z][\w-]*)\s*(?:,|\{)/g)].map((match) => match[1]),
       )
-      for (const match of source.matchAll(/class="([^"]+)"/g)) {
+      // Dynamic bindings (`:class="[...]"`) are expressions, not class lists;
+      // the negative lookbehind keeps them out of this check.
+      for (const match of source.matchAll(/(?<![:\w-])class="([^"]+)"/g)) {
         for (const token of match[1].split(/\s+/).filter(Boolean)) {
           // Element Plus owns el-* classes; dynamic bindings are not parsed here.
           if (token.startsWith('el-')) continue
@@ -219,23 +223,100 @@ describe('template and token hygiene', () => {
     expect(offenders, `use the type/radius tokens: ${offenders.join('; ')}`).toEqual([])
   })
 
-  it('does not override spacing or control widths inline', () => {
-    // Inline styles escape the token system entirely. width: 100% is allowed: it
-    // expresses "fill the container", not a size on the scale.
+  it('does not use inline styles in templates', () => {
+    // Inline styles escape the token system entirely. The previous version of
+    // this check allowed width: 100% as a special case; .w-full now exists, so
+    // the exception is gone and nothing is allowed through.
     const offenders: string[] = []
     for (const file of vueFiles) {
       const source = readFileSync(file, 'utf8')
-      for (const match of source.matchAll(/style="([^"]+)"/g)) {
-        for (const declaration of match[1].split(';').map((part) => part.trim()).filter(Boolean)) {
-          if (/^width\s*:\s*100%$/.test(declaration)) continue
-          offenders.push(`${relative(srcDir, file)}: ${declaration}`)
-        }
+      for (const match of source.matchAll(/^.*\bstyle="/gm)) {
+        offenders.push(`${relative(srcDir, file)}: ${match[0].trim().slice(0, 80)}`)
       }
     }
     expect(
       offenders,
       `use a utility class instead of inline styles: ${offenders.join('; ')}`,
     ).toEqual([])
+  })
+
+  it('keeps margins, padding and gaps on the spacing scale', () => {
+    // The type and radius checks below cover font-size/border-radius; without
+    // this one, spacing was the last place a literal could hide (an 8px gap and
+    // a 12px gap for the same relationship is exactly what "not unified" looks
+    // like). Zero, auto, percentages and calc() are not steps on the scale, so
+    // they are allowed.
+    const allowed = /^(0|auto|inherit|0?\.\d+[a-z]*|[-\d.]+%|calc\(.*\)|var\(--sspanel-[a-z0-9-]+\))$/
+    const property = /^(margin|margin-[a-z]+|padding|padding-[a-z]+|gap|row-gap|column-gap)$/
+    const offenders: string[] = []
+
+    function scan(text: string, label: string) {
+      for (const match of text.matchAll(/([a-z-]+)\s*:\s*([^;{}]+);/g)) {
+        const [, name, rawValue] = match
+        if (!property.test(name)) continue
+        // Shorthands carry several values ("0 12px"); each must be on the scale.
+        for (const value of rawValue.trim().split(/\s+(?![^(]*\))/)) {
+          if (allowed.test(value)) continue
+          offenders.push(`${label}: ${name}: ${rawValue.trim()}`)
+          break
+        }
+      }
+    }
+
+    scan(outsideTokenBlock(css), 'styles.css')
+    for (const file of vueFiles) {
+      const source = readFileSync(file, 'utf8')
+      const styleStart = source.indexOf('<style')
+      if (styleStart < 0) continue
+      scan(source.slice(styleStart, source.indexOf('</style>', styleStart)), relative(srcDir, file))
+    }
+    expect(offenders, `use the spacing tokens: ${offenders.join('; ')}`).toEqual([])
+  })
+})
+
+describe('element plus bridge', () => {
+  // Mapping the library onto the design tokens is what stops a dialog title,
+  // a table header and a page title from being three different greys. The check
+  // is on the token block, because a component-local --el-* override would not
+  // reach the components that read the variable from :root.
+  const required = [
+    '--el-font-family',
+    '--el-font-size-base',
+    '--el-text-color-regular',
+    '--el-text-color-placeholder',
+    '--el-border-color',
+    '--el-fill-color-light',
+    '--el-bg-color',
+    '--el-box-shadow',
+    '--el-border-radius-base',
+    '--el-color-success',
+    '--el-color-warning',
+    '--el-color-danger',
+    '--el-color-error',
+    '--el-color-info',
+  ]
+
+  it('maps the library variables onto the design tokens', () => {
+    const block = tokenBlock(css)
+    for (const name of required) {
+      const match = block.match(new RegExp(`${name}\\s*:\\s*([^;]+);`))
+      expect(match, `${name} is not mapped in :root`).not.toBeNull()
+      expect(match![1], `${name} should point at a --sspanel- token`).toContain('var(--sspanel-')
+    }
+  })
+
+  it('overrides component-level variables with a higher-specificity selector', () => {
+    // Element declares --el-table-*, --el-dialog-*, --el-pagination-* and
+    // --el-tag-* on the component itself. The page-specific components ship in a
+    // lazily loaded chunk that is appended after styles.css, so an equal
+    // specificity rule here loses on source order. The `html` prefix is the
+    // whole mechanism; deleting it silently reverts the table to Element's
+    // greys, which is why it is asserted instead of left to a comment.
+    for (const selector of ['html .el-table', 'html .el-dialog', 'html .el-pagination']) {
+      expect(css, `${selector} override is missing`).toContain(`${selector} {`)
+    }
+    const tableBlock = css.slice(css.indexOf('html .el-table {'), css.indexOf('}', css.indexOf('html .el-table {')))
+    expect(tableBlock).toContain('--el-table-header-bg-color: var(--sspanel-')
   })
 })
 
@@ -246,9 +327,16 @@ describe('text contrast (WCAG AA)', () => {
     { name: 'body text on card', token: '--sspanel-text', background: '--sspanel-surface', min: 7 },
     { name: 'muted text', token: '--sspanel-text-muted', background: '--sspanel-surface', min: 4.5 },
     { name: 'muted text on page', token: '--sspanel-text-muted', background: '--sspanel-bg', min: 4.5 },
+    { name: 'muted text on the table header', token: '--sspanel-text-muted', background: '--sspanel-surface-sunken', min: 4.5 },
     { name: 'hint text', token: '--sspanel-text-hint', background: '--sspanel-surface', min: 4.5 },
     { name: 'aside text', token: '--sspanel-aside-text', background: '--sspanel-aside-bg', min: 4.5 },
     { name: 'aside muted text', token: '--sspanel-aside-muted', background: '--sspanel-aside-bg', min: 4.5 },
+    // The sidebar's two interaction states carry text too: a 12px version string
+    // or a section label must stay readable while hovered and while active.
+    { name: 'aside muted text on hover', token: '--sspanel-aside-muted', background: '--sspanel-aside-hover', min: 4.5 },
+    { name: 'aside text on the active item', token: '--sspanel-aside-text', background: '--sspanel-aside-active', min: 4.5 },
+    // The avatar monogram is 12px text sitting on the primary tint.
+    { name: 'primary text on the tinted surface', token: '--sspanel-primary-strong', background: '--sspanel-primary-tint', min: 4.5 },
   ]
 
   for (const testCase of cases) {
@@ -278,6 +366,27 @@ describe('text contrast (WCAG AA)', () => {
     const elementPrimary = resolveToken(tokens, '--el-color-primary')
     expect(elementPrimary).toBe(primary)
   })
+
+  it('keeps the semantic colours readable on their own tinted background', () => {
+    // A status tag is 12px text on the semantic colour's light-9 tint, and an
+    // alert puts the same pair together. Element's defaults only reach 2.04-2.80
+    // there, so the four families are ours and this is the check that keeps them
+    // readable if someone re-tints one by hand.
+    const families = ['success', 'warning', 'danger', 'info']
+    for (const family of families) {
+      const base = resolveToken(tokens, `--sspanel-${family}`)
+      const tint = resolveToken(tokens, `--sspanel-${family}-light-9`)
+      const ratio = contrastRatio(base, tint)
+      expect(ratio, `${family}: ${base} on ${tint} = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+        4.5,
+      )
+      // White on the base is the "solid" tag and the primary button pairing.
+      const onBase = contrastRatio('#ffffff', base)
+      expect(onBase, `white on ${family} ${base} = ${onBase.toFixed(2)}:1`).toBeGreaterThanOrEqual(
+        4.5,
+      )
+    }
+  })
 })
 
 describe('responsive rules', () => {
@@ -301,5 +410,23 @@ describe('responsive rules', () => {
     const media = css.slice(css.indexOf('@media (max-width: 782px)'))
     expect(media).toContain('--sspanel-chart-height')
     expect(media).toContain('overflow-x: auto')
+  })
+
+  it('switches layout at the breakpoint the script uses', () => {
+    // AppLayout collapses the sidebar at MOBILE_BREAKPOINT; the stylesheet
+    // restates the number in its media queries. If they drift, the JS layout and
+    // the CSS layout change at different widths and the page ends up half
+    // compact. Reading the constant out of the source keeps this test from
+    // importing a module that touches window.innerWidth at import time.
+    const source = readFileSync(join(srcDir, 'breakpoints.ts'), 'utf8')
+    const declared = Number(source.match(/MOBILE_BREAKPOINT\s*=\s*(\d+)/)?.[1])
+    expect(declared, 'MOBILE_BREAKPOINT is not a number').toBeGreaterThan(0)
+
+    const breakpoints = [...css.matchAll(/@media \(max-width: (\d+)px\)/g)].map((m) => Number(m[1]))
+    expect(breakpoints.length, 'styles.css declares no breakpoint').toBeGreaterThan(0)
+    expect(
+      [...new Set(breakpoints)],
+      'every media query must use the same breakpoint as MOBILE_BREAKPOINT',
+    ).toEqual([declared])
   })
 })
