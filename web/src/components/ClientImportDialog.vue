@@ -2,7 +2,7 @@
   <el-dialog
     :model-value="modelValue"
     title="导入用户"
-    width="720px"
+    width="min(720px, 92vw)"
     @update:model-value="emit('update:modelValue', $event)"
     @closed="reset"
   >

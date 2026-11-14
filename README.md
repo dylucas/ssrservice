@@ -16,6 +16,8 @@ Go 单二进制，内嵌 Vue 3 面板与 SQLite，无需 Node、MySQL 或 Xray �
 |---|---|
 | ![用户管理](docs/screenshots/clients.png) | ![系统设置](docs/screenshots/settings.png) |
 
+> 截图摄于早期版本，尚未包含审计日志页与用户导入导出按钮。
+
 ## 功能
 
 - **协议**：Shadowsocks 2022（`2022-blake3-aes-128-gcm`、`2022-blake3-aes-256-gcm` 多用户，`2022-blake3-chacha20-poly1305` 单用户）与传统 AEAD（`aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`）。

@@ -2,7 +2,7 @@
   <el-dialog
     :model-value="modelValue"
     :title="inbound ? '编辑入站' : '新建入站'"
-    width="560px"
+    width="min(560px, 92vw)"
     @update:model-value="emit('update:modelValue', $event)"
     @closed="reset"
   >

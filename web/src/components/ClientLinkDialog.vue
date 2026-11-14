@@ -2,7 +2,7 @@
   <el-dialog
     :model-value="modelValue"
     title="分享链接"
-    width="560px"
+    width="min(560px, 92vw)"
     @update:model-value="emit('update:modelValue', $event)"
     @opened="load"
   >

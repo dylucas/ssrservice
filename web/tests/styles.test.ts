@@ -199,3 +199,27 @@ describe('text contrast (WCAG AA)', () => {
     expect(elementPrimary).toBe(primary)
   })
 })
+
+describe('responsive rules', () => {
+  it('adapts dialogs to narrow viewports', () => {
+    const offenders: string[] = []
+    for (const file of walk(srcDir).filter((path) => path.endsWith('.vue'))) {
+      const source = readFileSync(file, 'utf8')
+      // Only dialog widths matter here; label-width="..." on el-form is a
+      // column width inside the dialog and stays fixed.
+      for (const match of source.matchAll(/(?<!label-)width="(\d+)px"/g)) {
+        offenders.push(`${relative(srcDir, file)}: width="${match[1]}px"`)
+      }
+    }
+    expect(
+      offenders,
+      `use width="min(<size>px, 92vw)" so dialogs fit a phone: ${offenders.join('; ')}`,
+    ).toEqual([])
+  })
+
+  it('shortens the chart and tightens the card on small screens', () => {
+    const media = css.slice(css.indexOf('@media (max-width: 782px)'))
+    expect(media).toContain('--sspanel-chart-height')
+    expect(media).toContain('overflow-x: auto')
+  })
+})

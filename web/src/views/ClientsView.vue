@@ -65,15 +65,24 @@
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="390" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="openLink(row)">链接</el-button>
             <el-button size="small" text @click="openUsage(row)">趋势</el-button>
             <el-button size="small" text @click="openEdit(row)">编辑</el-button>
-            <el-button size="small" text @click="toggle(row)">{{ row.enabled ? '禁用' : '启用' }}</el-button>
-            <el-button size="small" text @click="resetTraffic(row)">重置流量</el-button>
-            <el-button size="small" text @click="kick(row)">踢下线</el-button>
-            <el-button size="small" text type="danger" @click="remove(row)">删除</el-button>
+            <el-dropdown trigger="click" @command="(command: string) => onRowCommand(command, row)">
+              <el-button size="small" text>
+                更多<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="toggle">{{ row.enabled ? '禁用' : '启用' }}</el-dropdown-item>
+                  <el-dropdown-item command="reset">重置流量</el-dropdown-item>
+                  <el-dropdown-item command="kick">踢下线</el-dropdown-item>
+                  <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -219,6 +228,24 @@ function openEdit(row: ClientSummary) {
 function openLink(row: ClientSummary) {
   linkClientId.value = row.id
   linkVisible.value = true
+}
+
+/** onRowCommand dispatches the "more" menu to the existing row handlers. */
+function onRowCommand(command: string, row: ClientSummary) {
+  switch (command) {
+    case 'toggle':
+      toggle(row)
+      break
+    case 'reset':
+      resetTraffic(row)
+      break
+    case 'kick':
+      kick(row)
+      break
+    case 'delete':
+      remove(row)
+      break
+  }
 }
 
 function openUsage(row: ClientSummary) {

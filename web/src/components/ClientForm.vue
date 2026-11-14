@@ -2,7 +2,7 @@
   <el-dialog
     :model-value="modelValue"
     :title="client ? '编辑用户' : '新建用户'"
-    width="580px"
+    width="min(580px, 92vw)"
     @update:model-value="emit('update:modelValue', $event)"
     @closed="reset"
   >

@@ -260,10 +260,28 @@ body {
 }
 
 @media (max-width: 782px) {
+  :root {
+    --sspanel-chart-height: 220px;
+  }
   .page {
     padding: 14px;
   }
+  .page-header {
+    align-items: flex-start;
+  }
   .stat-value {
     font-size: 18px;
+  }
+  .stat-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+  .card {
+    padding: 12px;
+    /* The tables keep fixed action columns, so on a narrow screen the card has to
+     * scroll sideways rather than squeeze the flexible columns into vertical text. */
+    overflow-x: auto;
+  }
+  .login-card {
+    padding: 24px 20px;
   }
 }

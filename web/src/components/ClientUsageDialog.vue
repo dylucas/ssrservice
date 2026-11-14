@@ -2,7 +2,7 @@
   <el-dialog
     :model-value="modelValue"
     :title="title"
-    width="720px"
+    width="min(720px, 92vw)"
     @update:model-value="emit('update:modelValue', $event)"
     @opened="load"
     @closed="reset"

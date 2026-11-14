@@ -3,7 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light dark" />
+    <!-- The panel ships a light theme only. Declaring "light dark" made native
+         scroll bars and form controls follow the OS dark preference while the
+         page stayed white, which looks broken. -->
+    <meta name="color-scheme" content="light" />
     <title>sspanel · Shadowsocks 控制台</title>
   </head>
   <body>
