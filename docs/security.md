@@ -81,6 +81,7 @@ timedatectl status          # 确认 System clock synchronized: yes
 ## 数据与备份
 
 - 数据库包含：管理员密码哈希、会话签名密钥、入站服务器 PSK、用户 PSK、订阅 token、流量记录。
+- `traffic_daily` 保存每用户每日明细，`traffic_daily_totals` 保存按天汇总（仅两个字节计数，不含任何标识或凭据），两者在同一事务内更新；`RebuildDailyTotals` 可从明细重建汇总。
 - 数据库文件权限应为 `0600`，目录 `0700`（程序首次创建时会设置）。
 - 备份文件等同敏感数据，请加密存储并限制访问。
 - 订阅 token 泄露后，在用户列表「重置订阅」即可作废旧链接。

@@ -89,8 +89,18 @@ func (s *Store) UpdateInbound(in *model.Inbound) error {
 }
 
 // DeleteInbound removes an inbound together with its clients and traffic rows.
+// The per-day rollup is refreshed for every day the inbound's clients
+// contributed to, because the cascade removes detail rows without touching it.
 func (s *Store) DeleteInbound(id int64) error {
 	return s.write(func(tx *sql.Tx) error {
+		clientIDs, err := clientIDsOfInbound(tx, id)
+		if err != nil {
+			return err
+		}
+		days, err := dayKeysForClients(tx, clientIDs)
+		if err != nil {
+			return err
+		}
 		res, err := tx.Exec(`DELETE FROM inbounds WHERE id = ?`, id)
 		if err != nil {
 			return scanErr(err)
@@ -98,8 +108,26 @@ func (s *Store) DeleteInbound(id int64) error {
 		if n, _ := res.RowsAffected(); n == 0 {
 			return ErrNotFound
 		}
-		return nil
+		return refreshDailyTotals(tx, days)
 	})
+}
+
+// clientIDsOfInbound returns the client ids of one inbound.
+func clientIDsOfInbound(tx *sql.Tx, inboundID int64) ([]int64, error) {
+	rows, err := tx.Query(`SELECT id FROM clients WHERE inbound_id = ?`, inboundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // PortInUse reports whether another inbound already uses listen:port.

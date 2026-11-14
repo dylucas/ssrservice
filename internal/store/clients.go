@@ -108,9 +108,15 @@ func (s *Store) UpdateClient(c *model.Client) error {
 	})
 }
 
-// DeleteClient removes a client and its traffic history.
+// DeleteClient removes a client and its traffic history. The per-day rollup is
+// refreshed for the days the client contributed to, since the cascade removes
+// detail rows without touching it.
 func (s *Store) DeleteClient(id int64) error {
 	return s.write(func(tx *sql.Tx) error {
+		days, err := dayKeysForClients(tx, []int64{id})
+		if err != nil {
+			return err
+		}
 		res, err := tx.Exec(`DELETE FROM clients WHERE id = ?`, id)
 		if err != nil {
 			return scanErr(err)
@@ -118,7 +124,7 @@ func (s *Store) DeleteClient(id int64) error {
 		if n, _ := res.RowsAffected(); n == 0 {
 			return ErrNotFound
 		}
-		return nil
+		return refreshDailyTotals(tx, days)
 	})
 }
 

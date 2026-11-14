@@ -35,6 +35,10 @@ database:
   path: $WORK/sspanel.db
 security:
   allow_private_targets: true
+traffic:
+  # Shortest interval the config accepts, so the dashboard rollup has data
+  # within the lifetime of this test.
+  flush_interval: 1s
 log:
   level: warn
   format: text
@@ -150,7 +154,33 @@ for inbound in inbounds:
     assert inbound["down_bytes"] <= want["down"], inbound
 PY
 
-log "checking dashboard"
+log "checking dashboard traffic rollup"
+# The 30 day series is read from the per-day rollup, which is written by the
+# traffic flush, so give the runtime a few flush ticks to persist the traffic
+# the probe just generated.
+DASHBOARD_JSON=""
+for _ in $(seq 1 60); do
+  DASHBOARD_JSON=$(api GET /api/v1/dashboard)
+  if grep -q '"day"' <<<"$DASHBOARD_JSON"; then break; fi
+  sleep 0.25
+done
+DASHBOARD_JSON="$DASHBOARD_JSON" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["DASHBOARD_JSON"])
+days = payload["traffic_30d"]
+assert days, "dashboard returned no traffic days after waiting for a flush"
+# The series comes from the per-day rollup, which the runtime maintains in the
+# same transaction as the detail rows. It must cover the window in order and
+# carry non-negative numbers.
+previous = ""
+for day in days:
+    assert day["day"] > previous, f"days are not strictly ascending: {day['day']}"
+    previous = day["day"]
+    assert day["up_bytes"] >= 0 and day["down_bytes"] >= 0, day
+total = sum(d["up_bytes"] + d["down_bytes"] for d in days)
+print(f"dashboard rollup: {len(days)} days, {total} bytes total")
+PY
+
 api GET /api/v1/dashboard >/dev/null
 
 log "checking frontend"

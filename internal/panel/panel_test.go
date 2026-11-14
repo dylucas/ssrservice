@@ -1184,3 +1184,72 @@ func mustClientsOf(t *testing.T, tp *testPanel, inboundID int64) []model.Client 
 	}
 	return clients
 }
+
+// TestDashboardTrafficMatchesDetail verifies the dashboard's 30 day series comes
+// from the maintained rollup and still equals a recomputation from the detail
+// rows, with days outside the window excluded.
+func TestDashboardTrafficMatchesDetail(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	inboundID := tp.seedClients(2)
+	clients := mustClientsOf(t, tp, inboundID)
+
+	// Two days inside the window and one clearly outside it.
+	inside := time.Now().In(tp.svc.Config().Location()).AddDate(0, 0, -1).Format("2006-01-02")
+	today := time.Now().In(tp.svc.Config().Location()).Format("2006-01-02")
+	outside := time.Now().In(tp.svc.Config().Location()).AddDate(0, 0, -90).Format("2006-01-02")
+	snaps := []model.UsageSnapshot{
+		{ClientID: clients[0].ID, UpBytes: 100, DownBytes: 200, Day: inside, DayUpBytes: 100, DayDownBytes: 200},
+		{ClientID: clients[1].ID, UpBytes: 10, DownBytes: 20, Day: inside, DayUpBytes: 10, DayDownBytes: 20},
+		{ClientID: clients[0].ID, UpBytes: 150, DownBytes: 260, Day: today, DayUpBytes: 50, DayDownBytes: 60},
+		{ClientID: clients[1].ID, UpBytes: 10, DownBytes: 20, Day: outside, DayUpBytes: 7, DayDownBytes: 7},
+	}
+	if err := tp.store.SaveUsage(snaps); err != nil {
+		t.Fatalf("save usage: %v", err)
+	}
+
+	rec := tp.do(http.MethodGet, "/api/v1/dashboard", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Traffic30d []model.DailyUsage `json:"traffic_30d"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Expected values are recomputed from the detail rows through the store, so
+	// this fails if the rollup drifts from what the detail table says.
+	since := time.Now().AddDate(0, 0, -30).In(tp.svc.Config().Location()).Format("2006-01-02")
+	want, err := tp.store.DailyTotals(since)
+	if err != nil {
+		t.Fatalf("daily totals: %v", err)
+	}
+	if len(payload.Traffic30d) != len(want) {
+		t.Fatalf("dashboard has %d days, want %d: %+v vs %+v",
+			len(payload.Traffic30d), len(want), payload.Traffic30d, want)
+	}
+	for i := range want {
+		if payload.Traffic30d[i] != want[i] {
+			t.Fatalf("day %d: dashboard=%+v want=%+v", i, payload.Traffic30d[i], want[i])
+		}
+	}
+	// The out-of-window day must not appear.
+	for _, day := range payload.Traffic30d {
+		if day.Day == outside {
+			t.Fatalf("out-of-window day %s leaked into the series", outside)
+		}
+	}
+	// Sanity: both in-window days are present with their expected totals.
+	found := map[string]model.DailyUsage{}
+	for _, day := range payload.Traffic30d {
+		found[day.Day] = day
+	}
+	if got := found[inside]; got.UpBytes != 110 || got.DownBytes != 220 {
+		t.Fatalf("inside day totals = %+v", got)
+	}
+	if got := found[today]; got.UpBytes != 50 || got.DownBytes != 60 {
+		t.Fatalf("today totals = %+v", got)
+	}
+}
