@@ -215,3 +215,93 @@ func TestClientsForReset(t *testing.T) {
 		t.Fatalf("unexpected candidates %+v", candidates)
 	}
 }
+
+// TestQueryIndexes verifies the 002 migration created the indexes the panel
+// and the reset worker rely on.
+func TestQueryIndexes(t *testing.T) {
+	st := newTestStore(t)
+	want := map[string]bool{
+		"idx_traffic_daily_day": false,
+		"idx_clients_reset":     false,
+	}
+	rows, err := st.db.Query(`SELECT name FROM sqlite_master WHERE type = 'index'`)
+	if err != nil {
+		t.Fatalf("list indexes: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan index: %v", err)
+		}
+		if _, ok := want[name]; ok {
+			want[name] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	for name, found := range want {
+		if !found {
+			t.Fatalf("index %s missing", name)
+		}
+	}
+}
+
+// TestSaveUsageBatch covers the prepared-statement batch writer across several
+// clients and days.
+func TestSaveUsageBatch(t *testing.T) {
+	st := newTestStore(t)
+	in := model.Inbound{Listen: "0.0.0.0", Port: 8388, Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+	a := model.Client{InboundID: in.ID, Name: "a", PSK: "x", Enabled: true, SubToken: "t1"}
+	b := model.Client{InboundID: in.ID, Name: "b", PSK: "y", Enabled: true, SubToken: "t2"}
+	if err := st.CreateClient(&a); err != nil {
+		t.Fatalf("client a: %v", err)
+	}
+	if err := st.CreateClient(&b); err != nil {
+		t.Fatalf("client b: %v", err)
+	}
+
+	batch := []model.UsageSnapshot{
+		{ClientID: a.ID, UpBytes: 10, DownBytes: 20, Day: "2026-05-01", DayUpBytes: 10, DayDownBytes: 20},
+		{ClientID: b.ID, UpBytes: 1, DownBytes: 2, Day: "2026-05-01", DayUpBytes: 1, DayDownBytes: 2},
+		{ClientID: a.ID, UpBytes: 15, DownBytes: 30, Day: "2026-05-02", DayUpBytes: 5, DayDownBytes: 10},
+	}
+	if err := st.SaveUsage(batch); err != nil {
+		t.Fatalf("save batch: %v", err)
+	}
+
+	gotA, err := st.ClientByID(a.ID)
+	if err != nil {
+		t.Fatalf("client a: %v", err)
+	}
+	gotB, err := st.ClientByID(b.ID)
+	if err != nil {
+		t.Fatalf("client b: %v", err)
+	}
+	if gotA.UpBytes != 15 || gotA.DownBytes != 30 {
+		t.Fatalf("client a totals not applied: %+v", gotA)
+	}
+	if gotB.UpBytes != 1 || gotB.DownBytes != 2 {
+		t.Fatalf("client b totals not applied: %+v", gotB)
+	}
+
+	usageA, err := st.DailyUsage(a.ID, "2026-05-01")
+	if err != nil {
+		t.Fatalf("daily usage: %v", err)
+	}
+	if len(usageA) != 2 || usageA[0].UpBytes != 10 || usageA[1].UpBytes != 5 {
+		t.Fatalf("unexpected daily rows: %+v", usageA)
+	}
+
+	totals, err := st.DailyTotals("2026-05-01")
+	if err != nil {
+		t.Fatalf("daily totals: %v", err)
+	}
+	if len(totals) != 2 || totals[0].UpBytes != 11 {
+		t.Fatalf("unexpected daily totals: %+v", totals)
+	}
+}

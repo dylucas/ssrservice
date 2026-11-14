@@ -7,26 +7,35 @@ import (
 )
 
 // SaveUsage persists absolute traffic totals and daily increments for a batch
-// of clients in one transaction.
+// of clients in one transaction. The two statements are prepared once per batch
+// so a flush does not re-parse them for every client.
 func (s *Store) SaveUsage(snaps []model.UsageSnapshot) error {
 	if len(snaps) == 0 {
 		return nil
 	}
 	return s.write(func(tx *sql.Tx) error {
+		updateTotals, err := tx.Prepare(`UPDATE clients SET up_bytes = ?, down_bytes = ? WHERE id = ?`)
+		if err != nil {
+			return err
+		}
+		defer updateTotals.Close()
+		upsertDaily, err := tx.Prepare(`INSERT INTO traffic_daily(client_id, day, up_bytes, down_bytes)
+			VALUES(?, ?, ?, ?)
+			ON CONFLICT(client_id, day) DO UPDATE SET
+				up_bytes = up_bytes + excluded.up_bytes,
+				down_bytes = down_bytes + excluded.down_bytes`)
+		if err != nil {
+			return err
+		}
+		defer upsertDaily.Close()
 		for _, snap := range snaps {
-			if _, err := tx.Exec(`UPDATE clients SET up_bytes = ?, down_bytes = ? WHERE id = ?`,
-				snap.UpBytes, snap.DownBytes, snap.ClientID); err != nil {
+			if _, err := updateTotals.Exec(snap.UpBytes, snap.DownBytes, snap.ClientID); err != nil {
 				return err
 			}
 			if snap.DayUpBytes == 0 && snap.DayDownBytes == 0 {
 				continue
 			}
-			if _, err := tx.Exec(`INSERT INTO traffic_daily(client_id, day, up_bytes, down_bytes)
-				VALUES(?, ?, ?, ?)
-				ON CONFLICT(client_id, day) DO UPDATE SET
-					up_bytes = up_bytes + excluded.up_bytes,
-					down_bytes = down_bytes + excluded.down_bytes`,
-				snap.ClientID, snap.Day, snap.DayUpBytes, snap.DayDownBytes); err != nil {
+			if _, err := upsertDaily.Exec(snap.ClientID, snap.Day, snap.DayUpBytes, snap.DayDownBytes); err != nil {
 				return err
 			}
 		}

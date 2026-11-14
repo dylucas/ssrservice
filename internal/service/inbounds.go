@@ -32,6 +32,52 @@ type InboundView struct {
 	OnlineIPs          int   `json:"online_ips"`
 }
 
+// inboundAggregate accumulates the per-inbound counters in one pass over the
+// client rows, so listing N inbounds is O(inbounds + clients) instead of
+// scanning the whole client list once per inbound.
+type inboundAggregate struct {
+	clientCount  int
+	enabledCount int
+	upBytes      int64
+	downBytes    int64
+	ips          map[string]struct{}
+}
+
+// aggregateClients groups clients by inbound id and sums their counters.
+func aggregateClients(clients []model.Client, online map[int64][]string) map[int64]*inboundAggregate {
+	aggregates := make(map[int64]*inboundAggregate)
+	for _, c := range clients {
+		agg := aggregates[c.InboundID]
+		if agg == nil {
+			agg = &inboundAggregate{ips: make(map[string]struct{})}
+			aggregates[c.InboundID] = agg
+		}
+		agg.clientCount++
+		if c.Enabled {
+			agg.enabledCount++
+		}
+		agg.upBytes += c.UpBytes
+		agg.downBytes += c.DownBytes
+		for _, ip := range online[c.ID] {
+			agg.ips[ip] = struct{}{}
+		}
+	}
+	return aggregates
+}
+
+// apply copies the aggregate counters into an inbound view. A nil aggregate
+// (an inbound without clients) leaves the zero values in place.
+func (a *inboundAggregate) apply(view *InboundView) {
+	if a == nil {
+		return
+	}
+	view.ClientCount = a.clientCount
+	view.EnabledClientCount = a.enabledCount
+	view.UpBytes = a.upBytes
+	view.DownBytes = a.downBytes
+	view.OnlineIPs = len(a.ips)
+}
+
 // ListInbounds returns all inbounds with aggregate counters.
 func (s *Service) ListInbounds() ([]InboundView, error) {
 	inbounds, err := s.store.ListInbounds()
@@ -42,26 +88,11 @@ func (s *Service) ListInbounds() ([]InboundView, error) {
 	if err != nil {
 		return nil, err
 	}
-	online := s.mgr.OnlineIPs()
+	aggregates := aggregateClients(clients, s.mgr.OnlineIPs())
 	views := make([]InboundView, 0, len(inbounds))
 	for _, in := range inbounds {
 		view := InboundView{Inbound: in}
-		ips := make(map[string]struct{})
-		for _, c := range clients {
-			if c.InboundID != in.ID {
-				continue
-			}
-			view.ClientCount++
-			if c.Enabled {
-				view.EnabledClientCount++
-			}
-			view.UpBytes += c.UpBytes
-			view.DownBytes += c.DownBytes
-			for _, ip := range online[c.ID] {
-				ips[ip] = struct{}{}
-			}
-		}
-		view.OnlineIPs = len(ips)
+		aggregates[in.ID].apply(&view)
 		views = append(views, view)
 	}
 	return views, nil
@@ -77,21 +108,8 @@ func (s *Service) GetInbound(id int64) (*InboundView, error) {
 	if err != nil {
 		return nil, err
 	}
-	online := s.mgr.OnlineIPs()
 	view := InboundView{Inbound: *in}
-	ips := make(map[string]struct{})
-	for _, c := range clients {
-		view.ClientCount++
-		if c.Enabled {
-			view.EnabledClientCount++
-		}
-		view.UpBytes += c.UpBytes
-		view.DownBytes += c.DownBytes
-		for _, ip := range online[c.ID] {
-			ips[ip] = struct{}{}
-		}
-	}
-	view.OnlineIPs = len(ips)
+	aggregateClients(clients, s.mgr.OnlineIPs())[id].apply(&view)
 	return &view, nil
 }
 

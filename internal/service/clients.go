@@ -44,20 +44,28 @@ func (s *Service) ListClients(inboundID int64) ([]ClientView, error) {
 	if err != nil {
 		return nil, err
 	}
-	inboundCache := make(map[int64]*model.Inbound)
+	// The endpoint and subscription state only depend on the inbound and on the
+	// settings, so compute them once per inbound instead of once per client.
+	contexts := make(map[int64]clientViewContext)
 	online := s.mgr.OnlineIPs()
+	subEnabled := s.SubscriptionEnabled()
 	now := time.Now().Unix()
 	views := make([]ClientView, 0, len(clients))
 	for _, c := range clients {
-		in := inboundCache[c.InboundID]
-		if in == nil {
-			in, err = s.store.InboundByID(c.InboundID)
+		ctx, ok := contexts[c.InboundID]
+		if !ok {
+			in, err := s.store.InboundByID(c.InboundID)
 			if err != nil {
+				contexts[c.InboundID] = clientViewContext{}
 				continue
 			}
-			inboundCache[c.InboundID] = in
+			ctx = s.clientViewContextFor(in, subEnabled, online, now)
+			contexts[c.InboundID] = ctx
 		}
-		views = append(views, s.clientView(c, in, online, now))
+		if ctx.inbound == nil {
+			continue
+		}
+		views = append(views, s.clientView(c, ctx))
 	}
 	return views, nil
 }
@@ -72,12 +80,37 @@ func (s *Service) GetClient(id int64) (*ClientView, error) {
 	if err != nil {
 		return nil, err
 	}
-	view := s.clientView(*c, in, s.mgr.OnlineIPs(), time.Now().Unix())
+	ctx := s.clientViewContextFor(in, s.SubscriptionEnabled(), s.mgr.OnlineIPs(), time.Now().Unix())
+	view := s.clientView(*c, ctx)
 	return &view, nil
 }
 
-func (s *Service) clientView(c model.Client, in *model.Inbound, online map[int64][]string, now int64) ClientView {
-	status := c.StatusAt(now)
+// clientViewContext is the state shared by every client view of one inbound in
+// a single listing.
+type clientViewContext struct {
+	inbound    *model.Inbound
+	host       string
+	port       int
+	subEnabled bool
+	online     map[int64][]string
+	now        int64
+}
+
+// clientViewContextFor resolves the share-link endpoint of an inbound once.
+func (s *Service) clientViewContextFor(in *model.Inbound, subEnabled bool, online map[int64][]string, now int64) clientViewContext {
+	host, port := s.resolveHostPort(in, "")
+	return clientViewContext{
+		inbound:    in,
+		host:       host,
+		port:       port,
+		subEnabled: subEnabled,
+		online:     online,
+		now:        now,
+	}
+}
+
+func (s *Service) clientView(c model.Client, ctx clientViewContext) ClientView {
+	status := c.StatusAt(ctx.now)
 	if status != model.StatusDisabled {
 		// Live counters may be ahead of the persisted ones.
 		up, down := s.mgr.ClientTraffic(c.ID)
@@ -87,42 +120,47 @@ func (s *Service) clientView(c model.Client, in *model.Inbound, online map[int64
 		if down > c.DownBytes {
 			c.DownBytes = down
 		}
-		status = c.StatusAt(now)
+		status = c.StatusAt(ctx.now)
 	}
 	view := ClientView{
 		Client:         c,
 		Status:         status,
 		UsedBytes:      c.UsedBytes(),
 		RemainingBytes: c.RemainingBytes(),
-		OnlineIPs:      online[c.ID],
+		OnlineIPs:      ctx.online[c.ID],
 	}
 	if view.OnlineIPs == nil {
 		view.OnlineIPs = []string{}
 	}
-	if in != nil {
+	if in := ctx.inbound; in != nil {
 		view.InboundRemark = in.Remark
 		view.Method = in.Method
-		host, port := s.resolveHostPort(in, "")
 		proxy := subscription.Proxy{
 			Name:      c.Name,
 			Method:    in.Method,
 			ServerPSK: in.ServerPSK,
 			ClientPSK: c.PSK,
-			Host:      host,
-			Port:      port,
+			Host:      ctx.host,
+			Port:      ctx.port,
 			UDP:       in.UDPEnabled,
 		}
 		view.Link = subscription.Link(proxy)
-		view.SubscriptionURL = s.subscriptionURL(c.SubToken)
+		view.SubscriptionURL = subscriptionPath(c.SubToken, ctx.subEnabled)
 	}
 	return view
 }
 
-func (s *Service) subscriptionURL(token string) string {
-	if token == "" || !s.withinSubscription() {
+// subscriptionPath renders the public subscription path, or "" when
+// subscriptions are disabled or the client has no token.
+func subscriptionPath(token string, enabled bool) string {
+	if token == "" || !enabled {
 		return ""
 	}
 	return "/sub/" + token
+}
+
+func (s *Service) subscriptionURL(token string) string {
+	return subscriptionPath(token, s.withinSubscription())
 }
 
 // CreateClient adds a user to an inbound.
