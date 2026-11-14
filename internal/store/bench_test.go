@@ -154,3 +154,36 @@ func BenchmarkDailyTotals(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkSaveUsage measures a full flush: one snapshot per client.
+func BenchmarkSaveUsage(b *testing.B) {
+	st, err := Open(b.TempDir() + "/flush-bench.db")
+	if err != nil {
+		b.Fatalf("open: %v", err)
+	}
+	b.Cleanup(func() { st.Close() })
+	in := model.Inbound{Listen: "127.0.0.1", Port: 31001, Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		b.Fatalf("inbound: %v", err)
+	}
+	const clients = 2000
+	snaps := make([]model.UsageSnapshot, 0, clients)
+	for i := 0; i < clients; i++ {
+		c := model.Client{InboundID: in.ID, Name: "flush-" + itoaBench(i), PSK: "psk",
+			Enabled: true, SubToken: "flush-tok-" + itoaBench(i)}
+		if err := st.CreateClient(&c); err != nil {
+			b.Fatalf("client: %v", err)
+		}
+		snaps = append(snaps, model.UsageSnapshot{
+			ClientID: c.ID, UpBytes: int64(i + 1), DownBytes: int64(i * 2),
+			Day: time.Now().Format("2006-01-02"), DayUpBytes: 1, DayDownBytes: 2,
+		})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := st.SaveUsage(snaps); err != nil {
+			b.Fatalf("save usage: %v", err)
+		}
+	}
+}

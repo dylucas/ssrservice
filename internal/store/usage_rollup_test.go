@@ -134,6 +134,67 @@ func TestRollupTracksSaveUsage(t *testing.T) {
 	}
 }
 
+// TestSaveUsageBatchedChunkBoundaries exercises writes that straddle the internal
+// chunk size so a chunking bug cannot hide behind small inputs.
+func TestSaveUsageBatchedChunkBoundaries(t *testing.T) {
+	st, in := newUsageTestStore(t)
+	const clients = 3
+	ids := make([]int64, 0, clients)
+	for i := 0; i < clients; i++ {
+		c := mkClient(t, st, in.ID, "chunk-"+itoaStore(i))
+		ids = append(ids, c.ID)
+	}
+
+	// usageWriteChunk is 200; build a batch of exactly 3*200+1 rows spread over
+	// three days so every chunk boundary is crossed.
+	const total = usageWriteChunk*3 + 1
+	batch := make([]model.UsageSnapshot, 0, total)
+	wantUp := make(map[string]int64)
+	wantClientUp := make(map[int64]int64)
+	wantClientDown := make(map[int64]int64)
+	for i := 0; i < total; i++ {
+		id := ids[i%len(ids)]
+		day := []string{"2026-06-01", "2026-06-02", "2026-06-03"}[i%3]
+		up := int64(i + 1)
+		down := int64(i * 2)
+		batch = append(batch, model.UsageSnapshot{
+			ClientID: id, UpBytes: up, DownBytes: down,
+			Day: day, DayUpBytes: up, DayDownBytes: down,
+		})
+		wantUp[day] += up
+		wantClientUp[id] += up
+		wantClientDown[id] += down
+	}
+	if err := st.SaveUsage(batch); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	assertRollupMatchesDetail(t, st)
+
+	rollup := rollupTotals(t, st)
+	for day, up := range wantUp {
+		if rollup[day][0] != up {
+			t.Fatalf("rollup day %s up = %d, want %d", day, rollup[day][0], up)
+		}
+	}
+	// The last snapshot per client wins for the absolute totals (that is the
+	// runtime's contract: snapshots carry running totals).
+	for _, id := range ids {
+		c, err := st.ClientByID(id)
+		if err != nil {
+			t.Fatalf("client: %v", err)
+		}
+		var lastUp, lastDown int64
+		for _, snap := range batch {
+			if snap.ClientID == id {
+				lastUp, lastDown = snap.UpBytes, snap.DownBytes
+			}
+		}
+		if c.UpBytes != lastUp || c.DownBytes != lastDown {
+			t.Fatalf("client %d totals = %d/%d, want %d/%d", id, c.UpBytes, c.DownBytes, lastUp, lastDown)
+		}
+	}
+}
+
 // TestRollupAfterDeleteClient verifies a client delete drops its contribution,
 // including days where it was the only contributor (the rollup row must vanish).
 func TestRollupAfterDeleteClient(t *testing.T) {

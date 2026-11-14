@@ -26,39 +26,72 @@ func (s *Store) SaveUsage(snaps []model.UsageSnapshot) error {
 		return nil
 	}
 	return s.write(func(tx *sql.Tx) error {
-		if err := saveUsageRows(tx, snaps); err != nil {
+		if err := upsertClientTotals(tx, snaps); err != nil {
+			return err
+		}
+		if err := upsertDailyUsage(tx, snaps); err != nil {
 			return err
 		}
 		return addDailyTotals(tx, snaps)
 	})
 }
 
-// saveUsageRows writes the client totals and the daily increments one row at a
-// time. The statements are prepared once per batch.
-func saveUsageRows(tx *sql.Tx, snaps []model.UsageSnapshot) error {
-	updateTotals, err := tx.Prepare(`UPDATE clients SET up_bytes = ?, down_bytes = ? WHERE id = ?`)
-	if err != nil {
-		return err
-	}
-	defer updateTotals.Close()
-	upsertDaily, err := tx.Prepare(`INSERT INTO traffic_daily(client_id, day, up_bytes, down_bytes)
-		VALUES(?, ?, ?, ?)
-		ON CONFLICT(client_id, day) DO UPDATE SET
-			up_bytes = up_bytes + excluded.up_bytes,
-			down_bytes = down_bytes + excluded.down_bytes`)
-	if err != nil {
-		return err
-	}
-	defer upsertDaily.Close()
-	for _, snap := range snaps {
-		if _, err := updateTotals.Exec(snap.UpBytes, snap.DownBytes, snap.ClientID); err != nil {
-			return err
+// upsertClientTotals writes the absolute counters with a chunked UPDATE ... FROM.
+func upsertClientTotals(tx *sql.Tx, snaps []model.UsageSnapshot) error {
+	for start := 0; start < len(snaps); start += usageWriteChunk {
+		end := start + usageWriteChunk
+		if end > len(snaps) {
+			end = len(snaps)
 		}
+		chunk := snaps[start:end]
+		var b strings.Builder
+		b.WriteString(`UPDATE clients SET up_bytes = v.up, down_bytes = v.down FROM (`)
+		args := make([]any, 0, len(chunk)*3)
+		for i, snap := range chunk {
+			if i > 0 {
+				b.WriteString(` UNION ALL `)
+			}
+			b.WriteString(`SELECT ? AS id, ? AS up, ? AS down`)
+			args = append(args, snap.ClientID, snap.UpBytes, snap.DownBytes)
+		}
+		b.WriteString(`) AS v WHERE clients.id = v.id`)
+		if _, err := tx.Exec(b.String(), args...); err != nil {
+			return fmt.Errorf("save client totals: %w", err)
+		}
+	}
+	return nil
+}
+
+// upsertDailyUsage accumulates the per-day increments, skipping zero deltas.
+func upsertDailyUsage(tx *sql.Tx, snaps []model.UsageSnapshot) error {
+	pending := make([]model.UsageSnapshot, 0, len(snaps))
+	for _, snap := range snaps {
 		if snap.DayUpBytes == 0 && snap.DayDownBytes == 0 {
 			continue
 		}
-		if _, err := upsertDaily.Exec(snap.ClientID, snap.Day, snap.DayUpBytes, snap.DayDownBytes); err != nil {
-			return err
+		pending = append(pending, snap)
+	}
+	for start := 0; start < len(pending); start += usageWriteChunk {
+		end := start + usageWriteChunk
+		if end > len(pending) {
+			end = len(pending)
+		}
+		chunk := pending[start:end]
+		var b strings.Builder
+		b.WriteString(`INSERT INTO traffic_daily(client_id, day, up_bytes, down_bytes) VALUES `)
+		args := make([]any, 0, len(chunk)*4)
+		for i, snap := range chunk {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`(?,?,?,?)`)
+			args = append(args, snap.ClientID, snap.Day, snap.DayUpBytes, snap.DayDownBytes)
+		}
+		b.WriteString(` ON CONFLICT(client_id, day) DO UPDATE SET
+			up_bytes = up_bytes + excluded.up_bytes,
+			down_bytes = down_bytes + excluded.down_bytes`)
+		if _, err := tx.Exec(b.String(), args...); err != nil {
+			return fmt.Errorf("save daily usage: %w", err)
 		}
 	}
 	return nil
