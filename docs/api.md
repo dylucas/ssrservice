@@ -179,6 +179,58 @@
 
 > 兼容性说明：早期版本的列表条目包含 `psk`/`sub_token`/`link`，依赖这些字段的脚本请改调详情端点。
 
+### 用户流量
+
+`GET /clients/:id/usage?days=30` 返回该用户的每日流量，按日期升序：
+
+```json
+{ "items": [{ "day": "2026-01-01", "up_bytes": 1024, "down_bytes": 2048 }] }
+```
+
+数据来自已落库的 `traffic_daily`，随落库周期（默认 10 秒）更新，因此最多滞后一个周期。
+
+### 导入 / 导出
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/export/clients?inbound_id=` | 导出用户 CSV（`inbound_id` 省略时导出全部） |
+| POST | `/inbounds/:id/clients/import` | 从 CSV 或 `ss://` 链接批量导入 |
+
+> 导出接口位于 `/export/clients` 而不是 `/clients/export`：与 `/clients/:id` 的路径通配同层会产生路由冲突。
+
+导出响应为 `text/csv; charset=utf-8`，带 `Content-Disposition: attachment` 与 `Cache-Control: no-store`。列为：
+
+```
+inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset_policy,reset_day,note
+```
+
+**文件包含用户 PSK**（否则无法恢复用户），请按凭证妥善保管。
+
+导入请求体：
+
+```json
+{
+  "format": "auto",
+  "content": "name,psk\nalice,\nbob,\n",
+  "defaults": { "enabled": true, "quota_bytes": 0, "reset_policy": "none" }
+}
+```
+
+- `format`：`auto`（默认）、`csv`、`ss`。`auto` 按首行判断：以 `ss://` 开头为链接，否则按 CSV。
+- CSV 首行含 `name` 列时按列名映射，否则按固定顺序
+  `name,psk,enabled,quota_bytes,expires_at,ip_limit,reset_policy,reset_day,note`。
+  导出的文件可直接导回（表头含 `inbound_id`/`inbound_remark`，导入时忽略）。
+- `ss://` 每行一条，**方法必须与目标入站一致**，否则该行失败。
+- `psk` 留空自动生成；单次最多 1000 行。
+- 响应为**部分成功**语义：
+
+```json
+{ "created": 2, "skipped": 0, "failed": [{ "line": 3, "name": "bob", "error": "name already exists in this inbound" }] }
+```
+
+- 只有参数错误（内容为空、超行数上限、入站不存在）才返回 4xx；行级失败属于正常结果。
+- 整个批次只重建一次入站监听，不会因用户数增加而反复重建。
+
 ## 审计日志
 
 | 方法 | 路径 | 说明 |

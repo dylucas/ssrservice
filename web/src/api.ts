@@ -1,6 +1,11 @@
 import { readRuntimeConfig } from './runtime-config'
-import type { AuditResponse, DailyUsage } from './types'
-import type { Client, ClientSummary } from './types'
+import type {
+  AuditResponse,
+  Client,
+  ClientSummary,
+  DailyUsage,
+  ImportResult,
+} from './types'
 
 const config = readRuntimeConfig()
 export const basePath = config.basePath && config.basePath !== '/' ? config.basePath.replace(/\/$/, '') : ''
@@ -103,6 +108,10 @@ export const api = {
   settings: () => request<any>('GET', '/settings'),
   updateSettings: (input: unknown) => request<any>('PUT', '/settings', input),
   backupURL: () => apiURL('/backup'),
+  exportClientsURL: (inboundId?: number) =>
+    apiURL(inboundId ? `/export/clients?inbound_id=${inboundId}` : '/export/clients'),
+  importClients: (inboundId: number, payload: unknown) =>
+    request<ImportResult>('POST', `/inbounds/${inboundId}/clients/import`, payload),
   audit: (params: Record<string, string | number>) => {
     const query = new URLSearchParams()
     for (const [key, value] of Object.entries(params)) query.set(key, String(value))

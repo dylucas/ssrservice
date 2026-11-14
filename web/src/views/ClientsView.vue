@@ -22,6 +22,8 @@
           <el-option v-for="item in inbounds" :key="item.id" :label="`${item.remark || '入站'} (:${item.port})`" :value="item.id" />
         </el-select>
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button :icon="Download" @click="exportClients">导出</el-button>
+        <el-button :icon="Upload" :disabled="!inbounds.length" @click="openImport">导入</el-button>
         <el-button type="primary" :icon="Plus" :disabled="!inbounds.length" @click="openCreate">新建用户</el-button>
       </div>
     </div>
@@ -95,6 +97,12 @@
       @saved="load"
     />
     <ClientLinkDialog v-model="linkVisible" :client-id="linkClientId" />
+    <ClientImportDialog
+      v-model="importVisible"
+      :inbounds="inbounds"
+      :default-inbound-id="importInboundId"
+      @imported="load"
+    />
     <ClientUsageDialog
       v-model="usageVisible"
       :client-id="usageClientId"
@@ -107,7 +115,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Download, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { ClientSummary, Inbound } from '@/types'
 import { formatBytes, formatDate, percent, quotaLabel, statusMeta } from '@/utils/format'
@@ -115,6 +123,7 @@ import { filterClients, lastPage, paginate, toSummary } from '@/utils/clients'
 import ClientForm from '@/components/ClientForm.vue'
 import ClientLinkDialog from '@/components/ClientLinkDialog.vue'
 import ClientUsageDialog from '@/components/ClientUsageDialog.vue'
+import ClientImportDialog from '@/components/ClientImportDialog.vue'
 
 const route = useRoute()
 const loading = ref(false)
@@ -151,6 +160,9 @@ const editingMethod = ref('')
 const linkVisible = ref(false)
 const linkClientId = ref<number | null>(null)
 
+const importVisible = ref(false)
+const importInboundId = ref(0)
+
 const usageVisible = ref(false)
 const usageClientId = ref<number | null>(null)
 const usageClientName = ref('')
@@ -178,6 +190,16 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function openImport() {
+  importInboundId.value = inboundFilter.value || inbounds.value[0]?.id || 0
+  importVisible.value = true
+}
+
+function exportClients() {
+  // A plain navigation lets the browser handle the attachment download.
+  window.location.href = api.exportClientsURL(inboundFilter.value || undefined)
 }
 
 function openCreate() {

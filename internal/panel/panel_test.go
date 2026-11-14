@@ -1407,3 +1407,120 @@ func TestAuditFilterByAction(t *testing.T) {
 		}
 	}
 }
+
+// TestExportClientsCSVEndpoint verifies the CSV download headers and contents.
+func TestExportClientsCSVEndpoint(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	inboundID := tp.seedClients(2)
+
+	rec := tp.doRaw(http.MethodGet, "/api/v1/export/clients?inbound_id="+itoa(inboundID), http.Header{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export: %d %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Fatalf("content-type = %q", ct)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") ||
+		!strings.Contains(cd, ".csv") {
+		t.Fatalf("content-disposition = %q", cd)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("cache-control = %q, want no-store", cc)
+	}
+	lines := strings.Split(strings.TrimSpace(rec.Body.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("export has %d lines, want header + 2 users: %q", len(lines), rec.Body.String())
+	}
+	if !strings.HasPrefix(lines[0], "inbound_id,inbound_remark,name,psk") {
+		t.Fatalf("unexpected header: %s", lines[0])
+	}
+
+	// The export is audited without recording any PSK.
+	auditRec := tp.do(http.MethodGet, "/api/v1/audit?action="+model.AuditClientExport, nil, nil)
+	if auditRec.Code != http.StatusOK || !strings.Contains(auditRec.Body.String(), model.AuditClientExport) {
+		t.Fatalf("export was not audited: %d %s", auditRec.Code, auditRec.Body.String())
+	}
+}
+
+// TestImportClientsEndpoint verifies the import endpoint reports per-line results.
+func TestImportClientsEndpoint(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	inboundID := tp.seedClients(1)
+
+	rec := tp.do(http.MethodPost, "/api/v1/inbounds/"+itoa(inboundID)+"/clients/import", map[string]any{
+		"format":  "csv",
+		"content": "name,psk\nalice,\nbob,\nseeded-0,\n",
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import: %d %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Created int `json:"created"`
+		Failed  []struct {
+			Line  int    `json:"line"`
+			Name  string `json:"name"`
+			Error string `json:"error"`
+		} `json:"failed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.Created != 2 || len(result.Failed) != 1 {
+		t.Fatalf("created=%d failed=%d (%+v)", result.Created, len(result.Failed), result.Failed)
+	}
+	if result.Failed[0].Name != "seeded-0" {
+		t.Fatalf("unexpected failure: %+v", result.Failed[0])
+	}
+
+	// The imported users are visible in the list.
+	items := tp.listClientsBody(http.Header{})
+	if len(items) != 3 {
+		t.Fatalf("client list has %d items, want 3", len(items))
+	}
+	names := make(map[string]bool, len(items))
+	for _, item := range items {
+		names[item["name"].(string)] = true
+	}
+	for _, want := range []string{"alice", "bob", "seeded-0"} {
+		if !names[want] {
+			t.Fatalf("imported user %q is missing: %v", want, names)
+		}
+	}
+
+	// Malformed JSON is a bad request.
+	if rec := tp.do(http.MethodPost, "/api/v1/inbounds/"+itoa(inboundID)+"/clients/import",
+		"not-an-object", nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed body: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestClientUsageEndpoint verifies the per-client daily usage series.
+func TestClientUsageEndpoint(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	inboundID := tp.seedClients(1)
+	clients := mustClientsOf(t, tp, inboundID)
+	day := time.Now().In(tp.svc.Config().Location()).Format("2006-01-02")
+	if err := tp.store.SaveUsage([]model.UsageSnapshot{{
+		ClientID: clients[0].ID, UpBytes: 11, DownBytes: 22,
+		Day: day, DayUpBytes: 11, DayDownBytes: 22,
+	}}); err != nil {
+		t.Fatalf("save usage: %v", err)
+	}
+
+	rec := tp.do(http.MethodGet, "/api/v1/clients/"+itoa(clients[0].ID)+"/usage?days=7", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("usage: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items []model.DailyUsage `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].UpBytes != 11 || payload.Items[0].DownBytes != 22 {
+		t.Fatalf("unexpected usage payload: %+v", payload.Items)
+	}
+}

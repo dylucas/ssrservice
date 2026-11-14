@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -122,4 +123,108 @@ func urlEscape(value string) string {
 		}
 	}
 	return b.String()
+}
+
+// ParseLink parses a SIP002 ss:// URI back into a Proxy.
+//
+// It accepts the forms this server emits (base64url userinfo, optionally with
+// the SS2022 server PSK inside it) and the plaintext userinfo variant some
+// clients produce. The method itself is not validated here: callers decide which
+// methods they support.
+func ParseLink(link string) (Proxy, error) {
+	trimmed := strings.TrimSpace(link)
+	if trimmed == "" {
+		return Proxy{}, fmt.Errorf("empty link")
+	}
+	if !strings.HasPrefix(trimmed, "ss://") {
+		return Proxy{}, fmt.Errorf("link must start with ss://")
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return Proxy{}, fmt.Errorf("parse link: %w", err)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return Proxy{}, fmt.Errorf("link is missing a host")
+	}
+	portText := u.Port()
+	if portText == "" {
+		return Proxy{}, fmt.Errorf("link is missing a port")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return Proxy{}, fmt.Errorf("invalid port %q", portText)
+	}
+
+	var userinfo string
+	if u.User != nil {
+		// url.Parse splits "method:password" into username/password, and a
+		// base64url blob without ':' lands entirely in the username.
+		if password, ok := u.User.Password(); ok {
+			userinfo = u.User.Username() + ":" + password
+		} else {
+			userinfo = u.User.Username()
+		}
+	}
+	proxy, err := parseUserinfo(userinfo)
+	if err != nil {
+		return Proxy{}, err
+	}
+	proxy.Host = host
+	proxy.Port = port
+	if fragment := u.Fragment; fragment != "" {
+		if name, err := url.PathUnescape(fragment); err == nil {
+			proxy.Name = name
+		} else {
+			proxy.Name = fragment
+		}
+	}
+	proxy.UDP = !strings.EqualFold(u.Query().Get("udp-over-tcp"), "true")
+	return proxy, nil
+}
+
+// parseUserinfo decodes "method:password" (or the SS2022 three-part form), in
+// either base64url or plaintext.
+func parseUserinfo(userinfo string) (Proxy, error) {
+	if userinfo == "" {
+		return Proxy{}, fmt.Errorf("link is missing credentials")
+	}
+	decoded, ok := decodeUserinfo(userinfo)
+	if !ok {
+		// Plaintext userinfo, e.g. "aes-256-gcm:secret".
+		decoded = userinfo
+	}
+	parts := strings.SplitN(decoded, ":", 3)
+	switch len(parts) {
+	case 2:
+		method, password := parts[0], parts[1]
+		if method == "" || password == "" {
+			return Proxy{}, fmt.Errorf("link credentials are incomplete")
+		}
+		return Proxy{Method: method, ClientPSK: password}, nil
+	case 3:
+		// SS2022: method:serverPSK:clientPSK.
+		method, serverPSK, clientPSK := parts[0], parts[1], parts[2]
+		if method == "" || clientPSK == "" {
+			return Proxy{}, fmt.Errorf("link credentials are incomplete")
+		}
+		return Proxy{Method: method, ServerPSK: serverPSK, ClientPSK: clientPSK}, nil
+	default:
+		return Proxy{}, fmt.Errorf("link credentials are malformed")
+	}
+}
+
+// decodeUserinfo tries the base64 variants a client may use.
+func decodeUserinfo(userinfo string) (string, bool) {
+	for _, encoding := range []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	} {
+		if decoded, err := encoding.DecodeString(userinfo); err == nil {
+			return string(decoded), true
+		}
+	}
+	return "", false
 }

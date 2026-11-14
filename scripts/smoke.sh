@@ -200,6 +200,32 @@ for name in ("CLIENT_PSK", "SERVER_PSK"):
 print(f"audit rows: {payload['total']}, actions: {len(actions)}")
 PY
 
+log "checking client export"
+api GET /api/v1/export/clients >"$WORK/clients.csv"
+head -1 "$WORK/clients.csv" | grep -q '^inbound_id,inbound_remark,name,psk' || fail "unexpected export header"
+EXPORT_ROWS=$(($(wc -l <"$WORK/clients.csv") - 1))
+[[ "$EXPORT_ROWS" -eq 1 ]] || fail "exported $EXPORT_ROWS rows, want 1"
+
+log "checking client import round trip"
+IMPORT_PORT=$((SS_PORT + 1))
+IMPORT_RESPONSE=$(api POST /api/v1/inbounds "{\"remark\":\"smoke-import\",\"listen\":\"127.0.0.1\",\"port\":$IMPORT_PORT,\"method\":\"2022-blake3-aes-128-gcm\",\"udp_enabled\":false,\"enabled\":true}")
+IMPORT_INBOUND_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$IMPORT_RESPONSE")
+CSV_JSON=$(python3 -c 'import json,sys; print(json.dumps({"format":"csv","content":open(sys.argv[1]).read()}))' "$WORK/clients.csv")
+IMPORT_RESULT=$(api POST "/api/v1/inbounds/$IMPORT_INBOUND_ID/clients/import" "$CSV_JSON")
+IMPORT_RESULT="$IMPORT_RESULT" python3 - <<'PY'
+import json, os
+result = json.loads(os.environ["IMPORT_RESULT"])
+assert result["created"] == 1, result
+assert not result["failed"], result
+PY
+IMPORTED=$(api GET "/api/v1/inbounds/$IMPORT_INBOUND_ID/clients")
+IMPORTED="$IMPORTED" python3 - <<'PY'
+import json, os
+items = json.loads(os.environ["IMPORTED"])["items"]
+assert len(items) == 1, items
+assert items[0]["name"] == "smoke-user", items
+PY
+
 log "checking frontend"
 curl -fsS "http://127.0.0.1:$PANEL_PORT/" | grep -q 'id="sspanel-config"' || fail "frontend config not injected"
 

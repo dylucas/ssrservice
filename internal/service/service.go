@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ydong/ssrservice/internal/auth"
@@ -56,6 +57,11 @@ type Service struct {
 	resetStop chan struct{}
 	resetWG   sync.WaitGroup
 	stopOnce  sync.Once
+
+	// reloads counts inbound reloads. It is observability for tests and
+	// diagnostics: a bulk operation must rebuild the listener once, not once per
+	// user, and that property is otherwise invisible from the outside.
+	reloads atomic.Int64
 }
 
 // New creates the application service.

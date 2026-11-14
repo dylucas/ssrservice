@@ -148,3 +148,15 @@ export interface AuditResponse {
   offset: number
   actions: string[]
 }
+
+export interface ImportFailure {
+  line: number
+  name: string
+  error: string
+}
+
+export interface ImportResult {
+  created: number
+  skipped: number
+  failed: ImportFailure[]
+}

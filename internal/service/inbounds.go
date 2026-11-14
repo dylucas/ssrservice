@@ -221,7 +221,12 @@ func (s *Service) RestartInbound(id int64) error {
 	return s.reloadInbound(id)
 }
 
+// ReloadCount reports how many times an inbound has been reloaded since start.
+// Bulk paths assert that they reload once rather than once per user.
+func (s *Service) ReloadCount() int64 { return s.reloads.Load() }
+
 func (s *Service) reloadInbound(id int64) error {
+	s.reloads.Add(1)
 	in, err := s.store.InboundByID(id)
 	if err != nil {
 		return err

@@ -222,6 +222,10 @@ func (s *Server) Handler() http.Handler {
 	api.PUT("/settings", s.handleUpdateSettings)
 	api.GET("/backup", s.handleBackup)
 	api.GET("/audit", s.handleListAudit)
+	// The export lives outside /clients so it cannot collide with the /clients/:id
+	// wildcard (gin panics when a static segment and a wildcard share a position).
+	api.GET("/export/clients", s.handleExportClients)
+	api.POST("/inbounds/:id/clients/import", s.handleImportClients)
 
 	// Public subscriptions.
 	router.GET("/sub/:token", s.handleSubscription)

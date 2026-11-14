@@ -101,3 +101,63 @@ func TestFragmentEscaping(t *testing.T) {
 		t.Fatalf("unexpected fragment: %q", link)
 	}
 }
+
+// TestParseLink covers the ss:// forms the importer accepts.
+func TestParseLink(t *testing.T) {
+	ss2022 := Proxy{Name: "香港 01", Method: "2022-blake3-aes-128-gcm",
+		ServerPSK: "c2VydmVyLXBzay0xNmJ5dGU=", ClientPSK: "Y2xpZW50LXBzay0xNmJ5dGU=",
+		Host: "203.0.113.5", Port: 8388, UDP: true}
+	link := Link(ss2022)
+	parsed, err := ParseLink(link)
+	if err != nil {
+		t.Fatalf("parse own SS2022 link: %v", err)
+	}
+	if parsed.Method != ss2022.Method || parsed.ServerPSK != ss2022.ServerPSK ||
+		parsed.ClientPSK != ss2022.ClientPSK || parsed.Host != ss2022.Host || parsed.Port != ss2022.Port {
+		t.Fatalf("round trip mismatch:\nwant %+v\ngot  %+v", ss2022, parsed)
+	}
+	if parsed.Name != "香港 01" {
+		t.Fatalf("name = %q, want the decoded fragment", parsed.Name)
+	}
+
+	legacy := Proxy{Name: "alice", Method: "aes-256-gcm", ClientPSK: "secret", Host: "198.51.100.7", Port: 443}
+	parsed, err = ParseLink(Link(legacy))
+	if err != nil {
+		t.Fatalf("parse legacy link: %v", err)
+	}
+	if parsed.Method != legacy.Method || parsed.ClientPSK != legacy.ClientPSK || parsed.ServerPSK != "" {
+		t.Fatalf("legacy round trip mismatch: %+v", parsed)
+	}
+
+	// Plaintext userinfo, as some clients produce.
+	parsed, err = ParseLink("ss://aes-256-gcm:secret@198.51.100.7:443#bob")
+	if err != nil {
+		t.Fatalf("parse plaintext userinfo: %v", err)
+	}
+	if parsed.Method != "aes-256-gcm" || parsed.ClientPSK != "secret" || parsed.Name != "bob" {
+		t.Fatalf("plaintext parse mismatch: %+v", parsed)
+	}
+
+	// A plugin query string must not break parsing.
+	parsed, err = ParseLink("ss://YWVzLTI1Ni1nY206c2VjcmV0@198.51.100.7:443?plugin=v2ray-plugin#carol")
+	if err != nil {
+		t.Fatalf("parse with query: %v", err)
+	}
+	if parsed.ClientPSK != "secret" || parsed.Name != "carol" {
+		t.Fatalf("query parse mismatch: %+v", parsed)
+	}
+
+	failures := map[string]string{
+		"empty":            "",
+		"not ss scheme":    "http://example.com",
+		"no port":          "ss://YWVzLTI1Ni1nY206c2VjcmV0@198.51.100.7",
+		"bad port":         "ss://YWVzLTI1Ni1nY206c2VjcmV0@198.51.100.7:0",
+		"no credentials":   "ss://@198.51.100.7:443",
+		"incomplete creds": "ss://YWVzLTI1Ni1nY206@198.51.100.7:443",
+	}
+	for name, link := range failures {
+		if _, err := ParseLink(link); err == nil {
+			t.Fatalf("%s: expected an error for %q", name, link)
+		}
+	}
+}
