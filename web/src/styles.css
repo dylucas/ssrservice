@@ -62,11 +62,20 @@
 
   /* Small radius for inline chips and QR frames, larger for cards and dialogs. */
   --sspanel-radius-sm: 8px;
+  --sspanel-radius-xs: 2px;
 
   /* Control widths, so select/input sizing stops being an inline style. */
   --sspanel-control-sm: 140px;
   --sspanel-control-md: 200px;
   --sspanel-control-lg: 260px;
+
+  /* Chart series. Blue against orange, the pair that stays distinguishable for
+   * the two most common colour vision deficiencies, and both clear AA against
+   * --sspanel-surface. */
+  --sspanel-chart-up: #1f6feb;
+  --sspanel-chart-down: #d97706;
+  --sspanel-chart-grid: #e7ebf0;
+  --sspanel-chart-marker: #9aa7b5;
 
   /* Sizes */
   --sspanel-header-height: 56px;
@@ -304,10 +313,98 @@ body {
   word-break: break-word;
 }
 
-/* Chart containers: the dashboard and the per-client usage dialog share these. */
-.chart {
+/* Chart: one inline SVG component serves the dashboard and the per-client usage
+ * dialog. Geometry lives in utils/chart.ts; this file owns only presentation. */
+.traffic-chart {
+  position: relative;
   width: 100%;
   height: var(--sspanel-chart-height);
+}
+
+/* The series colour is resolved once per variant, so each class below is
+ * declared exactly once (the style guard rejects a restated selector). These
+ * selectors start with an element name rather than a class for the same reason:
+ * only top-level `.class {` rules are treated as shared utilities. */
+svg [data-variant='up'] {
+  --chart-color: var(--sspanel-chart-up);
+}
+
+svg [data-variant='down'] {
+  --chart-color: var(--sspanel-chart-down);
+}
+
+.chart-grid {
+  stroke: var(--sspanel-chart-grid);
+  stroke-width: 1;
+}
+
+.chart-axis-text {
+  fill: var(--sspanel-text-muted);
+  font-size: var(--sspanel-fs-xs);
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--chart-color);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart-area {
+  fill: var(--chart-color);
+  stroke: none;
+  opacity: 0.12;
+}
+
+.chart-dot {
+  fill: var(--chart-color);
+  stroke: var(--sspanel-surface);
+  stroke-width: 1.5;
+}
+
+.chart-marker {
+  stroke: var(--sspanel-chart-marker);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.chart-tooltip {
+  position: absolute;
+  top: var(--sspanel-space-2);
+  right: var(--sspanel-space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sspanel-space-1);
+  padding: var(--sspanel-space-3) var(--sspanel-space-4);
+  border: 1px solid var(--sspanel-border);
+  border-radius: var(--sspanel-radius-sm);
+  background: var(--sspanel-surface);
+  box-shadow: var(--sspanel-shadow);
+  color: var(--sspanel-text);
+  font-size: var(--sspanel-fs-xs);
+  pointer-events: none;
+}
+
+.chart-tooltip-title {
+  color: var(--sspanel-text-muted);
+}
+
+.chart-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sspanel-space-2);
+}
+
+.chart-tooltip-name {
+  color: var(--sspanel-text-muted);
+}
+
+.chart-swatch {
+  width: 8px;
+  height: 8px;
+  background: var(--chart-color);
+  border-radius: var(--sspanel-radius-xs);
 }
 
 .chart-wrap {

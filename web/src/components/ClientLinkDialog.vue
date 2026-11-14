@@ -36,7 +36,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import QRCode from 'qrcode'
 import { api } from '@/api'
 import { copyText } from '@/utils/format'
 
@@ -50,6 +49,40 @@ const qr = ref('')
 
 const absoluteSub = computed(() => (subURL.value ? new URL(api.subURL(subURL.value), window.location.origin).toString() : ''))
 
+// The QR encoder is ~26 kB that only this dialog needs, so it is loaded on
+// demand instead of riding along in the clients route chunk.
+type QREncoder = (text: string, options: { margin: number; width: number }) => Promise<string>
+
+let loadQRCode: (() => Promise<typeof import('qrcode')>) | null = null
+
+/**
+ * resolveEncoder picks toDataURL out of the module namespace.
+ *
+ * qrcode is CommonJS (`module.exports = require('./server')`), and a dynamic
+ * import of it can surface the function either as a named export or under
+ * `default` depending on the interop pass, so both shapes are accepted.
+ */
+function resolveEncoder(mod: typeof import('qrcode')): QREncoder | null {
+  const named = (mod as { toDataURL?: QREncoder }).toDataURL
+  if (named) return named
+  const interop = (mod as { default?: { toDataURL?: QREncoder } }).default
+  return interop?.toDataURL ?? null
+}
+
+/** renderQR fills the image, leaving it empty if the encoder cannot be loaded. */
+async function renderQR(value: string) {
+  try {
+    if (!loadQRCode) loadQRCode = () => import('qrcode')
+    const encode = resolveEncoder(await loadQRCode())
+    if (!encode) throw new Error('qrcode encoder unavailable')
+    qr.value = await encode(value, { margin: 1, width: 220 })
+  } catch {
+    // The link and the subscription URL are the content; a missing QR image must
+    // not turn the whole dialog into an error.
+    qr.value = ''
+  }
+}
+
 async function load() {
   if (!props.clientId) return
   loading.value = true
@@ -61,7 +94,7 @@ async function load() {
     link.value = result.link || ''
     subURL.value = result.subscription_url || ''
     if (link.value) {
-      qr.value = await QRCode.toDataURL(link.value, { margin: 1, width: 220 })
+      await renderQR(link.value)
     }
   } catch (error: any) {
     ElMessage.error(error?.message || '获取链接失败')

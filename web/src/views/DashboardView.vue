@@ -35,7 +35,11 @@
 
     <div class="card">
       <h3 class="card-title">流量趋势（30 天）</h3>
-      <div ref="chartEl" class="chart"></div>
+      <TrafficChart
+        :labels="chartLabels"
+        :series="chartSeries"
+        aria-label="最近 30 天上传与下载流量"
+      />
     </div>
 
     <div class="card">
@@ -60,17 +64,15 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import { echarts, type ECharts } from '@/utils/charts'
 import { api } from '@/api'
+import TrafficChart from '@/components/TrafficChart.vue'
 import type { Dashboard } from '@/types'
 import { formatBytes, formatDuration } from '@/utils/format'
 
 const loading = ref(false)
-const chartEl = ref<HTMLDivElement>()
-let chart: ECharts | null = null
 let timer: number | undefined
 // inFlight prevents the manual refresh button and the polling timer from
 // stacking requests on a slow link.
@@ -101,27 +103,13 @@ const data = reactive<Dashboard>({
   },
 })
 
-function renderChart() {
-  if (!chartEl.value) return
-  if (!chart) chart = echarts.init(chartEl.value)
-  const days = data.traffic_30d.map((item) => item.day.slice(5))
-  const up = data.traffic_30d.map((item) => item.up_bytes)
-  const down = data.traffic_30d.map((item) => item.down_bytes)
-  chart.setOption({
-    tooltip: {
-      trigger: 'axis',
-      valueFormatter: (value: number) => formatBytes(value),
-    },
-    legend: { data: ['上传', '下载'] },
-    grid: { left: 10, right: 20, top: 40, bottom: 10, containLabel: true },
-    xAxis: { type: 'category', data: days, boundaryGap: false },
-    yAxis: { type: 'value', axisLabel: { formatter: (value: number) => formatBytes(value) } },
-    series: [
-      { name: '上传', type: 'line', smooth: true, areaStyle: { opacity: 0.12 }, data: up },
-      { name: '下载', type: 'line', smooth: true, areaStyle: { opacity: 0.12 }, data: down },
-    ],
-  })
-}
+// The chart is a pure function of the response, so polling only has to update
+// the data: the two computeds below rebuild the SVG on every tick.
+const chartLabels = computed(() => data.traffic_30d.map((item) => item.day.slice(5)))
+const chartSeries = computed(() => [
+  { name: '上传', variant: 'up' as const, values: data.traffic_30d.map((item) => item.up_bytes) },
+  { name: '下载', variant: 'down' as const, values: data.traffic_30d.map((item) => item.down_bytes) },
+])
 
 async function load() {
   if (inFlight) return
@@ -129,7 +117,6 @@ async function load() {
   loading.value = true
   try {
     Object.assign(data, await api.dashboard())
-    renderChart()
   } catch (error: any) {
     ElMessage.error(error?.message || '加载失败')
   } finally {
@@ -149,21 +136,14 @@ function onVisibilityChange() {
   if (!document.hidden) load()
 }
 
-function onResize() {
-  chart?.resize()
-}
-
 onMounted(() => {
   load()
-  window.addEventListener('resize', onResize)
   document.addEventListener('visibilitychange', onVisibilityChange)
   timer = window.setInterval(tick, 15000)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', onResize)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   if (timer) window.clearInterval(timer)
-  chart?.dispose()
 })
 </script>
