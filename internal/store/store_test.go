@@ -223,6 +223,7 @@ func TestQueryIndexes(t *testing.T) {
 	want := map[string]bool{
 		"idx_traffic_daily_day": false,
 		"idx_clients_reset":     false,
+		"idx_audit_username":    false,
 	}
 	rows, err := st.db.Query(`SELECT name FROM sqlite_master WHERE type = 'index'`)
 	if err != nil {

@@ -302,6 +302,8 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 
 查询参数：`limit`（默认 100，最大 500）、`offset`、`action`、`username`、`since`/`until`（Unix 秒，`since` 含、`until` 不含）。
 
+`action` 与 `username` 都有索引（`(action, created_at)`、`(username, created_at)`）。`total` 仍是对匹配行精确计数，所以按操作人筛选的耗时随**该操作人的记录数**线性增长；按不存在的用户名查询则只做一次索引定位。默认保留 90 天，随保留期增长请以 `total` 判断是否需要收窄时间范围。
+
 ```json
 {
   "items": [{

@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,6 +227,80 @@ func BenchmarkCreateClientsBatch(b *testing.B) {
 		}
 		if err := st.CreateClients(batch); err != nil {
 			b.Fatalf("batch: %v", err)
+		}
+	}
+}
+
+// benchAuditStore opens a store with n audit rows spread over the retention
+// window and two operators, the shape the audit page filters.
+func benchAuditStore(b *testing.B, n int) *Store {
+	b.Helper()
+	b.StopTimer()
+	st, err := Open(b.TempDir() + "/audit-bench.db")
+	if err != nil {
+		b.Fatalf("open: %v", err)
+	}
+	b.Cleanup(func() { st.Close() })
+	now := time.Now().Unix()
+	err = st.write(func(tx *sql.Tx) error {
+		const chunk = 200
+		for start := 0; start < n; start += chunk {
+			end := start + chunk
+			if end > n {
+				end = n
+			}
+			var sb strings.Builder
+			sb.WriteString(`INSERT INTO audit_logs(created_at, admin_id, username, action,
+				target_type, target_id, detail, ip) VALUES `)
+			args := make([]any, 0, (end-start)*8)
+			for i := start; i < end; i++ {
+				if i > start {
+					sb.WriteByte(',')
+				}
+				sb.WriteString(`(?,?,?,?,?,?,?,?)`)
+				operator := "admin"
+				action := model.AuditClientUpdate
+				if i%2 == 1 {
+					operator = "ops"
+					action = model.AuditAuthLogin
+				}
+				args = append(args, now-int64(i*60), 1, operator, action,
+					"client", i%50, `name="bench" quota_bytes=1`, "192.0.2.10")
+			}
+			if _, err := tx.Exec(sb.String(), args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		b.Fatalf("seed audit: %v", err)
+	}
+	b.StartTimer()
+	return st
+}
+
+// BenchmarkListAuditByUsername measures the filtered audit page, which is what
+// the (username, created_at) index exists for.
+func BenchmarkListAuditByUsername(b *testing.B) {
+	st := benchAuditStore(b, 50000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := st.ListAudit(AuditFilter{Username: "admin"}); err != nil {
+			b.Fatalf("audit: %v", err)
+		}
+	}
+}
+
+// BenchmarkListAuditPlain measures the unfiltered first page for comparison.
+func BenchmarkListAuditPlain(b *testing.B) {
+	st := benchAuditStore(b, 50000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := st.ListAudit(AuditFilter{}); err != nil {
+			b.Fatalf("audit: %v", err)
 		}
 	}
 }
