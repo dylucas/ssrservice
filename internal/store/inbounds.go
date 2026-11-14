@@ -131,14 +131,6 @@ func clientIDsOfInbound(tx *sql.Tx, inboundID int64) ([]int64, error) {
 	return ids, rows.Err()
 }
 
-// PortInUse reports whether another inbound already uses listen:port.
-func (s *Store) PortInUse(listen string, port int, excludeID int64) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM inbounds WHERE listen = ? AND port = ? AND id != ?`,
-		listen, port, excludeID).Scan(&count)
-	return count > 0, err
-}
-
 func boolInt(v bool) int64 {
 	if v {
 		return 1

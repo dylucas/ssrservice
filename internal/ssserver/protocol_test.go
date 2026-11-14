@@ -1,6 +1,7 @@
 package ssserver
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ydong/ssrservice/internal/model"
@@ -77,6 +78,35 @@ func TestEnabledClientsFiltersAndSorts(t *testing.T) {
 	}
 	if n := enabledClientCount(clients); n != 2 {
 		t.Fatalf("enabledClientCount = %d, want 2", n)
+	}
+}
+
+// TestBuildProtocolRejectsTwoEnabledSingleUserClients is the runtime's last line
+// of defence.
+//
+// chacha20-poly1305 carries no identity header, so the service is built from a
+// single key. Picking the lowest id and moving on would serve one user while the
+// panel showed two as enabled, and would book both users' traffic to one of
+// them; refusing to start is the only honest outcome.
+func TestBuildProtocolRejectsTwoEnabledSingleUserClients(t *testing.T) {
+	single := &handler{method: model.Method2022ChaCha20}
+	_, _, err := buildProtocol(testSnapshot(model.Method2022ChaCha20, "",
+		ClientSnapshot{ID: 1, PSK: newTestKey(t, 32), Enabled: true},
+		ClientSnapshot{ID: 2, PSK: newTestKey(t, 32), Enabled: true},
+	), single, 0)
+	if err == nil {
+		t.Fatal("two enabled clients on a single-user method must be rejected")
+	}
+	if !strings.Contains(err.Error(), "single enabled client") {
+		t.Fatalf("error should explain the rule: %v", err)
+	}
+
+	// A disabled second client is fine: only enabled users reach the protocol.
+	if _, _, err := buildProtocol(testSnapshot(model.Method2022ChaCha20, "",
+		ClientSnapshot{ID: 1, PSK: newTestKey(t, 32), Enabled: true},
+		ClientSnapshot{ID: 2, PSK: newTestKey(t, 32), Enabled: false},
+	), single, 0); err != nil {
+		t.Fatalf("one enabled client must build: %v", err)
 	}
 }
 

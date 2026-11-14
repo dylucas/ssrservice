@@ -28,8 +28,6 @@ type account struct {
 	dayDown  int64
 
 	// flushed* track what has been persisted so far.
-	flushUp   int64
-	flushDown int64
 	flushDayU int64
 	flushDayD int64
 	flushDay  string
@@ -157,8 +155,6 @@ func (u *usageManager) ensure(c ClientSnapshot, up, down int64) *account {
 		id:        c.ID,
 		up:        up,
 		down:      down,
-		flushUp:   up,
-		flushDown: down,
 		dayStart:  start,
 		flushDay:  dayKeyOf(start, u.location()),
 		quota:     c.QuotaBytes,
@@ -297,13 +293,9 @@ func (u *usageManager) rollover(a *account, start int64) {
 		a.mu.Unlock()
 		return
 	}
-	// The rollover snapshot also persisted the absolute totals; record them so
-	// the next flush does not rewrite the same values. Concurrent increments
-	// after the snapshot keep the account dirty and are flushed later.
-	a.mu.Lock()
-	a.flushUp = totalUp
-	a.flushDown = totalDown
-	a.mu.Unlock()
+	// The day baselines were advanced before the write, so the next flush only
+	// reports what arrived afterwards. Concurrent increments after the snapshot
+	// keep the account dirty and are flushed later.
 }
 
 // flush persists all pending counters. It is safe to call concurrently with
@@ -389,8 +381,6 @@ func (u *usageManager) flush() error {
 	for _, c := range commits {
 		a := c.a
 		a.mu.Lock()
-		a.flushUp = c.totalUp
-		a.flushDown = c.totalDown
 		if a.dayStart == c.dayStart {
 			a.flushDayU = c.dayUp
 			a.flushDayD = c.dayDown
@@ -420,12 +410,15 @@ func (u *usageManager) reset(clientID int64) {
 	a := v.(*account)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	u.zeroLocked(a)
+}
+
+// zeroLocked clears one account. The caller must hold u.mu and a.mu.
+func (u *usageManager) zeroLocked(a *account) {
 	loc := u.location()
 	start := u.dayStartAt(u.now())
 	a.up = 0
 	a.down = 0
-	a.flushUp = 0
-	a.flushDown = 0
 	a.dayStart = start
 	a.dayUp = 0
 	a.dayDown = 0
@@ -435,6 +428,74 @@ func (u *usageManager) reset(clientID int64) {
 	a.pending = nil
 	a.exceeded = false
 	a.dirty.Store(false)
+}
+
+// resetPersist zeroes a client's counters and persists that zero, with the
+// flush lock held for the whole operation.
+//
+// Resetting used to be two independent steps -- the store update, then the
+// in-memory zero -- while flush() snapshots the counters and then writes them
+// under the same lock. A flush that had already read the old totals could
+// commit after the reset and restore them, and because the in-memory counters
+// were then zero and clean, the database stayed at the old value until the user
+// generated traffic again. The panel, which lifts persisted counters with the
+// live ones, kept reporting the old usage and a quota_exceeded status while the
+// data plane allowed the user to connect.
+//
+// Keeping persist inside the lock closes that window. It costs one single-row
+// UPDATE while the flush loop waits, which is far cheaper than a wrong quota
+// verdict. Traffic that arrives while persist runs is kept: it is added after
+// the zero, and the failure path adds the old totals back on top of it.
+func (u *usageManager) resetPersist(clientID int64, persist func() error) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	v, ok := u.accounts.Load(clientID)
+	if !ok {
+		// No live account: the persisted row is the only state, so persist is
+		// the whole operation.
+		return persist()
+	}
+	a := v.(*account)
+	a.mu.Lock()
+	before := struct {
+		up, down                 int64
+		dayStart, dayUp, dayDown int64
+		flushDayU, flushDayD     int64
+		flushDay                 string
+	}{
+		up: a.up, down: a.down,
+		dayStart: a.dayStart, dayUp: a.dayUp, dayDown: a.dayDown,
+		flushDayU: a.flushDayU, flushDayD: a.flushDayD, flushDay: a.flushDay,
+	}
+	u.zeroLocked(a)
+	a.mu.Unlock()
+
+	if err := persist(); err != nil {
+		a.mu.Lock()
+		// Restore the snapshot above whatever arrived while persist ran, so a
+		// failed reset loses neither the old totals nor the new traffic.
+		a.up += before.up
+		a.down += before.down
+		if a.dayStart == before.dayStart {
+			a.dayUp += before.dayUp
+			a.dayDown += before.dayDown
+		} else {
+			// The day rolled over during persist; the old day's remainder is
+			// still owed to the rollup, so hand it back as a pending delta.
+			if before.dayUp-before.flushDayU > 0 || before.dayDown-before.flushDayD > 0 {
+				a.pending = append(a.pending, dayDelta{
+					day:  before.flushDay,
+					up:   before.dayUp - before.flushDayU,
+					down: before.dayDown - before.flushDayD,
+				})
+			}
+			a.flushDayU, a.flushDayD = before.flushDayU, before.flushDayD
+		}
+		a.dirty.Store(true)
+		a.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // totals returns the current counters including unflushed traffic.

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +38,7 @@ func usage() {
 Usage:
   sspanel run [--config path]
   sspanel check [--config path]
+  sspanel repair [--config path]
   sspanel admin reset-password [--config path]
   sspanel version
 
@@ -53,6 +55,8 @@ func run(args []string) error {
 		return runServer(args[1:])
 	case "check":
 		return runCheck(args[1:])
+	case "repair":
+		return runRepair(args[1:])
 	case "admin":
 		return runAdmin(args[1:])
 	case "version":
@@ -150,7 +154,6 @@ func runServer(args []string) error {
 	}
 
 	panelSrv := panel.New(cfg, svc, logger, sessions)
-	panelSrv.Handler()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -218,7 +221,44 @@ func runCheck(args []string) error {
 	if err := validateStoredInbounds(inbounds); err != nil {
 		return err
 	}
+	if err := reportSingleUserViolations(inbounds, clients); err != nil {
+		return err
+	}
 	return nil
+}
+
+// reportSingleUserViolations lists inbounds that break the one-enabled-client
+// rule for methods without an identity header.
+//
+// The service rejects new writes that would create this state, but a database
+// written by an older build can already contain it, and the runtime refuses to
+// start such an inbound. `check` is the tool an operator runs before an upgrade,
+// so it has to say which rows to fix instead of letting startup fail one by one.
+func reportSingleUserViolations(inbounds []model.Inbound, clients []model.Client) error {
+	enabledByInbound := make(map[int64][]string, len(inbounds))
+	for _, c := range clients {
+		if c.Enabled {
+			enabledByInbound[c.InboundID] = append(enabledByInbound[c.InboundID], c.Name)
+		}
+	}
+	var violations []string
+	for _, in := range inbounds {
+		if model.IsMultiUser(in.Method) {
+			continue
+		}
+		if names := enabledByInbound[in.ID]; len(names) > 1 {
+			violations = append(violations, fmt.Sprintf(
+				"inbound %d (%s, %s) has %d enabled clients: %s",
+				in.ID, in.Remark, in.Method, len(names), strings.Join(names, ", ")))
+		}
+	}
+	if len(violations) == 0 {
+		return nil
+	}
+	for _, line := range violations {
+		fmt.Printf("warning: %s\n", line)
+	}
+	return fmt.Errorf("%d inbound(s) have more than one enabled client on a single-user method; disable all but one before starting", len(violations))
 }
 
 func validateStoredInbounds(inbounds []model.Inbound) error {
@@ -275,5 +315,53 @@ func adminResetPassword(args []string) error {
 		return err
 	}
 	fmt.Printf("password updated for %s: %s\n", admin.Username, password)
+	return nil
+}
+
+// runRepair checks the database and rebuilds the per-day traffic rollup.
+//
+// The rollup is maintained transactionally by normal writes, so rebuilding it is
+// only needed after a bug or a manual edit left it out of step with the detail
+// rows. RebuildDailyTotals existed as an unreachable "repair tool": no command
+// or endpoint called it, which made an operational feature impossible to use
+// exactly when it was needed.
+//
+// The integrity check runs first. A damaged database is not something a rollup
+// rebuild can fix, and rewriting the summary table on top of one would only hide
+// the real fault.
+func runRepair(args []string) error {
+	fs, configPath, dbPath := newFlagSet("repair")
+	cfg, err := loadConfig(fs, args, configPath, dbPath)
+	if err != nil {
+		return err
+	}
+	// Repair must not fight the service for the write lock.
+	st, err := store.Open(cfg.Database.Path)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer st.Close()
+
+	status, err := st.IntegrityCheck()
+	if err != nil {
+		return fmt.Errorf("integrity check: %w", err)
+	}
+	fmt.Printf("integrity: %s\n", status)
+	if status != "ok" {
+		return fmt.Errorf("database reports %q; back it up before doing anything else", status)
+	}
+
+	before, err := st.DailyTotalRows()
+	if err != nil {
+		return fmt.Errorf("daily totals: %w", err)
+	}
+	if err := st.RebuildDailyTotals(); err != nil {
+		return fmt.Errorf("rebuild daily totals: %w", err)
+	}
+	after, err := st.DailyTotalRows()
+	if err != nil {
+		return fmt.Errorf("daily totals: %w", err)
+	}
+	fmt.Printf("daily totals rebuilt: %d -> %d rows\n", before, after)
 	return nil
 }

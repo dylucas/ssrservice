@@ -79,10 +79,6 @@ func TestInboundAndClientLifecycle(t *testing.T) {
 	if err := st.CreateInbound(&dup); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected conflict, got %v", err)
 	}
-	used, err := st.PortInUse("0.0.0.0", 8388, 0)
-	if err != nil || !used {
-		t.Fatalf("expected port in use, got %v %v", used, err)
-	}
 
 	client := model.Client{InboundID: in.ID, Name: "alice", PSK: "psk", Enabled: true, SubToken: "tok-1", QuotaBytes: 100}
 	if err := st.CreateClient(&client); err != nil {
@@ -162,7 +158,7 @@ func TestSettings(t *testing.T) {
 	if err := st.SetSettings(map[string]string{"a": "1", "b": "2"}); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	if err := st.SetSetting("a", "3"); err != nil {
+	if err := st.SetSettings(map[string]string{"a": "3"}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	all, err := st.AllSettings()

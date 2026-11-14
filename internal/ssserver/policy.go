@@ -48,10 +48,17 @@ func newPolicy(cfg PolicyConfig) *policy {
 		resolved:      make(map[string]resolveEntry),
 	}
 	listen := cfg.PanelListen
+	// Anything that is not a concrete address could resolve to more than one
+	// local endpoint ("localhost" is both 127.0.0.1 and ::1), so it is treated
+	// like a wildcard. Failing closed is the only safe default here: guessing
+	// wrong would leave the panel reachable through the proxy for anyone who
+	// enabled private targets.
 	if listen == "" || listen == "0.0.0.0" || listen == "::" {
 		p.panelAny = true
 	} else if addr, err := netip.ParseAddr(listen); err == nil {
 		p.panelAddr = addr.Unmap()
+	} else {
+		p.panelAny = true
 	}
 	return p
 }

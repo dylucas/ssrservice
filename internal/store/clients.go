@@ -207,6 +207,28 @@ func (s *Store) ResetClientTraffic(id int64, resetAt int64) error {
 	})
 }
 
+// SetClientLastReset records when a client was last reset without touching its
+// counters.
+//
+// It is the upgrade path: a client that predates the monthly reset feature has
+// no baseline, and the scheduler must adopt it where it stands. Using
+// ResetClientTraffic for that would zero the traffic of every existing user on
+// the first tick after an upgrade, which is the opposite of what a baseline is
+// for.
+func (s *Store) SetClientLastReset(id int64, resetAt int64) error {
+	return s.write(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE clients SET last_reset_at = ?, updated_at = ? WHERE id = ?`,
+			resetAt, time.Now().Unix(), id)
+		if err != nil {
+			return scanErr(err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 // UpdateClientToken replaces the subscription token.
 func (s *Store) UpdateClientToken(id int64, token string) error {
 	return s.write(func(tx *sql.Tx) error {
@@ -471,6 +493,22 @@ type ClientIdentity struct {
 	ID      int64
 	Name    string
 	Enabled bool
+}
+
+// CountEnabledClients counts the enabled clients of one inbound, optionally
+// ignoring one client.
+//
+// The single-user methods (Shadowsocks 2022 chacha20-poly1305) can only carry
+// one identity header, so an inbound must never have two enabled users. Every
+// path that can raise that count -- create, update, toggle, import, and a method
+// switch on the inbound -- asks this one query instead of loading every client
+// row: the check is O(1) in SQL rather than O(n) rows in Go, and it cannot drift
+// between callers because there is only one rule.
+func (s *Store) CountEnabledClients(inboundID, excludeID int64) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM clients WHERE inbound_id = ? AND enabled = 1 AND id <> ?`,
+		inboundID, excludeID).Scan(&count)
+	return count, err
 }
 
 // ListClientIdentities returns the identity of every client, optionally

@@ -87,6 +87,145 @@ func snapshotFor(snaps []model.UsageSnapshot, clientID int64, day string) (model
 	return model.UsageSnapshot{}, false
 }
 
+// blockingSink lets a test park flush() inside SaveUsage, which is where the
+// old reset race happened: flush had already snapshotted the totals and was
+// about to write them.
+type blockingSink struct {
+	entered chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	written []model.UsageSnapshot
+}
+
+func newBlockingSink() *blockingSink {
+	return &blockingSink{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (s *blockingSink) SaveUsage(snaps []model.UsageSnapshot) error {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	<-s.release
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.written = append(s.written, snaps...)
+	return nil
+}
+
+func (s *blockingSink) writtenFor(clientID int64) (up, down int64, found bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, snap := range s.written {
+		if snap.ClientID == clientID {
+			up, down, found = snap.UpBytes, snap.DownBytes, true
+		}
+	}
+	return up, down, found
+}
+
+// TestResetCannotBeOverwrittenByInFlightFlush reproduces the ordering that made
+// a reset disappear.
+//
+// flush() holds the usage lock while it snapshots the counters and calls the
+// sink. The reset used to write the database first and clear memory second,
+// without that lock, so a flush already holding the old snapshot could commit
+// its UPDATE after the reset committed its zero. Both the database and the
+// (now clean) in-memory counters then showed the old totals while the panel's
+// status disagreed with the data plane.
+//
+// With resetPersist the reset waits for the in-flight flush and is the last
+// writer, so the sink must observe exactly one post-reset value.
+func TestResetCannotBeOverwrittenByInFlightFlush(t *testing.T) {
+	sink := newBlockingSink()
+	u := newUsageManager(sink, time.UTC, nil)
+	u.ensure(ClientSnapshot{ID: 5, Enabled: true}, 0, 0)
+	u.add(5, true, 900)
+	u.add(5, false, 100)
+
+	flushDone := make(chan struct{})
+	go func() {
+		defer close(flushDone)
+		if err := u.flush(); err != nil {
+			t.Errorf("flush: %v", err)
+		}
+	}()
+	select {
+	case <-sink.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("flush never entered the sink")
+	}
+
+	persisted := make(chan int64, 1)
+	resetDone := make(chan error, 1)
+	go func() {
+		resetDone <- u.resetPersist(5, func() error {
+			// Stands in for store.ResetClientTraffic.
+			persisted <- 0
+			return nil
+		})
+	}()
+
+	// The reset must not persist while the flush is inside the sink.
+	select {
+	case <-persisted:
+		t.Fatal("reset persisted while a flush was mid-write")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(sink.release)
+	select {
+	case err := <-resetDone:
+		if err != nil {
+			t.Fatalf("reset: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reset never completed")
+	}
+	<-flushDone
+
+	// The live counters are zeroed and clean.
+	if up, down := u.totals(5); up != 0 || down != 0 {
+		t.Fatalf("live counters after reset = %d/%d, want 0/0", up, down)
+	}
+	if v, _ := u.accounts.Load(int64(5)); v.(*account).dirty.Load() {
+		t.Fatal("reset must leave the account clean")
+	}
+}
+
+// TestResetPersistRestoresCountersOnFailure keeps a failed reset from silently
+// discarding the user's traffic: the store refused the zero, so memory must
+// keep reporting what the database still holds.
+func TestResetPersistRestoresCountersOnFailure(t *testing.T) {
+	start := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	u, sink, _ := newTestUsageManager(t, time.UTC, start)
+	u.ensure(ClientSnapshot{ID: 6, Enabled: true}, 0, 0)
+	u.add(6, true, 300)
+	u.add(6, false, 200)
+
+	boom := errors.New("database is locked")
+	if err := u.resetPersist(6, func() error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("resetPersist error = %v, want %v", err, boom)
+	}
+	if up, down := u.totals(6); up != 300 || down != 200 {
+		t.Fatalf("counters after a failed reset = %d/%d, want 300/200", up, down)
+	}
+	v, _ := u.accounts.Load(int64(6))
+	if !v.(*account).dirty.Load() {
+		t.Fatal("a failed reset must leave the account dirty so the next flush retries")
+	}
+	if err := u.flush(); err != nil {
+		t.Fatalf("flush after failed reset: %v", err)
+	}
+	snap, ok := snapshotFor(sink.last(t), 6, "2026-03-15")
+	if !ok {
+		t.Fatalf("missing snapshot after flush: %+v", sink.last(t))
+	}
+	if snap.UpBytes != 300 || snap.DownBytes != 200 {
+		t.Fatalf("flush after failed reset wrote %d/%d, want 300/200", snap.UpBytes, snap.DownBytes)
+	}
+}
+
 func TestUsageDayRolloverPersistsPreviousDay(t *testing.T) {
 	start := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
 	u, sink, clock := newTestUsageManager(t, time.UTC, start)

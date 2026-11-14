@@ -259,12 +259,6 @@ func (s *Store) RebuildDailyTotals() error {
 	})
 }
 
-// TrafficTotals returns the sum of all client counters.
-func (s *Store) TrafficTotals() (up, down int64, err error) {
-	err = s.db.QueryRow(`SELECT COALESCE(SUM(up_bytes), 0), COALESCE(SUM(down_bytes), 0) FROM clients`).Scan(&up, &down)
-	return up, down, err
-}
-
 // ClientsForReset returns clients whose last_reset_at is older than the given
 // reset instant and whose policy is monthly.
 func (s *Store) ClientsForReset(now int64) ([]model.Client, error) {
@@ -283,4 +277,25 @@ func (s *Store) ClientsForReset(now int64) ([]model.Client, error) {
 		clients = append(clients, *c)
 	}
 	return clients, rows.Err()
+}
+
+// IntegrityCheck runs SQLite's structural self-check.
+//
+// It is what `sspanel repair` reports before touching anything: a corrupt page
+// is not something a rollup rebuild can fix, and silently rewriting the summary
+// table on top of a damaged database would hide the real problem.
+func (s *Store) IntegrityCheck() (string, error) {
+	var result string
+	if err := s.db.QueryRow(`PRAGMA integrity_check`).Scan(&result); err != nil {
+		return "", err
+	}
+	return result, nil
+}
+
+// DailyTotalRows counts the rows in the per-day rollup, so a repair can report
+// what it rebuilt.
+func (s *Store) DailyTotalRows() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM traffic_daily_totals`).Scan(&count)
+	return count, err
 }

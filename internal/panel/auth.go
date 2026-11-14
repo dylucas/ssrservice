@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 
 	"github.com/ydong/ssrservice/internal/auth"
 	"github.com/ydong/ssrservice/internal/model"
+	"github.com/ydong/ssrservice/internal/service"
 )
 
 var nowFunc = time.Now
@@ -28,21 +30,22 @@ func (s *Server) handleLogin(c *gin.Context) {
 	if !bindJSONMessage(c, &req, "username and password are required") {
 		return
 	}
-	admin, err := s.svc.Store().AdminByUsername(req.Username)
-	if err != nil || !auth.VerifyPassword(admin.PasswordHash, req.Password) {
+	admin, err := s.svc.Authenticate(req.Username, req.Password)
+	if err != nil {
 		s.limiter.Fail(ip, now)
-		// The attempted password is never recorded.
+		// The attempted password is never recorded, and an unknown user is
+		// answered exactly like a wrong password.
 		s.auditLogin(c, req.Username, nil, model.AuditAuthLoginFailed)
 		writeError(c, http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
 		return
 	}
 	s.limiter.Reset(ip)
-	_ = s.svc.Store().TouchAdminLogin(admin.ID)
+	_ = s.svc.TouchAdminLogin(admin.ID)
 	s.auditLogin(c, admin.Username, admin, model.AuditAuthLogin)
 
 	cookie, expires, err := s.sessions.Issue(admin.ID, admin.PasswordHash, now)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	c.SetSameSite(http.SameSiteStrictMode)
@@ -93,17 +96,16 @@ func (s *Server) handleChangePassword(c *gin.Context) {
 	if !bindJSONMessage(c, &req, "current_password and new_password are required") {
 		return
 	}
-	if !auth.VerifyPassword(admin.PasswordHash, req.CurrentPassword) {
+	hash, err := s.svc.ChangeAdminPassword(admin.ID, req.CurrentPassword, req.NewPassword)
+	switch {
+	case errors.Is(err, service.ErrInvalidPassword):
 		writeError(c, http.StatusBadRequest, "invalid_password", "current password is incorrect")
 		return
-	}
-	hash, err := auth.HashPassword(req.NewPassword)
-	if err != nil {
+	case service.IsValidation(err):
 		writeBadRequest(c, err.Error())
 		return
-	}
-	if err := s.svc.Store().UpdateAdminPassword(admin.ID, hash, false); err != nil {
-		writeServiceError(c, err)
+	case err != nil:
+		s.writeServiceError(c, err)
 		return
 	}
 	// Neither the old nor the new password is recorded.

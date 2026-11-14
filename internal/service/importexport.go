@@ -50,10 +50,13 @@ type ImportFailure struct {
 }
 
 // ImportResult is the outcome of an import. Partial success is a normal result:
-// the created users stay, and the failures explain what was skipped.
+// the created users stay, and the failures explain what was skipped per line.
+//
+// There is no aggregate "skipped" counter: every rejected line is reported in
+// Failed with its own reason, and a counter that is never incremented is worse
+// than no counter at all.
 type ImportResult struct {
 	Created int             `json:"created"`
-	Skipped int             `json:"skipped"`
 	Failed  []ImportFailure `json:"failed"`
 }
 
@@ -284,26 +287,46 @@ func (s *Service) importCandidateToClient(in *model.Inbound, candidate importCan
 	return client
 }
 
+// importLine is one non-empty line of pasted import content.
+//
+// Number is the 1-based line number in the original paste, not in the filtered
+// slice. Reporting the filtered index pointed at the wrong line whenever the
+// operator pasted a blank separator, which is the most common shape of a
+// hand-assembled batch.
+type importLine struct {
+	Number int
+	Text   string
+}
+
 // splitImportLines splits on newlines, dropping blank lines and surrounding
-// whitespace. Line numbers stay 1 based so failures point at the pasted text.
-func splitImportLines(content string) []string {
+// whitespace while remembering where each surviving line came from.
+func splitImportLines(content string) []importLine {
 	raw := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
-	lines := make([]string, 0, len(raw))
-	for _, line := range raw {
+	lines := make([]importLine, 0, len(raw))
+	for i, line := range raw {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
-			lines = append(lines, trimmed)
+			lines = append(lines, importLine{Number: i + 1, Text: trimmed})
 		}
 	}
 	return lines
 }
 
+// lineTexts returns the trimmed text of each line.
+func lineTexts(lines []importLine) []string {
+	texts := make([]string, len(lines))
+	for i, line := range lines {
+		texts[i] = line.Text
+	}
+	return texts
+}
+
 // detectImportFormat picks CSV when the first line looks like a header or holds
 // commas, and ss:// otherwise.
-func detectImportFormat(lines []string) string {
+func detectImportFormat(lines []importLine) string {
 	if len(lines) == 0 {
 		return ImportFormatCSV
 	}
-	first := lines[0]
+	first := lines[0].Text
 	if strings.HasPrefix(first, "ss://") {
 		return ImportFormatSS
 	}
@@ -320,11 +343,27 @@ var csvColumns = []string{
 	"name", "psk", "enabled", "quota_bytes", "expires_at", "ip_limit", "reset_policy", "reset_day", "note",
 }
 
+// originalLineNumber maps the row index of the CSV reader back to the line
+// number of the pasted text.
+//
+// The reader is fed the non-empty lines joined together, so record i is line
+// i of that filtered slice, not of the paste. csv.Reader also drops its own
+// blank records, so the mapping is by index into the filtered lines.
+func originalLineNumber(lines []importLine, index int) int {
+	if index < 0 {
+		return index + 1
+	}
+	if index >= len(lines) {
+		return index + 1
+	}
+	return lines[index].Number
+}
+
 // parseCSVImport parses CSV rows. It returns the candidates and the per-line
 // failures; whole-file parse errors are reported as a single failure.
-func parseCSVImport(lines []string) ([]importCandidate, []ImportFailure) {
+func parseCSVImport(lines []importLine) ([]importCandidate, []ImportFailure) {
 	failed := make([]ImportFailure, 0)
-	reader := csv.NewReader(strings.NewReader(strings.Join(lines, "\n")))
+	reader := csv.NewReader(strings.NewReader(strings.Join(lineTexts(lines), "\n")))
 	reader.FieldsPerRecord = -1
 	records, err := reader.ReadAll()
 	if err != nil {
@@ -351,7 +390,7 @@ func parseCSVImport(lines []string) ([]importCandidate, []ImportFailure) {
 	candidates := make([]importCandidate, 0, len(records))
 	for i := start; i < len(records); i++ {
 		record := records[i]
-		lineNumber := i + 1
+		lineNumber := originalLineNumber(lines, i)
 		cell := func(column string) string {
 			at, ok := index[column]
 			if !ok || at >= len(record) {
@@ -428,12 +467,12 @@ func hasCSVHeader(record []string) bool {
 }
 
 // parseSSImport parses ss:// links, one per line.
-func parseSSImport(lines []string) ([]importCandidate, []ImportFailure) {
+func parseSSImport(lines []importLine) ([]importCandidate, []ImportFailure) {
 	failed := make([]ImportFailure, 0)
 	candidates := make([]importCandidate, 0, len(lines))
-	for i, line := range lines {
-		lineNumber := i + 1
-		proxy, err := subscription.ParseLink(line)
+	for _, line := range lines {
+		lineNumber := line.Number
+		proxy, err := subscription.ParseLink(line.Text)
 		if err != nil {
 			failed = append(failed, ImportFailure{Line: lineNumber, Error: err.Error()})
 			continue

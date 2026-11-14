@@ -465,6 +465,45 @@ func mustAddrPort(s string) netip.AddrPort {
 	return parsed
 }
 
+// TestPanelAddressBlockedForUnresolvableListen covers the panel port guard for
+// a listen value the policy cannot parse.
+//
+// "localhost" passes config validation but is neither a wildcard nor a
+// netip.Addr. The previous code left both panelAny and panelAddr unset, so
+// isPanelAddress was always false and a proxy user could reach the panel login
+// page once allow_private_targets was on. Failing closed is the only safe
+// choice, because the listen value can expand to 127.0.0.1 and ::1.
+func TestPanelAddressBlockedForUnresolvableListen(t *testing.T) {
+	for _, listen := range []string{"localhost", "", "0.0.0.0", "::"} {
+		t.Run("listen="+listen, func(t *testing.T) {
+			p := newPolicy(PolicyConfig{AllowPrivateTargets: true, PanelListen: listen, PanelPort: 2096})
+			if err := p.checkAddrPort(mustAddrPort("127.0.0.1:2096")); err == nil {
+				t.Fatalf("panel address must be blocked for listen %q", listen)
+			}
+			if err := p.checkAddrPort(mustAddrPort("[::1]:2096")); err == nil {
+				t.Fatalf("ipv6 panel address must be blocked for listen %q", listen)
+			}
+			// A different port on the same host stays reachable: only the
+			// panel's own endpoint is the secret.
+			if err := p.checkAddrPort(mustAddrPort("127.0.0.1:8080")); err != nil {
+				t.Fatalf("non-panel port must stay reachable: %v", err)
+			}
+		})
+	}
+}
+
+// TestPanelAddressBlockedForExplicitListenLockdown checks the narrower case:
+// a concrete listen address only blocks that address.
+func TestPanelAddressBlockedForExplicitListenLockdown(t *testing.T) {
+	p := newPolicy(PolicyConfig{AllowPrivateTargets: true, PanelListen: "127.0.0.1", PanelPort: 2096})
+	if err := p.checkAddrPort(mustAddrPort("127.0.0.1:2096")); err == nil {
+		t.Fatal("explicit panel listen must be blocked")
+	}
+	if err := p.checkAddrPort(mustAddrPort("192.168.1.10:2096")); err != nil {
+		t.Fatalf("another host on the same port is not the panel: %v", err)
+	}
+}
+
 // ipv6LoopbackPort returns a port free for TCP and UDP on ::1.
 func ipv6LoopbackPort(t *testing.T) int {
 	t.Helper()
@@ -978,5 +1017,42 @@ func TestQuotaExceededFlushesImmediately(t *testing.T) {
 			t.Fatalf("counters were not flushed on quota violation: %+v (err=%v)", persisted, err)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestInboundErrorsSurfaceAFailedBind covers the operator-facing consequence of
+// a listener that cannot start.
+//
+// Bootstrap turned the aggregated Load error into a single warn line and the
+// process stayed healthy, so the panel kept showing the inbound as enabled while
+// clients could not connect. The manager now remembers the per-inbound failure
+// and the panel renders it; a later successful apply clears it.
+func TestInboundErrorsSurfaceAFailedBind(t *testing.T) {
+	env := newTestEnv(t)
+
+	port := freePort(t)
+	blocker, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Skipf("could not occupy the port: %v", err)
+	}
+
+	in := model.Inbound{
+		ID: 1, Remark: "blocked", Listen: "127.0.0.1", Port: port,
+		Method: model.Method2022AES128GCM, ServerPSK: newTestKey(t, 16), Enabled: true,
+	}
+	if err := env.mgr.ApplyInbound(in, nil); err == nil {
+		t.Fatal("binding an occupied port must fail")
+	}
+	errors := env.mgr.InboundErrors()
+	if errors[in.ID] == "" {
+		t.Fatalf("no error recorded for the failed inbound: %+v", errors)
+	}
+
+	blocker.Close()
+	if err := env.mgr.ApplyInbound(in, nil); err != nil {
+		t.Fatalf("apply after freeing the port: %v", err)
+	}
+	if msg := env.mgr.InboundErrors()[in.ID]; msg != "" {
+		t.Fatalf("a successful apply must clear the error, still %q", msg)
 	}
 }

@@ -97,7 +97,11 @@ func (s *Service) Bootstrap() (string, error) {
 		return "", err
 	}
 	if err := s.LoadRuntime(); err != nil {
-		s.logger.Warn("some inbounds failed to start", "error", err)
+		// Not fatal: the panel must still start so the operator can fix the
+		// conflicting port. It is logged at error level and repeated per inbound
+		// in the panel (InboundView.LastError), because "the process is healthy
+		// but a listener is not" is invisible in a warn line nobody reads.
+		s.logger.Error("some inbounds failed to start; see the inbound list for the reason", "error", err)
 	}
 	s.mgr.Start()
 	s.startResetLoop()
@@ -323,6 +327,25 @@ func (s *Service) location() *time.Location {
 	return s.loc
 }
 
+// Location returns the time zone the daily buckets and monthly resets use.
+//
+// The panel must build its date windows from this and not from the
+// configuration file: the operator can change the time zone in the settings
+// page without restarting, and at that point the config value is stale. The
+// dashboard read the config while the per-client usage read this, so the same
+// page could describe two different 30 day windows.
+func (s *Service) Location() *time.Location { return s.location() }
+
+// DailyTotalsSince returns the per-day traffic rollup starting at the day
+// `days` before now, evaluated in the effective time zone.
+func (s *Service) DailyTotalsSince(days int) ([]model.DailyUsage, error) {
+	if days <= 0 {
+		days = 30
+	}
+	since := time.Now().AddDate(0, 0, -days).In(s.location()).Format("2006-01-02")
+	return s.store.DailyTotals(since)
+}
+
 // Backup writes a database snapshot to path.
 func (s *Service) Backup(path string) error {
 	return s.store.BackupTo(path)
@@ -432,3 +455,15 @@ func (s *Service) TrafficTotalsLive() (up, down int64, err error) {
 	up, down = s.mgr.TotalTraffic()
 	return up, down, nil
 }
+
+// OnlineIPCount returns the number of distinct connected source IPs.
+func (s *Service) OnlineIPCount() int {
+	total := 0
+	for _, ips := range s.mgr.OnlineIPs() {
+		total += len(ips)
+	}
+	return total
+}
+
+// SessionCount returns the number of live proxy sessions.
+func (s *Service) SessionCount() int { return s.mgr.SessionCount() }

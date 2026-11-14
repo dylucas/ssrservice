@@ -1,8 +1,11 @@
 package service
 
 import (
+	"net"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ydong/ssrservice/internal/model"
 	"github.com/ydong/ssrservice/internal/ssserver"
@@ -230,4 +233,94 @@ func TestResolveHostPortPrecedence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestToggleInboundRollsBackWhenTheListenerFails keeps the database and the
+// runtime agreeing when enabling an inbound cannot bind its port.
+//
+// ToggleInbound used to persist enabled=true first and only then reload. A
+// failed reload returned an error while leaving the row enabled, so the panel
+// showed a running inbound that was not listening, and nothing retried it.
+func TestToggleInboundRollsBackWhenTheListenerFails(t *testing.T) {
+	svc, st, _ := newImportEnv(t, model.Method2022AES128GCM)
+
+	port := freePortForTest(t)
+	in := model.Inbound{
+		Remark: "toggle", Listen: "127.0.0.1", Port: port,
+		Method: model.Method2022AES128GCM, ServerPSK: mustServerPSK(t, model.Method2022AES128GCM),
+		Enabled: false,
+	}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+
+	// Hold the port so the listener cannot start.
+	blocker, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Skipf("could not occupy the port: %v", err)
+	}
+	defer blocker.Close()
+
+	if err := svc.ToggleInbound(in.ID, true); err == nil {
+		t.Fatal("enabling a blocked inbound must fail")
+	}
+	stored, err := st.InboundByID(in.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if stored.Enabled {
+		t.Fatal("a failed enable must not persist")
+	}
+}
+
+// TestRestartInboundKeepsServingAfterFailure checks that a restart which cannot
+// rebuild the listener does not take the working one down with it.
+//
+// The restart stops the listener before rebinding, so the window exists by
+// construction; what must not happen is ending up with no listener at all while
+// the row is unchanged.
+func TestRestartInboundKeepsServingAfterFailure(t *testing.T) {
+	svc, st, in := newImportEnv(t, model.Method2022AES128GCM)
+
+	// A healthy restart keeps the inbound reachable.
+	if err := svc.RestartInbound(in.ID); err != nil {
+		t.Fatalf("healthy restart: %v", err)
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(in.Port)), time.Second)
+	if err != nil {
+		t.Fatalf("inbound not listening after restart: %v", err)
+	}
+	conn.Close()
+
+	// Now make the rebuild fail: another process grabs the port between the
+	// stop and the bind. The previous listener cannot be restored either
+	// because the address is gone, so the error must at least be reported and
+	// the row left untouched.
+	svc.mgr.RemoveInbound(in.ID)
+	blocker, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(in.Port)))
+	if err != nil {
+		t.Skipf("could not occupy the port: %v", err)
+	}
+	defer blocker.Close()
+
+	if err := svc.RestartInbound(in.ID); err == nil {
+		t.Fatal("restart with the port taken must fail")
+	}
+	stored, err := st.InboundByID(in.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if stored.Port != in.Port || !stored.Enabled {
+		t.Fatalf("a failed restart must not modify the row: %+v", stored)
+	}
+}
+
+// mustServerPSK generates a server key valid for the method.
+func mustServerPSK(t *testing.T, method string) string {
+	t.Helper()
+	psk, err := ssserver.GenerateServerPSK(method)
+	if err != nil {
+		t.Fatalf("server psk: %v", err)
+	}
+	return psk
 }

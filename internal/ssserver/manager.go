@@ -129,6 +129,13 @@ type Manager struct {
 	mu       sync.Mutex
 	inbounds map[int64]*inboundRuntime
 
+	// applyErrors remembers the last failure of each inbound. A failed initial
+	// bind used to be only a log line: the process stayed healthy, the panel
+	// still read enabled from the database, and nothing told the operator why
+	// clients could not connect.
+	errMu       sync.Mutex
+	applyErrors map[int64]string
+
 	// applyMu serializes inbound configuration changes so two concurrent
 	// panel requests cannot bind the same port or interleave listener swaps.
 	applyMu sync.Mutex
@@ -163,21 +170,46 @@ func New(opts Options) *Manager {
 		opts.Location = time.Local
 	}
 	m := &Manager{
-		logger:    opts.Logger,
-		opts:      opts,
-		registry:  newRegistry(),
-		inbounds:  make(map[int64]*inboundRuntime),
-		flushReq:  make(chan struct{}, 1),
-		stop:      make(chan struct{}),
-		startedAt: time.Now(),
+		logger:      opts.Logger,
+		opts:        opts,
+		registry:    newRegistry(),
+		inbounds:    make(map[int64]*inboundRuntime),
+		applyErrors: make(map[int64]string),
+		flushReq:    make(chan struct{}, 1),
+		stop:        make(chan struct{}),
+		startedAt:   time.Now(),
 	}
 	m.usage = newUsageManager(opts.Sink, opts.Location, m.onClientExceeded)
 	m.SetPolicy(opts.Policy)
 	return m
 }
 
-// StartedAt returns when the manager was created.
-func (m *Manager) StartedAt() time.Time { return m.startedAt }
+// recordApplyError remembers (or, with an empty message, forgets) the last
+// failure of one inbound.
+func (m *Manager) recordApplyError(id int64, err error) {
+	m.errMu.Lock()
+	defer m.errMu.Unlock()
+	if err == nil {
+		delete(m.applyErrors, id)
+		return
+	}
+	m.applyErrors[id] = err.Error()
+}
+
+// InboundErrors returns the last apply failure per inbound, keyed by inbound id.
+//
+// The panel surfaces it next to the enabled state, because "enabled in the
+// database" and "listening" are two different things and an operator staring at
+// a client that cannot connect needs to see the second one.
+func (m *Manager) InboundErrors() map[int64]string {
+	m.errMu.Lock()
+	defer m.errMu.Unlock()
+	out := make(map[int64]string, len(m.applyErrors))
+	for id, message := range m.applyErrors {
+		out[id] = message
+	}
+	return out
+}
 
 // SetPolicy replaces the destination policy for new connections.
 func (m *Manager) SetPolicy(cfg PolicyConfig) {
@@ -262,20 +294,26 @@ func (m *Manager) applyLocked(snap InboundSnapshot) error {
 			old.close()
 		}
 		m.registry.closeInbound(snap.ID)
+		// Disabled by request is not a failure; drop any stale message.
+		m.recordApplyError(snap.ID, nil)
 		return nil
 	}
 
 	if old != nil {
 		current := old.view()
 		if current.Listen == snap.Listen && current.Port == snap.Port && old.tcpListener != nil {
-			return m.reconfigure(old, snap)
+			err := m.reconfigure(old, snap)
+			m.recordApplyError(snap.ID, err)
+			return err
 		}
 	}
 
 	newRT, err := m.buildRuntime(snap)
 	if err != nil {
+		m.recordApplyError(snap.ID, err)
 		return err
 	}
+	m.recordApplyError(snap.ID, nil)
 	m.mu.Lock()
 	m.inbounds[snap.ID] = newRT
 	m.mu.Unlock()
@@ -603,6 +641,16 @@ func (m *Manager) RemoveClient(clientID int64) {
 // ResetClientTraffic zeroes the live counters of a client.
 func (m *Manager) ResetClientTraffic(clientID int64) {
 	m.usage.reset(clientID)
+}
+
+// ResetClientTrafficPersist zeroes the live counters and persists the zero
+// while the flush loop cannot observe or rewrite the old totals.
+//
+// Callers that also persist the reset must use this instead of calling the
+// store and ResetClientTraffic separately; see usageManager.resetPersist for
+// the race that the split version allowed.
+func (m *Manager) ResetClientTrafficPersist(clientID int64, persist func() error) error {
+	return m.usage.resetPersist(clientID, persist)
 }
 
 // ClientTraffic returns the live counters of a client.

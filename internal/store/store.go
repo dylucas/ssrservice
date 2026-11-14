@@ -17,6 +17,43 @@ var (
 	ErrConflict = errors.New("conflict")
 )
 
+// ConflictError is a constraint violation the caller can act on.
+//
+// The message is operator-facing: it names the field that collided (a client
+// name inside an inbound, an inbound's listen address) without echoing the raw
+// SQLite constraint text, which leaks the schema and table names into the API
+// response.
+type ConflictError struct {
+	Message string
+	Err     error
+}
+
+func (e *ConflictError) Error() string { return e.Message }
+func (e *ConflictError) Unwrap() error { return e.Err }
+
+// conflictErr builds an actionable message from a constraint failure.
+func conflictErr(err error) error {
+	msg := strings.ToLower(err.Error())
+	var message string
+	switch {
+	case strings.Contains(msg, "clients.inbound_id, clients.name"),
+		strings.Contains(msg, "clients.inbound_id, name"):
+		message = "a client with this name already exists in the inbound"
+	case strings.Contains(msg, "inbounds.listen, inbounds.port"),
+		strings.Contains(msg, "inbounds.listen, port"):
+		message = "another inbound already listens on this address and port"
+	case strings.Contains(msg, "clients.sub_token"):
+		message = "subscription token collision, please retry"
+	case strings.Contains(msg, "admins.username"):
+		message = "an administrator with this username already exists"
+	case strings.Contains(msg, "foreign key"):
+		message = "a referenced resource does not exist"
+	default:
+		message = "the resource conflicts with an existing one"
+	}
+	return &ConflictError{Message: message, Err: err}
+}
+
 // Store wraps the database handle and serializes write transactions.
 type Store struct {
 	db      *sql.DB
@@ -65,7 +102,7 @@ func scanErr(err error) error {
 		return ErrNotFound
 	}
 	if isConstraintErr(err) {
-		return fmt.Errorf("%w: %v", ErrConflict, err)
+		return fmt.Errorf("%w: %w", ErrConflict, conflictErr(err))
 	}
 	return err
 }

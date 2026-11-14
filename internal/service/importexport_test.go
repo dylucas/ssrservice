@@ -36,8 +36,13 @@ func newImportEnv(t *testing.T, method string) (*Service, *store.Store, model.In
 
 	serverPSK := ""
 	if model.RequiresServerPSK(method) {
-		// Exactly 16 bytes, base64: the method requires a 16 byte key.
-		serverPSK = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef"))
+		// The key length follows the method (16 or 32 bytes); hardcoding one
+		// silently restricted the helper to the aes-128 method.
+		generated, err := ssserver.GenerateServerPSK(method)
+		if err != nil {
+			t.Fatalf("server psk: %v", err)
+		}
+		serverPSK = generated
 	}
 	in := model.Inbound{Remark: "import", Listen: "127.0.0.1", Port: freePortForTest(t),
 		Method: method, ServerPSK: serverPSK, Enabled: true}
@@ -160,6 +165,102 @@ func TestImportClientsFromSSLinks(t *testing.T) {
 	clients, _ := st.ListClients(in.ID)
 	if len(clients) != 1 || clients[0].Name != "alice" || clients[0].PSK != clientPSK {
 		t.Fatalf("ss import stored %+v", clients)
+	}
+}
+
+// TestSplitImportLinesKeepsOriginalNumbers guards the numbering of pasted
+// import content.
+//
+// splitImportLines drops empty lines and returns the 1-based number of each
+// surviving line in the original paste. The parsers used the index of the
+// filtered slice instead, so "ss://ok\n\nss://bad" reported line 2 for a line
+// that is the third one, while the comment and the API example promised the
+// original number.
+func TestSplitImportLinesKeepsOriginalNumbers(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    []int
+	}{
+		{"simple", "a\nb\nc", []int{1, 2, 3}},
+		{"blank between rows", "a\n\nb", []int{1, 3}},
+		{"leading and trailing blanks", "\n\na\n\n", []int{3}},
+		{"crlf", "a\r\n\r\nb", []int{1, 3}},
+		{"whitespace only lines", "a\n   \n\t\nb", []int{1, 4}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := splitImportLines(tc.content)
+			got := make([]int, len(lines))
+			for i, line := range lines {
+				got[i] = line.Number
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("numbers = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("numbers = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestImportReportsOriginalLineNumbers is the end-to-end check: a failed row
+// after a blank separator reports the line of the paste, not of the filtered
+// slice. ImportClients trims the whole payload, so leading and trailing blank
+// lines are removed before numbering; only interior blanks survive.
+func TestImportReportsOriginalLineNumbers(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    int
+	}{
+		{"blank line between rows", "{good}\n\n{bad}", 3},
+		{"two blank lines between rows", "{good}\n\n\n{bad}", 4},
+		{"crlf with a blank row", "{good}\r\n\r\n{bad}", 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A fresh inbound per case: names are unique inside one inbound, and
+			// a shared environment would turn the second alice into a
+			// duplicate-name failure instead of testing the line number.
+			svc, _, in := newImportEnv(t, model.Method2022AES128GCM)
+			serverPSK := in.ServerPSK
+			clientPSK := base64.StdEncoding.EncodeToString([]byte("fedcba9876543210"))
+			good := "ss://" + b64url("2022-blake3-aes-128-gcm:"+serverPSK+":"+clientPSK) +
+				"@203.0.113.5:8388#alice"
+			bad := "ss://" + b64url("aes-256-gcm:secret") + "@203.0.113.5:8388#bob"
+			content := strings.NewReplacer("{good}", good, "{bad}", bad).Replace(tc.content)
+			result, err := svc.ImportClients(in.ID, ImportRequest{Format: ImportFormatSS, Content: content})
+			if err != nil {
+				t.Fatalf("import: %v", err)
+			}
+			if len(result.Failed) != 1 {
+				t.Fatalf("expected one failure, got %+v", result.Failed)
+			}
+			if result.Failed[0].Line != tc.want {
+				t.Fatalf("failure line = %d, want %d (%+v)", result.Failed[0].Line, tc.want, result.Failed[0])
+			}
+		})
+	}
+}
+
+// TestImportCSVReportsOriginalLineNumbers is the CSV counterpart: the header
+// line still counts, and a blank separator does not shift the numbers.
+func TestImportCSVReportsOriginalLineNumbers(t *testing.T) {
+	svc, _, in := newImportEnv(t, model.Method2022AES128GCM)
+	content := "name,psk,enabled\n\nalice,," + "\n\n,\n"
+	result, err := svc.ImportClients(in.ID, ImportRequest{Format: ImportFormatCSV, Content: content})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(result.Failed) != 1 {
+		t.Fatalf("expected one failure, got %+v", result.Failed)
+	}
+	if result.Failed[0].Line != 5 {
+		t.Fatalf("failure line = %d, want 5 (%+v)", result.Failed[0].Line, result.Failed[0])
 	}
 }
 

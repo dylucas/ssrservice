@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -400,6 +401,25 @@ func TestSingleUserInboundRejectsSecondClient(t *testing.T) {
 	if second.Code != http.StatusBadRequest {
 		t.Fatalf("expected rejection of second client, got %d %s", second.Code, second.Body.String())
 	}
+
+	// A disabled client is allowed, but toggling it on must hit the same rule:
+	// the runtime has no identity header, so two enabled users would be
+	// accounted against one of them.
+	third := tp.do(http.MethodPost, "/api/v1/inbounds/"+itoa(in.ID)+"/clients", map[string]any{"name": "c", "enabled": false}, nil)
+	if third.Code != http.StatusCreated {
+		t.Fatalf("disabled client: %d %s", third.Code, third.Body.String())
+	}
+	disabled := decode[model.Client](t, third)
+	if rec := tp.do(http.MethodPost, "/api/v1/clients/"+itoa(disabled.ID)+"/toggle", map[string]any{"enabled": true}, nil); rec.Code != http.StatusBadRequest {
+		t.Fatalf("toggle must be rejected, got %d %s", rec.Code, rec.Body.String())
+	}
+	stored, err := tp.store.ClientByID(disabled.ID)
+	if err != nil {
+		t.Fatalf("reload client: %v", err)
+	}
+	if stored.Enabled {
+		t.Fatal("a rejected toggle must not persist")
+	}
 }
 
 func TestDashboardSettingsBackup(t *testing.T) {
@@ -574,6 +594,12 @@ func TestIndexServesJSONRuntimeConfig(t *testing.T) {
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("unexpected cache-control %q", got)
+	}
+	// Vite emits relative asset URLs, so the shell must pin them to the panel
+	// root; without it any nested route resolves "./assets/..." against its own
+	// path and receives the SPA fallback HTML instead of the module.
+	if !strings.Contains(body, `<base href="/">`) {
+		t.Fatalf("missing base tag in the shell:\n%s", body)
 	}
 }
 
@@ -1775,5 +1801,68 @@ func TestInboundWithoutDomainKeepsLegacyLinks(t *testing.T) {
 	}](t, rec)
 	if !strings.Contains(link.Link, "global.example.com:9000") {
 		t.Fatalf("link should fall back to the global settings: %s", link.Link)
+	}
+}
+
+// TestDeepLinkServesResolvableAssets covers the white screen behind a
+// trailing-slash URL.
+//
+// The shell is served for any unmatched GET so the router can take over, but a
+// document at "/clients/" resolves "./assets/index-xxx.js" against "/clients/".
+// That request reaches the same fallback, which answers with HTML and the module
+// is rejected on its MIME type. With a <base href> the asset URL is absolute, so
+// the document works from any depth and from a sub-path deployment.
+func TestDeepLinkServesResolvableAssets(t *testing.T) {
+	requireBuiltFrontend(t)
+	cases := []struct {
+		name     string
+		basePath string
+		path     string
+		wantBase string
+	}{
+		{"root deep link", "/", "/clients/", `<base href="/">`},
+		{"root nested deep link", "/", "/clients/42/details", `<base href="/">`},
+		{"sub path deep link", "/panel", "/panel/clients/", `<base href="/panel/">`},
+		{"sub path nested deep link", "/panel", "/panel/settings/audit", `<base href="/panel/">`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tp := newTestPanelWith(t, func(cfg *config.Config) {
+				if tc.basePath != "/" {
+					cfg.Panel.BasePath = tc.basePath
+				}
+			})
+			rec := tp.do(http.MethodGet, tc.path, nil, nil)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("deep link %s: %d", tc.path, rec.Code)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, tc.wantBase) {
+				t.Fatalf("missing %s in:\\n%s", tc.wantBase, body)
+			}
+			// Whatever the depth, every asset URL in the document must be
+			// resolvable from the base rather than from the current path.
+			for _, match := range regexp.MustCompile(`(?:src|href)="(\.[^"]*)"`).FindAllStringSubmatch(body, -1) {
+				if strings.HasPrefix(match[1], "./assets/") {
+					continue
+				}
+				t.Fatalf("unexpected relative URL %q", match[1])
+			}
+		})
+	}
+}
+
+// TestHandlerIsBuiltOnce keeps the redundant second construction from coming
+// back: main used to call Handler() and ListenAndServe called it again, throwing
+// away the first engine, its routes and its http.Server.
+func TestHandlerIsBuiltOnce(t *testing.T) {
+	tp := newTestPanel(t)
+	first := tp.server.Handler()
+	second := tp.server.Handler()
+	if first == nil || second == nil {
+		t.Fatal("Handler returned nil")
+	}
+	if fmt.Sprintf("%p", first) != fmt.Sprintf("%p", second) {
+		t.Fatal("Handler rebuilt the engine on the second call")
 	}
 }

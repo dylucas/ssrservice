@@ -6,49 +6,23 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/ydong/ssrservice/internal/model"
 	"github.com/ydong/ssrservice/internal/subscription"
 )
 
 func (s *Server) handleSubscription(c *gin.Context) {
-	token := c.Param("token")
-	if token == "" {
-		c.String(http.StatusNotFound, "not found")
-		return
-	}
-	if !s.svc.SubscriptionEnabled() {
-		c.String(http.StatusNotFound, "not found")
-		return
-	}
-	client, err := s.svc.Store().ClientBySubToken(token)
+	// Every "not available" case collapses into the same 404: an unknown
+	// token, a disabled subscription and an inactive client must not be
+	// distinguishable from outside.
+	proxy, err := s.svc.SubscriptionFor(c.Param("token"))
 	if err != nil {
 		c.String(http.StatusNotFound, "not found")
 		return
-	}
-	inbound, err := s.svc.Store().InboundByID(client.InboundID)
-	if err != nil {
-		c.String(http.StatusNotFound, "not found")
-		return
-	}
-	if !inbound.Enabled || client.StatusAt(nowFunc().Unix()) != model.StatusActive {
-		c.String(http.StatusNotFound, "not found")
-		return
-	}
-	host, port := s.svc.PublicEndpoint(inbound)
-	proxy := subscription.Proxy{
-		Name:      client.Name,
-		Method:    inbound.Method,
-		ServerPSK: inbound.ServerPSK,
-		ClientPSK: client.PSK,
-		Host:      host,
-		Port:      port,
-		UDP:       inbound.UDPEnabled,
 	}
 	switch detectSubscriptionFormat(c.Request.UserAgent(), c.Query("format")) {
 	case "clash":
 		c.Header("Content-Type", "text/yaml; charset=utf-8")
 		c.Header("Profile-Update-Interval", "12")
-		c.String(http.StatusOK, subscription.ClashSubscription([]subscription.Proxy{proxy}, client.Name))
+		c.String(http.StatusOK, subscription.ClashSubscription([]subscription.Proxy{proxy}, proxy.Name))
 	default:
 		payload := subscription.Base64Subscription([]string{subscription.Link(proxy)})
 		c.Header("Content-Type", "text/plain; charset=utf-8")

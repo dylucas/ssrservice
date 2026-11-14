@@ -32,7 +32,10 @@ log "installing binary to ${BIN_DIR}/sspanel"
 install -m 0755 "${BINARY_SRC}" "${BIN_DIR}/sspanel"
 
 log "preparing directories"
-install -d -m 0750 -o "${RUN_USER}" -g "${RUN_USER}" "${CONF_DIR}" "${DATA_DIR}"
+# 0700, not 0750: /var/lib/sspanel holds the database with every PSK and
+# subscription token, and group access would expose it to any account in the
+# service group.
+install -d -m 0700 -o "${RUN_USER}" -g "${RUN_USER}" "${CONF_DIR}" "${DATA_DIR}"
 
 if [[ ! -f "${CONF_DIR}/config.yaml" ]]; then
   log "writing default configuration"
@@ -63,7 +66,7 @@ log:
   format: text
 EOF
   chown "${RUN_USER}:${RUN_USER}" "${CONF_DIR}/config.yaml"
-  chmod 0640 "${CONF_DIR}/config.yaml"
+  chmod 0600 "${CONF_DIR}/config.yaml"
 else
   log "keeping existing ${CONF_DIR}/config.yaml"
 fi

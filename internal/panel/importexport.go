@@ -27,7 +27,7 @@ func (s *Server) handleImportClients(c *gin.Context) {
 	}
 	result, err := s.svc.ImportClients(id, req)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{
@@ -43,7 +43,7 @@ func (s *Server) handleExportClients(c *gin.Context) {
 	inboundID, _ := strconv.ParseInt(c.Query("inbound_id"), 10, 64)
 	content, err := s.svc.ExportClientsCSV(inboundID)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	name := service.ExportFilename(time.Now())

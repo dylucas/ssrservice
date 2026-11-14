@@ -14,15 +14,6 @@ func (s *Store) GetSetting(key string) (string, error) {
 	return value, nil
 }
 
-// SetSetting upserts one setting.
-func (s *Store) SetSetting(key, value string) error {
-	return s.write(func(tx *sql.Tx) error {
-		_, err := tx.Exec(`INSERT INTO settings(key, value) VALUES(?, ?)
-			ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
-		return err
-	})
-}
-
 // SetSettings upserts several settings in one transaction.
 func (s *Store) SetSettings(values map[string]string) error {
 	return s.write(func(tx *sql.Tx) error {

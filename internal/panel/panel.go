@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -48,6 +49,11 @@ type Server struct {
 	assets *assetCache
 	// json writes API responses and compresses the credential-free lists.
 	json *jsonWriter
+	// handler is built once and reused: main used to call Handler() and then
+	// ListenAndServe call it again, discarding the first engine along with its
+	// routes and http.Server.
+	handlerOnce sync.Once
+	handler     http.Handler
 }
 
 // runtimeConfig is serialized into index.html.
@@ -151,8 +157,15 @@ func (s *Server) isSecureRequest(c *gin.Context) bool {
 	return strings.EqualFold(strings.TrimSpace(proto), "https")
 }
 
-// Handler builds the HTTP handler tree.
+// Handler builds the HTTP handler tree once and returns the same handler on
+// every call.
 func (s *Server) Handler() http.Handler {
+	s.handlerOnce.Do(func() { s.handler = s.buildHandler() })
+	return s.handler
+}
+
+// buildHandler constructs the HTTP handler tree.
+func (s *Server) buildHandler() http.Handler {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	// Gin trusts every proxy by default; only trust the explicitly configured
@@ -274,14 +287,30 @@ func basePathAssets(basePath string) string {
 	return base + "/" + cachedAssetPrefix
 }
 
+// redactSubscriptionPath hides the token of a subscription request path.
+//
+// The token is a credential: whoever holds it can fetch the client's share
+// link, which carries both the server and the client PSK. Access logs go to
+// stderr, which systemd hands to journald and operators keep, so the path is
+// recorded with the token removed.
+//
+// basePath is normalized without a trailing slash ("/" or "/panel"), so the
+// prefix has to be joined with an explicit separator. Concatenating it directly
+// produced "/panelsub/" and never matched a sub-path deployment, which left the
+// token in the log.
+func redactSubscriptionPath(basePath, path string) string {
+	base := strings.TrimSuffix(basePath, "/")
+	if strings.HasPrefix(path, base+"/sub/") {
+		return base + "/sub/<redacted>"
+	}
+	return path
+}
+
 func (s *Server) accessLog() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		path := c.Request.URL.Path
-		if strings.HasPrefix(path, s.cfg.Panel.BasePath+"sub/") || strings.HasPrefix(path, "/sub/") {
-			path = "/sub/<redacted>"
-		}
+		path := redactSubscriptionPath(s.cfg.Panel.BasePath, c.Request.URL.Path)
 		// Hashed assets are requested several times per page load; logging them
 		// at info level would bury the API requests an operator cares about.
 		log := s.logger.Info
@@ -398,7 +427,16 @@ func (s *Server) serveIndex(c *gin.Context) {
 	// the script element. The block is inert data: no CSP exception needed.
 	config := fmt.Sprintf(`<script id=%q type="application/json">%s</script>`,
 		runtimeConfigID, payload)
-	html := strings.Replace(string(content), "<head>", "<head>"+config, 1)
+	// Vite is configured with a relative base, so the emitted asset URLs are
+	// "./assets/...". A relative URL resolves against the browser's current
+	// path, which breaks on any nested route: "/clients/" asks for
+	// "/clients/assets/index-xxx.js", the SPA fallback answers with HTML, and
+	// the module refuses to load. A <base href> pins every relative URL to the
+	// panel root instead, which also makes the trailing-slash and sub-path
+	// variants work. base-uri 'self' in the CSP already allows a same-origin
+	// base.
+	baseTag := fmt.Sprintf(`<base href=%q>`, basePath)
+	html := strings.Replace(string(content), "<head>", "<head>"+baseTag+config, 1)
 	c.Header("Cache-Control", "no-store")
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
 }

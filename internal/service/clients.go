@@ -363,10 +363,24 @@ func (s *Service) DeleteClient(id int64) error {
 }
 
 // ToggleClient enables or disables a user.
+//
+// Enabling is a state change like any other and must pass the same rules as an
+// edit, otherwise a single-user inbound could end up serving two clients with
+// the traffic of both booked to one of them. A failed reload rolls the database
+// row back, so the panel never disagrees with the runtime.
 func (s *Service) ToggleClient(id int64, enabled bool) error {
 	c, err := s.store.ClientByID(id)
 	if err != nil {
 		return err
+	}
+	if enabled {
+		in, err := s.store.InboundByID(c.InboundID)
+		if err != nil {
+			return err
+		}
+		if err := s.ensureSingleUserSlot(in, id); err != nil {
+			return err
+		}
 	}
 	if err := s.store.SetClientEnabled(id, enabled); err != nil {
 		return err
@@ -374,7 +388,12 @@ func (s *Service) ToggleClient(id int64, enabled bool) error {
 	if !enabled {
 		s.mgr.CloseClient(id)
 	}
-	return s.reloadInbound(c.InboundID)
+	if err := s.reloadInbound(c.InboundID); err != nil {
+		_ = s.store.SetClientEnabled(id, c.Enabled)
+		_ = s.reloadInbound(c.InboundID)
+		return err
+	}
+	return nil
 }
 
 // KickClient disconnects all sessions of a user.
@@ -474,17 +493,33 @@ func (s *Service) prepareClient(in *model.Inbound, c *model.Client, selfID int64
 	if err := validateClientFields(in, c); err != nil {
 		return err
 	}
-	if !model.IsMultiUser(in.Method) && c.Enabled {
-		clients, err := s.store.ListClients(in.ID)
-		if err != nil {
-			return err
-		}
-		for _, other := range clients {
-			if other.ID == selfID || !other.Enabled {
-				continue
-			}
-			return invalid("method %s only supports a single enabled client per inbound; disable the other client first", in.Method)
-		}
+	if !c.Enabled {
+		return nil
+	}
+	return s.ensureSingleUserSlot(in, selfID)
+}
+
+// ensureSingleUserSlot enforces "at most one enabled client" for methods that
+// cannot isolate users.
+//
+// Shadowsocks 2022 chacha20-poly1305 has no identity header, so the runtime
+// builds one service from the first enabled user and attributes every connection
+// to it. A second enabled user therefore does not just fail to connect: traffic,
+// quota and expiry are accounted against somebody else.
+//
+// The rule used to be enforced only on create and import, which left two ways
+// around it: toggling an existing disabled client on, and switching an inbound's
+// method to a single-user one. Both now call this helper.
+func (s *Service) ensureSingleUserSlot(in *model.Inbound, selfID int64) error {
+	if model.IsMultiUser(in.Method) {
+		return nil
+	}
+	count, err := s.store.CountEnabledClients(in.ID, selfID)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return invalid("method %s only supports a single enabled client per inbound; disable the other client first", in.Method)
 	}
 	return nil
 }
@@ -545,4 +580,39 @@ func (s *Service) uniqueTokens(n int) ([]string, error) {
 		}
 	}
 	return nil, errors.New("could not generate unique subscription tokens")
+}
+
+// SubscriptionFor resolves a subscription token into the proxy record used to
+// render the subscription document.
+//
+// The panel used to load the client and the inbound through Store() and decide
+// the enabled/active rule itself, which duplicated a domain rule outside the
+// layer that owns it. A token lookup, unlike an API call, must not reveal the
+// difference between "no such token", "subscription disabled" and "client not
+// active": all three return ErrNotFound and the handler answers a plain 404.
+func (s *Service) SubscriptionFor(token string) (subscription.Proxy, error) {
+	if token == "" || !s.withinSubscription() {
+		return subscription.Proxy{}, store.ErrNotFound
+	}
+	client, err := s.store.ClientBySubToken(token)
+	if err != nil {
+		return subscription.Proxy{}, err
+	}
+	in, err := s.store.InboundByID(client.InboundID)
+	if err != nil {
+		return subscription.Proxy{}, err
+	}
+	if !in.Enabled || client.StatusAt(time.Now().Unix()) != model.StatusActive {
+		return subscription.Proxy{}, store.ErrNotFound
+	}
+	host, port := s.resolveHostPort(in, "")
+	return subscription.Proxy{
+		Name:      client.Name,
+		Method:    in.Method,
+		ServerPSK: in.ServerPSK,
+		ClientPSK: client.PSK,
+		Host:      host,
+		Port:      port,
+		UDP:       in.UDPEnabled,
+	}, nil
 }

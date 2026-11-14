@@ -118,9 +118,20 @@ func buildProtocol(in InboundSnapshot, handler shadowsocks.Handler, udpTimeout t
 			return service, 0, nil
 		}
 		// Single user (2022-blake3-chacha20-poly1305).
+		//
+		// This method carries no identity header, so exactly one enabled user may
+		// exist. The service layer enforces that on every path that can raise the
+		// count; this is the last line of defence, because silently picking the
+		// first user would attribute a second user's traffic, quota and expiry to
+		// somebody else.
+		enabled := enabledClients(in.Clients)
+		if len(enabled) > 1 {
+			return nil, 0, fmt.Errorf("method %s supports a single enabled client, inbound %d has %d",
+				method, in.ID, len(enabled))
+		}
 		var password string
 		var defaultID int64
-		if enabled := enabledClients(in.Clients); len(enabled) > 0 {
+		if len(enabled) == 1 {
 			password = enabled[0].PSK
 			defaultID = enabled[0].ID
 		} else {

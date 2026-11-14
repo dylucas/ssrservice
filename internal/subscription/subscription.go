@@ -19,8 +19,6 @@ type Proxy struct {
 	Host      string
 	Port      int
 	UDP       bool
-	// Transport is reserved for SIP003 plugins; unused for now.
-	Plugin string
 }
 
 func (p Proxy) isSS2022() bool { return strings.HasPrefix(p.Method, "2022-") }

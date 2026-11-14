@@ -71,7 +71,7 @@ func (s *Server) handleListClients(c *gin.Context) {
 	}
 	page, err := s.svc.ListClientsPage(filter)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	// The client list carries no credentials, so it is safe to compress; see
@@ -86,7 +86,7 @@ func (s *Server) handleGetClient(c *gin.Context) {
 	}
 	view, err := s.svc.GetClient(id)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, view)
@@ -103,7 +103,7 @@ func (s *Server) handleUpdateClient(c *gin.Context) {
 	}
 	client, err := s.svc.UpdateClient(id, input)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	// Note: the PSK is deliberately absent from the detail.
@@ -123,7 +123,7 @@ func (s *Server) handleDeleteClient(c *gin.Context) {
 		return
 	}
 	if err := s.svc.DeleteClient(id); err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{Action: model.AuditClientDelete, TargetType: "client", TargetID: id})
@@ -140,7 +140,7 @@ func (s *Server) handleToggleClient(c *gin.Context) {
 		return
 	}
 	if err := s.svc.ToggleClient(id, req.Enabled); err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{
@@ -156,7 +156,7 @@ func (s *Server) handleResetClient(c *gin.Context) {
 		return
 	}
 	if err := s.svc.ResetClient(id); err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{Action: model.AuditClientReset, TargetType: "client", TargetID: id})
@@ -170,7 +170,7 @@ func (s *Server) handleResetClientToken(c *gin.Context) {
 	}
 	token, err := s.svc.ResetClientToken(id)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	// Note: the new token is deliberately absent from the detail.
@@ -184,7 +184,7 @@ func (s *Server) handleKickClient(c *gin.Context) {
 		return
 	}
 	if err := s.svc.KickClient(id); err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{Action: model.AuditClientKick, TargetType: "client", TargetID: id})
@@ -198,7 +198,7 @@ func (s *Server) handleClientLink(c *gin.Context) {
 	}
 	link, subURL, err := s.svc.ClientLink(id, c.Query("host"))
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"link": link, "subscription_url": subURL})
@@ -212,7 +212,7 @@ func (s *Server) handleClientUsage(c *gin.Context) {
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
 	usage, err := s.svc.Usage(id, days)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": usage})

@@ -90,3 +90,27 @@ func TestBasePathNormalize(t *testing.T) {
 		t.Fatalf("unexpected base path %q", cfg.Panel.BasePath)
 	}
 }
+
+// TestLocalhostListenIsNormalized pins down that the only hostname the
+// validator accepts becomes a concrete address.
+//
+// config.Validate allows "localhost" but the proxy policy compares the panel
+// listen address against resolved destination IPs, where a hostname can never
+// match. Leaving it unnormalized silently disabled the "the panel port is not
+// reachable through the proxy" block, which matters as soon as an operator
+// enables allow_private_targets.
+func TestLocalhostListenIsNormalized(t *testing.T) {
+	for _, listen := range []string{"localhost", "LocalHost", " localhost "} {
+		t.Run(listen, func(t *testing.T) {
+			cfg := Default()
+			cfg.Panel.Listen = listen
+			cfg.normalize()
+			if cfg.Panel.Listen != "127.0.0.1" {
+				t.Fatalf("panel.listen %q normalized to %q, want 127.0.0.1", listen, cfg.Panel.Listen)
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("normalized config must validate: %v", err)
+			}
+		})
+	}
+}

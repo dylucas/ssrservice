@@ -22,7 +22,7 @@ func parseID(c *gin.Context) (int64, bool) {
 func (s *Server) handleListInbounds(c *gin.Context) {
 	items, err := s.svc.ListInbounds()
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items), "methods": model.Methods})
@@ -35,7 +35,7 @@ func (s *Server) handleCreateInbound(c *gin.Context) {
 	}
 	in, err := s.svc.CreateInbound(input)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{
@@ -54,7 +54,7 @@ func (s *Server) handleGetInbound(c *gin.Context) {
 	}
 	view, err := s.svc.GetInbound(id)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, view)
@@ -71,7 +71,7 @@ func (s *Server) handleUpdateInbound(c *gin.Context) {
 	}
 	in, err := s.svc.UpdateInbound(id, input)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{
@@ -89,7 +89,7 @@ func (s *Server) handleDeleteInbound(c *gin.Context) {
 		return
 	}
 	if err := s.svc.DeleteInbound(id); err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{Action: model.AuditInboundDelete, TargetType: "inbound", TargetID: id})
@@ -106,7 +106,7 @@ func (s *Server) handleToggleInbound(c *gin.Context) {
 		return
 	}
 	if err := s.svc.ToggleInbound(id, req.Enabled); err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{
@@ -122,7 +122,7 @@ func (s *Server) handleRestartInbound(c *gin.Context) {
 		return
 	}
 	if err := s.svc.RestartInbound(id); err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{Action: model.AuditInboundRestart, TargetType: "inbound", TargetID: id})
@@ -140,7 +140,7 @@ func (s *Server) handleListInboundClients(c *gin.Context) {
 	}
 	page, err := s.svc.ListClientsPage(filter)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	// Credential-free list: safe to compress (see jsonWriter.writeJSON).
@@ -158,7 +158,7 @@ func (s *Server) handleCreateClient(c *gin.Context) {
 	}
 	client, err := s.svc.CreateClient(id, input)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	// Note: the PSK is deliberately absent from the detail.

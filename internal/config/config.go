@@ -176,6 +176,13 @@ func (c *Config) normalize() {
 	if c.Panel.Listen == "" {
 		c.Panel.Listen = "127.0.0.1"
 	}
+	// "localhost" is the one hostname the validator accepts. The proxy policy
+	// compares the panel listen address against resolved destination IPs, and a
+	// hostname can never match there, so normalize it to a concrete address
+	// (the panel itself still resolves "localhost" the same way).
+	if strings.EqualFold(strings.TrimSpace(c.Panel.Listen), "localhost") {
+		c.Panel.Listen = "127.0.0.1"
+	}
 	if c.Panel.BasePath == "" {
 		c.Panel.BasePath = "/"
 	}

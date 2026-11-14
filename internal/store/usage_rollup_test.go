@@ -294,3 +294,59 @@ func itoaStore(n int) string {
 	}
 	return string(digits[i:])
 }
+
+// TestRepairHelpers covers the two store calls behind `sspanel repair`.
+//
+// RebuildDailyTotals was an unreachable "repair tool" before the command existed;
+// these helpers are what makes the command trustworthy: an integrity check that
+// reports SQLite's own verdict, and a row count that shows what was rebuilt.
+func TestRepairHelpers(t *testing.T) {
+	st := newTestStore(t)
+
+	status, err := st.IntegrityCheck()
+	if err != nil {
+		t.Fatalf("integrity check: %v", err)
+	}
+	if status != "ok" {
+		t.Fatalf("integrity check = %q, want ok", status)
+	}
+
+	// Seed detail rows, then rebuild and compare the rollup with the detail.
+	in := model.Inbound{Remark: "repair", Listen: "127.0.0.1", Port: 8388,
+		Method: model.Method2022AES128GCM, ServerPSK: "psk", Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	c := model.Client{InboundID: in.ID, Name: "repair", PSK: "psk", SubToken: "tok-repair"}
+	if err := st.CreateClient(&c); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	for day, up := range map[string]int64{"2026-05-01": 100, "2026-05-02": 50} {
+		if err := st.SaveUsage([]model.UsageSnapshot{{
+			ClientID: c.ID, UpBytes: up, DownBytes: 0, Day: day, DayUpBytes: up,
+		}}); err != nil {
+			t.Fatalf("save usage: %v", err)
+		}
+	}
+	if err := st.RebuildDailyTotals(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	rows, err := st.DailyTotalRows()
+	if err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("rollup rows = %d, want 2", rows)
+	}
+	totals, err := st.DailyTotals("2026-05-01")
+	if err != nil {
+		t.Fatalf("totals: %v", err)
+	}
+	var sum int64
+	for _, d := range totals {
+		sum += d.UpBytes
+	}
+	if sum != 150 {
+		t.Fatalf("rollup sum = %d, want 150", sum)
+	}
+}

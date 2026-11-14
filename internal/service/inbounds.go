@@ -1,7 +1,7 @@
 package service
 
 import (
-	"errors"
+	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -33,6 +33,10 @@ type InboundView struct {
 	UpBytes            int64 `json:"up_bytes"`
 	DownBytes          int64 `json:"down_bytes"`
 	OnlineIPs          int   `json:"online_ips"`
+	// LastError explains why this inbound is enabled but not listening (a taken
+	// port, a missing permission, an unusable key). It is empty when the runtime
+	// matches the row, which is the normal case.
+	LastError string `json:"last_error,omitempty"`
 }
 
 // inboundViewOf fills an inbound view from the store aggregate (nil when the
@@ -63,14 +67,20 @@ func (s *Service) ListInbounds() ([]InboundView, error) {
 		return nil, err
 	}
 	online := s.mgr.OnlineIPsByInbound()
+	applyErrors := s.mgr.InboundErrors()
 	views := make([]InboundView, 0, len(inbounds))
 	for _, in := range inbounds {
-		agg, ok := aggregates[in.ID]
-		if !ok {
-			views = append(views, inboundViewOf(in, nil, online[in.ID]))
-			continue
+		view := inboundViewOf(in, nil, online[in.ID])
+		if agg, ok := aggregates[in.ID]; ok {
+			view = inboundViewOf(in, &agg, online[in.ID])
 		}
-		views = append(views, inboundViewOf(in, &agg, online[in.ID]))
+		if in.Enabled {
+			// Only an enabled inbound can be "not listening"; for a disabled one
+			// the runtime state is the intended state and a stale message would
+			// be noise.
+			view.LastError = applyErrors[in.ID]
+		}
+		views = append(views, view)
 	}
 	return views, nil
 }
@@ -89,6 +99,9 @@ func (s *Service) GetInbound(id int64) (*InboundView, error) {
 	view := inboundViewOf(*in, nil, onlineIPs)
 	if agg, ok := aggregates[id]; ok {
 		view = inboundViewOf(*in, &agg, onlineIPs)
+	}
+	if in.Enabled {
+		view.LastError = s.mgr.InboundErrors()[id]
 	}
 	return &view, nil
 }
@@ -191,12 +204,23 @@ func (s *Service) UpdateInbound(id int64, input InboundInput) (*model.Inbound, e
 // would leave the rows intact while the counters -- and therefore the quota
 // verdict for those users -- were already discarded.
 func (s *Service) DeleteInbound(id int64) error {
+	in, err := s.store.InboundByID(id)
+	if err != nil {
+		return err
+	}
 	clients, err := s.store.ListClients(id)
 	if err != nil {
 		return err
 	}
 	s.mgr.RemoveInbound(id)
 	if err := s.store.DeleteInbound(id); err != nil {
+		// The rows are still there, so the listener has to be too; otherwise a
+		// failed delete would silently stop a service that the panel still
+		// lists as enabled.
+		if restoreErr := s.mgr.ApplyInbound(*in, clients); restoreErr != nil {
+			s.logger.Error("restore inbound after a failed delete also failed",
+				"inbound_id", id, "error", restoreErr)
+		}
 		return err
 	}
 	for _, c := range clients {
@@ -219,13 +243,40 @@ func (s *Service) ToggleInbound(id int64, enabled bool) error {
 		s.mgr.RemoveInbound(id)
 		return nil
 	}
-	return s.reloadInbound(id)
+	if err := s.reloadInbound(id); err != nil {
+		// The row says enabled but the listener never started; putting the old
+		// value back keeps the panel honest and lets the operator retry.
+		in.Enabled = false
+		_ = s.store.UpdateInbound(in)
+		return err
+	}
+	return nil
 }
 
 // RestartInbound rebuilds the listener of an inbound.
+//
+// A restart has to stop listening before it can bind the same address again, so
+// it cannot be atomic. What it can do is not lose the working listener: if the
+// rebuild fails (the port was taken by another process in between, the UDP bind
+// failed, a client's PSK no longer parses), the previous configuration is
+// applied again instead of leaving the inbound dead until someone notices.
 func (s *Service) RestartInbound(id int64) error {
+	previous, err := s.store.InboundByID(id)
+	if err != nil {
+		return err
+	}
+	clients, err := s.store.ListClients(id)
+	if err != nil {
+		return err
+	}
 	s.mgr.RemoveInbound(id)
-	return s.reloadInbound(id)
+	if err := s.reloadInbound(id); err != nil {
+		if restoreErr := s.mgr.ApplyInbound(*previous, clients); restoreErr != nil {
+			return fmt.Errorf("%w (restoring the previous listener also failed: %v)", err, restoreErr)
+		}
+		return err
+	}
+	return nil
 }
 
 // ReloadCount reports how many times an inbound has been reloaded since start.
@@ -288,16 +339,25 @@ func (s *Service) validateClientsForMethod(inboundID int64, method string) error
 	if err != nil {
 		return err
 	}
+	enabled := 0
 	for _, c := range clients {
 		if err := ssserver.ValidateClientPSK(method, c.PSK); err != nil {
 			return invalid("client %q is not compatible with method %s: %v; delete the client or change its password first", c.Name, method, err)
 		}
+		if c.Enabled {
+			enabled++
+		}
+	}
+	// A method switch can introduce the single-user restriction by itself: two
+	// enabled users were fine under an SS2022 multi-user method and become
+	// ambiguous under chacha20-poly1305, which has no identity header. Without
+	// this check the runtime would silently serve only one of them and attribute
+	// both users' traffic to that one.
+	if !model.IsMultiUser(method) && enabled > 1 {
+		return invalid("method %s only supports a single enabled client per inbound; disable all but one client first", method)
 	}
 	return nil
 }
-
-// ErrInvalidListen is returned for malformed listen addresses.
-var ErrInvalidListen = errors.New("invalid listen address")
 
 func validateListenAddress(listen string) error {
 	if listen == "" {
@@ -368,6 +428,3 @@ func (s *Service) resolveHostPort(in *model.Inbound, fallbackHost string) (strin
 	}
 	return host, port
 }
-
-// IsStoreNotFound reports whether err is a missing row.
-func IsStoreNotFound(err error) bool { return errors.Is(err, store.ErrNotFound) }

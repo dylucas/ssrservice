@@ -28,12 +28,30 @@ func writeError(c *gin.Context, status int, code, message string) {
 	c.AbortWithStatusJSON(status, errorEnvelope{Error: apiError{Code: code, Message: message}})
 }
 
-func writeServiceError(c *gin.Context, err error) {
+// writeServiceError maps a domain error onto the HTTP error envelope.
+//
+// Only errors the caller can act on carry their message: validation problems,
+// a taken port, a permission denial. A conflict or an unexpected failure is
+// answered with a stable, human-readable text instead, because the raw error
+// would leak SQLite constraint names, filesystem paths (the backup endpoint
+// builds a temp file) and version fingerprints to the browser, and the API
+// contract promises a stable envelope. The original error is logged for the
+// operator.
+func (s *Server) writeServiceError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(c, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, store.ErrConflict):
-		writeError(c, http.StatusConflict, "conflict", err.Error())
+		// The store wraps a ConflictError whose message names the collided
+		// field; anything else is an unmapped constraint and keeps a generic
+		// text while the detail goes to the log.
+		var conflict *store.ConflictError
+		if errors.As(err, &conflict) {
+			writeError(c, http.StatusConflict, "conflict", conflict.Message)
+			return
+		}
+		s.recordInternalError(c, err)
+		writeError(c, http.StatusConflict, "conflict", "the resource conflicts with an existing one")
 	case errors.Is(err, ssserver.ErrPortInUse):
 		writeError(c, http.StatusConflict, "port_in_use", err.Error())
 	case errors.Is(err, ssserver.ErrPermission):
@@ -43,8 +61,18 @@ func writeServiceError(c *gin.Context, err error) {
 	case service.IsValidation(err):
 		writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
 	default:
-		writeError(c, http.StatusInternalServerError, "internal_error", err.Error())
+		s.recordInternalError(c, err)
+		writeError(c, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
+}
+
+// recordInternalError logs the details the response deliberately omits.
+func (s *Server) recordInternalError(c *gin.Context, err error) {
+	s.logger.Error("request failed",
+		"method", c.Request.Method,
+		"path", redactSubscriptionPath(s.cfg.Panel.BasePath, c.Request.URL.Path),
+		"error", err,
+	)
 }
 
 func writeBadRequest(c *gin.Context, message string) {
@@ -109,7 +137,7 @@ func (s *Server) requireAuth() gin.HandlerFunc {
 			writeError(c, http.StatusUnauthorized, "unauthorized", "session expired")
 			return
 		}
-		admin, err := s.svc.Store().AdminByID(adminID)
+		admin, err := s.svc.AdminByID(adminID)
 		if err != nil {
 			s.clearSessionCookie(c)
 			writeError(c, http.StatusUnauthorized, "unauthorized", "account not found")

@@ -12,6 +12,11 @@ ExecStart=/usr/local/bin/sspanel run --config /etc/sspanel/config.yaml
 Restart=on-failure
 RestartSec=3s
 LimitNOFILE=1048576
+# Every file the service creates -- the SQLite database and its WAL sidecars,
+# temporary backups -- carries server and client PSKs, so it must not be
+# readable by other local accounts. The process also sets this umask itself;
+# doing it here too makes the intent visible in the unit.
+UMask=0077
 
 # Hardening
 NoNewPrivileges=true

@@ -15,7 +15,7 @@ func (s *Service) startResetLoop() {
 		defer s.resetWG.Done()
 		timer := time.NewTimer(time.Minute)
 		defer timer.Stop()
-		s.runScheduledResets()
+		s.runScheduledResets(time.Now())
 		s.pruneAudit()
 		ticks := 0
 		for {
@@ -23,7 +23,7 @@ func (s *Service) startResetLoop() {
 			case <-s.resetStop:
 				return
 			case <-timer.C:
-				s.runScheduledResets()
+				s.runScheduledResets(time.Now())
 				ticks++
 				if ticks%auditPruneInterval == 0 {
 					s.pruneAudit()
@@ -35,8 +35,11 @@ func (s *Service) startResetLoop() {
 }
 
 // runScheduledResets resets clients whose monthly reset boundary has passed.
-func (s *Service) runScheduledResets() {
-	now := time.Now()
+//
+// now is a parameter rather than a call to time.Now so the three branches that
+// matter -- establishing a baseline, skipping an already applied boundary and
+// performing the reset -- are testable without waiting for a calendar.
+func (s *Service) runScheduledResets(now time.Time) {
 	clients, err := s.store.ClientsForReset(now.Unix())
 	if err != nil {
 		s.logger.Warn("load reset candidates failed", "error", err)
@@ -54,9 +57,11 @@ func (s *Service) runScheduledResets() {
 		}
 		boundary := LastResetBoundary(now, s.location(), day)
 		if client.LastResetAt == 0 {
-			// First tick for a pre-existing client: establish the baseline
-			// instead of wiping traffic on upgrade.
-			if err := s.store.ResetClientTraffic(client.ID, now.Unix()); err != nil {
+			// First tick for a pre-existing client: adopt it where it stands.
+			// This used to call ResetClientTraffic, which zeroes the counters --
+			// so an upgrade wiped every user's usage on the next tick, exactly
+			// what the comment above promised not to do.
+			if err := s.store.SetClientLastReset(client.ID, now.Unix()); err != nil {
 				s.logger.Warn("initialize reset baseline failed", "client_id", client.ID, "error", err)
 			}
 			continue
@@ -64,11 +69,15 @@ func (s *Service) runScheduledResets() {
 		if boundary <= client.LastResetAt {
 			continue
 		}
-		if err := s.store.ResetClientTraffic(client.ID, boundary); err != nil {
+		// Persist and clear the live counters as one operation: a flush that
+		// already snapshotted the old totals must not be able to write them back
+		// after the reset commits. See usageManager.resetPersist.
+		if err := s.mgr.ResetClientTrafficPersist(client.ID, func() error {
+			return s.store.ResetClientTraffic(client.ID, boundary)
+		}); err != nil {
 			s.logger.Warn("scheduled reset failed", "client_id", client.ID, "error", err)
 			continue
 		}
-		s.mgr.ResetClientTraffic(client.ID)
 		s.logger.Info("monthly traffic reset", "client_id", client.ID, "name", client.Name,
 			"boundary", time.Unix(boundary, 0).In(s.location()).Format(time.RFC3339))
 	}
@@ -101,9 +110,9 @@ func (s *Service) ResetClient(clientID int64) error {
 	if _, err := s.store.ClientByID(clientID); err != nil {
 		return err
 	}
-	if err := s.store.ResetClientTraffic(clientID, model.NowUnix()); err != nil {
-		return err
-	}
-	s.mgr.ResetClientTraffic(clientID)
-	return nil
+	// One operation, so the flush loop cannot restore the counters it
+	// snapshotted before the reset.
+	return s.mgr.ResetClientTrafficPersist(clientID, func() error {
+		return s.store.ResetClientTraffic(clientID, model.NowUnix())
+	})
 }

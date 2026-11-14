@@ -43,22 +43,20 @@ type systemInfo struct {
 func (s *Server) handleDashboard(c *gin.Context) {
 	counts, err := s.svc.Counts()
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	up, down, err := s.svc.TrafficTotalsLive()
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
-	online := 0
-	for _, ips := range s.svc.Manager().OnlineIPs() {
-		online += len(ips)
-	}
-	since := time.Now().AddDate(0, 0, -30).In(s.svc.Config().Location()).Format("2006-01-02")
-	days, err := s.svc.Store().DailyTotals(since)
+	online := s.svc.OnlineIPCount()
+	// The effective time zone (not the config file's) keeps this window aligned
+	// with the per-client usage endpoint after a settings change.
+	days, err := s.svc.DailyTotalsSince(30)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	info := s.monitor.Snapshot()
@@ -70,7 +68,7 @@ func (s *Server) handleDashboard(c *gin.Context) {
 		EnabledInbounds: counts.EnabledInbounds,
 		EnabledClients:  counts.EnabledClients,
 		OnlineIPs:       online,
-		Sessions:        s.svc.Manager().SessionCount(),
+		Sessions:        s.svc.SessionCount(),
 		UpBytes:         up,
 		DownBytes:       down,
 		Traffic30d:      days,
@@ -105,7 +103,7 @@ func (s *Server) handleSystem(c *gin.Context) {
 			HeapAlloc:   info.HeapAlloc,
 			MetricsHost: info.MetricsHost,
 		},
-		"sessions": s.svc.Manager().SessionCount(),
+		"sessions": s.svc.SessionCount(),
 	})
 }
 
@@ -119,7 +117,7 @@ func (s *Server) handleUpdateSettings(c *gin.Context) {
 		return
 	}
 	if err := s.svc.UpdateSettings(input); err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{
@@ -135,14 +133,14 @@ func (s *Server) handleUpdateSettings(c *gin.Context) {
 func (s *Server) handleBackup(c *gin.Context) {
 	dir, err := os.MkdirTemp("", "sspanel-backup-")
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	defer os.RemoveAll(dir)
 	name := fmt.Sprintf("sspanel-%s.db", time.Now().Format("20060102-150405"))
 	path := dir + "/" + name
 	if err := s.svc.Backup(path); err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	c.Header("Content-Disposition", "attachment; filename="+name)

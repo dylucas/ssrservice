@@ -149,7 +149,7 @@ func (s *Server) handleListAudit(c *gin.Context) {
 	}
 	items, total, err := s.svc.AuditLogs(filter)
 	if err != nil {
-		writeServiceError(c, err)
+		s.writeServiceError(c, err)
 		return
 	}
 	// Echo the effective paging values (the store applies its own defaults and
