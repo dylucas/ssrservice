@@ -7,7 +7,7 @@ import (
 	"github.com/ydong/ssrservice/internal/model"
 )
 
-const inboundColumns = `id, remark, listen, port, method, server_psk, udp_enabled, enabled, created_at, updated_at`
+const inboundColumns = `id, remark, listen, port, method, server_psk, domain, domain_port, udp_enabled, enabled, created_at, updated_at`
 
 func scanInbound(row interface{ Scan(...any) error }) (*model.Inbound, error) {
 	var (
@@ -16,7 +16,7 @@ func scanInbound(row interface{ Scan(...any) error }) (*model.Inbound, error) {
 		enabled int64
 	)
 	if err := row.Scan(&in.ID, &in.Remark, &in.Listen, &in.Port, &in.Method, &in.ServerPSK,
-		&udp, &enabled, &in.CreatedAt, &in.UpdatedAt); err != nil {
+		&in.Domain, &in.DomainPort, &udp, &enabled, &in.CreatedAt, &in.UpdatedAt); err != nil {
 		return nil, scanErr(err)
 	}
 	in.UDPEnabled = udp != 0
@@ -34,9 +34,10 @@ func (s *Store) CreateInbound(in *model.Inbound) error {
 	udp := boolInt(in.UDPEnabled)
 	enabled := boolInt(in.Enabled)
 	err := s.write(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`INSERT INTO inbounds(remark, listen, port, method, server_psk, udp_enabled, enabled, created_at, updated_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.Remark, in.Listen, in.Port, in.Method, in.ServerPSK, udp, enabled, in.CreatedAt, in.UpdatedAt)
+		res, err := tx.Exec(`INSERT INTO inbounds(remark, listen, port, method, server_psk, domain, domain_port,
+			udp_enabled, enabled, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			in.Remark, in.Listen, in.Port, in.Method, in.ServerPSK, in.Domain, in.DomainPort,
+			udp, enabled, in.CreatedAt, in.UpdatedAt)
 		if err != nil {
 			return scanErr(err)
 		}
@@ -75,8 +76,8 @@ func (s *Store) UpdateInbound(in *model.Inbound) error {
 	in.UpdatedAt = time.Now().Unix()
 	return s.write(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE inbounds SET remark = ?, listen = ?, port = ?, method = ?, server_psk = ?,
-			udp_enabled = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-			in.Remark, in.Listen, in.Port, in.Method, in.ServerPSK,
+			domain = ?, domain_port = ?, udp_enabled = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+			in.Remark, in.Listen, in.Port, in.Method, in.ServerPSK, in.Domain, in.DomainPort,
 			boolInt(in.UDPEnabled), boolInt(in.Enabled), in.UpdatedAt, in.ID)
 		if err != nil {
 			return scanErr(err)

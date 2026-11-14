@@ -81,12 +81,17 @@ const (
 
 // Inbound is a Shadowsocks listener together with its user list.
 type Inbound struct {
-	ID         int64  `json:"id"`
-	Remark     string `json:"remark"`
-	Listen     string `json:"listen"`
-	Port       int    `json:"port"`
-	Method     string `json:"method"`
-	ServerPSK  string `json:"server_psk,omitempty"`
+	ID        int64  `json:"id"`
+	Remark    string `json:"remark"`
+	Listen    string `json:"listen"`
+	Port      int    `json:"port"`
+	Method    string `json:"method"`
+	ServerPSK string `json:"server_psk,omitempty"`
+	// Domain, when set, is the hostname used in share links and subscriptions for
+	// this inbound instead of the global public_host. DomainPort overrides the
+	// port, with 0 meaning "fall back to public_port, then to the inbound port".
+	Domain     string `json:"domain"`
+	DomainPort int    `json:"domain_port"`
 	UDPEnabled bool   `json:"udp_enabled"`
 	Enabled    bool   `json:"enabled"`
 	CreatedAt  int64  `json:"created_at"`

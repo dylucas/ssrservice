@@ -459,3 +459,51 @@ func TestClientRowModelRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected derived values: used=%d remaining=%d", c.UsedBytes(), c.RemainingBytes())
 	}
 }
+
+// TestInboundDomainRoundTrip verifies the domain columns survive create, update
+// and clearing.
+func TestInboundDomainRoundTrip(t *testing.T) {
+	st := newTestStore(t)
+	in := model.Inbound{Remark: "hk", Listen: "127.0.0.1", Port: 9400,
+		Method: model.Method2022AES128GCM, Enabled: true,
+		Domain: "hk.example.com", DomainPort: 8443}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := st.InboundByID(in.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Domain != "hk.example.com" || got.DomainPort != 8443 {
+		t.Fatalf("domain not persisted: %+v", got)
+	}
+
+	got.Domain = "hk2.example.com"
+	got.DomainPort = 0
+	if err := st.UpdateInbound(got); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	reloaded, _ := st.InboundByID(in.ID)
+	if reloaded.Domain != "hk2.example.com" || reloaded.DomainPort != 0 {
+		t.Fatalf("domain not updated: %+v", reloaded)
+	}
+
+	// Clearing the domain returns the inbound to the global setting.
+	reloaded.Domain = ""
+	if err := st.UpdateInbound(reloaded); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	cleared, _ := st.InboundByID(in.ID)
+	if cleared.Domain != "" || cleared.DomainPort != 0 {
+		t.Fatalf("domain not cleared: %+v", cleared)
+	}
+
+	// ListInbounds must carry the columns too.
+	list, err := st.ListInbounds()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].Domain != "" {
+		t.Fatalf("list mismatch: %+v", list)
+	}
+}
