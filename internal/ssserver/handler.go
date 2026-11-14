@@ -158,30 +158,33 @@ func (h *handler) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 	m.registry.onClose(sess, s.close)
 	defer s.close()
 
+	// One buffer serves the whole session: ReadPacket copies the payload into
+	// it, the payload is written out before the next iteration, and the
+	// buffer is reset in place. Acquiring a 64 KiB pooled buffer per packet
+	// cost an allocation and a pool round trip on every datagram.
+	buffer := buf.NewSize(maxUDPPacketSize)
+	defer buffer.Release()
+
 	for {
-		buffer := buf.NewSize(maxUDPPacketSize)
+		buffer.Reset()
 		dest, err := conn.ReadPacket(buffer)
 		if err != nil {
-			buffer.Release()
 			return nil
 		}
 		if buffer.Len() == 0 {
-			buffer.Release()
 			continue
 		}
 		target, err := m.currentPolicy().resolve(ctx, dest)
 		if err != nil {
-			buffer.Release()
 			m.logger.Debug("udp destination rejected", "client_id", clientID,
 				"destination", dest.String(), "error", err)
 			continue
 		}
 		// WriteToUDPAddrPort copies the payload into the kernel buffer
-		// synchronously, so the pooled buffer can be handed over without an
-		// intermediate copy. Release happens right after the write.
+		// synchronously, so the payload can be handed over without an
+		// intermediate copy and the buffer reused afterwards.
 		n := buffer.Len()
 		err = s.send(target, buffer.Bytes())
-		buffer.Release()
 		if err != nil {
 			m.logger.Debug("udp write failed", "client_id", clientID,
 				"destination", target.String(), "error", err)

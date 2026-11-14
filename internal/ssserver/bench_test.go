@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
 
 	"github.com/ydong/ssrservice/internal/model"
@@ -150,5 +151,34 @@ func BenchmarkProtocolSignature(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = protocolSignature(snap)
+	}
+}
+
+// BenchmarkUDPBufferReset measures reusing one NAT session buffer per packet
+// instead of acquiring and releasing a pooled 64 KiB buffer for every datagram.
+func BenchmarkUDPBufferReset(b *testing.B) {
+	buffer := buf.NewSize(maxUDPPacketSize)
+	defer buffer.Release()
+	payload := make([]byte, 1400)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buffer.Reset()
+		buffer.Write(payload)
+		buffer.Reset()
+	}
+}
+
+// BenchmarkUDPBufferPerPacket measures the old per-datagram allocation pattern
+// (acquire a pooled 64 KiB buffer, release it) for comparison with
+// BenchmarkUDPBufferReset.
+func BenchmarkUDPBufferPerPacket(b *testing.B) {
+	payload := make([]byte, 1400)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buffer := buf.NewSize(maxUDPPacketSize)
+		buffer.Write(payload)
+		buffer.Release()
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -825,4 +826,70 @@ func TestUDPSessionSocketReuse(t *testing.T) {
 	if atomic.LoadInt32(&client.closed) != 1 {
 		t.Fatal("close did not close the protocol side of the NAT session")
 	}
+}
+
+// TestUDPSessionManyPackets sends many datagrams through one NAT session. The
+// session reuses a single buffer, so this guards against payload bleed between
+// packets and against accounting drift.
+func TestUDPSessionManyPackets(t *testing.T) {
+	env := newTestEnv(t)
+	serverPSK := newTestKey(t, 16)
+	client := model.Client{Name: "udp-many", PSK: newTestKey(t, 16), Enabled: true, SubToken: "tok"}
+	in := env.createInbound(model.Method2022AES128GCM, serverPSK, client)
+	clients, _ := env.store.ListClients(in.ID)
+	client = clients[0]
+
+	echoConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("udp echo: %v", err)
+	}
+	defer echoConn.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, addr, err := echoConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = echoConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	m, err := buildClientMethod(in.Method, serverPSK, client.PSK)
+	if err != nil {
+		t.Fatalf("client method: %v", err)
+	}
+	raw, err := net.Dial("udp", env.addr())
+	if err != nil {
+		t.Fatalf("dial udp: %v", err)
+	}
+	defer raw.Close()
+	packetConn := m.DialPacketConn(raw)
+	defer packetConn.Close()
+
+	const packets = 32
+	var expectedBytes int64
+	buffer := make([]byte, 2048)
+	for i := 0; i < packets; i++ {
+		// Distinct payloads of distinct lengths: a reused buffer that was not
+		// reset would surface as a stale or trailing payload.
+		payload := strings.Repeat(string(rune('a'+i%26)), 8+i)
+		expectedBytes += int64(len(payload))
+		_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := packetConn.WriteTo([]byte(payload), echoConn.LocalAddr()); err != nil {
+			t.Fatalf("write packet %d: %v", i, err)
+		}
+		n, _, err := packetConn.ReadFrom(buffer)
+		if err != nil {
+			t.Fatalf("read packet %d: %v", i, err)
+		}
+		if got := string(buffer[:n]); got != payload {
+			t.Fatalf("packet %d echoed %q, want %q", i, got, payload)
+		}
+	}
+
+	waitFor(t, 5*time.Second, "all udp traffic counted", func() bool {
+		up, _ := env.mgr.ClientTraffic(client.ID)
+		return up >= expectedBytes
+	})
 }
