@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -349,18 +351,66 @@ func parseInt(value string) int {
 	return n
 }
 
-func validHost(host string) bool {
+// maxHostNameLen is the DNS limit for a fully qualified name.
+const maxHostNameLen = 253
+
+// maxHostLabelLen is the DNS limit for one label.
+const maxHostLabelLen = 63
+
+// normalizeHost lowercases a host value and strips one trailing dot (the absolute
+// FQDN form), so "Example.COM." and "example.com" compare and display the same.
+func normalizeHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimSuffix(host, ".")
+	// A value of just "." trims to the empty string, which callers treat as unset.
+	return host
+}
+
+// validateHostValue checks a hostname or IP literal used in share links.
+//
+// It is deliberately stricter than a character allowlist: a scheme, a port or
+// bracketed IPv6 in this field would end up inside an ss:// URI and produce a
+// link no client can parse. Brackets are rejected because the IPv6 form is
+// written bare here and bracketed only when the URI is assembled.
+func validateHostValue(host string) error {
 	if host == "" {
-		return false
+		return errors.New("host must not be empty")
+	}
+	if len(host) > maxHostNameLen {
+		return fmt.Errorf("host must be at most %d characters", maxHostNameLen)
+	}
+	// An IP literal is valid as-is; a zone suffix is not meaningful in a share link.
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if addr.Zone() != "" {
+			return errors.New("host must not contain an IPv6 zone suffix")
+		}
+		return nil
 	}
 	for _, r := range host {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
-			r == '.' || r == '-' || r == ':' || r == '[' || r == ']' {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '.':
 			continue
+		default:
+			return fmt.Errorf("host contains an invalid character %q", r)
 		}
-		return false
 	}
-	return true
+	for _, label := range strings.Split(host, ".") {
+		if label == "" {
+			return errors.New("host must not contain empty labels")
+		}
+		if len(label) > maxHostLabelLen {
+			return fmt.Errorf("each part of host must be at most %d characters", maxHostLabelLen)
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return errors.New("host parts must not start or end with a hyphen")
+		}
+	}
+	return nil
+}
+
+// validHost reports whether host passes validateHostValue.
+func validHost(host string) bool {
+	return validateHostValue(normalizeHost(host)) == nil
 }
 
 // SubscriptionEnabled reports whether public subscriptions are enabled.

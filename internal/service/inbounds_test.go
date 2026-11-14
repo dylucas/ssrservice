@@ -115,3 +115,119 @@ func TestSubscriptionPath(t *testing.T) {
 		t.Fatalf("empty token path = %q", got)
 	}
 }
+
+// TestPrepareInboundDomain covers the domain rules applied on save.
+func TestPrepareInboundDomain(t *testing.T) {
+	svc := &Service{}
+	base := func() *model.Inbound {
+		return &model.Inbound{Remark: "x", Listen: "0.0.0.0", Port: 8388,
+			Method: model.Method2022AES128GCM}
+	}
+
+	// Canonicalisation: trimmed, lowercased, trailing dot removed.
+	in := base()
+	in.Domain = "  HK.Example.COM.  "
+	if err := svc.prepareInbound(in); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if in.Domain != "hk.example.com" {
+		t.Fatalf("domain = %q, want hk.example.com", in.Domain)
+	}
+
+	// Unset is fine.
+	in = base()
+	if err := svc.prepareInbound(in); err != nil {
+		t.Fatalf("prepare without domain: %v", err)
+	}
+	if in.Domain != "" || in.DomainPort != 0 {
+		t.Fatalf("unset domain should stay empty: %+v", in)
+	}
+
+	// Valid domain with a port.
+	in = base()
+	in.Domain = "hk.example.com"
+	in.DomainPort = 8443
+	if err := svc.prepareInbound(in); err != nil {
+		t.Fatalf("prepare with port: %v", err)
+	}
+
+	failures := map[string]func(*model.Inbound){
+		"invalid domain":      func(in *model.Inbound) { in.Domain = "http://x" },
+		"port without domain": func(in *model.Inbound) { in.DomainPort = 8443 },
+		"negative port":       func(in *model.Inbound) { in.Domain = "a.com"; in.DomainPort = -1 },
+		"port above range":    func(in *model.Inbound) { in.Domain = "a.com"; in.DomainPort = 70000 },
+		"bracketed IPv6":      func(in *model.Inbound) { in.Domain = "[::1]" },
+		"scheme prefix":       func(in *model.Inbound) { in.Domain = "https://a.com" },
+	}
+	for name, mutate := range failures {
+		in := base()
+		mutate(in)
+		err := svc.prepareInbound(in)
+		if err == nil {
+			t.Fatalf("%s: expected an error", name)
+		}
+		if !IsValidation(err) {
+			t.Fatalf("%s: expected a validation error, got %v", name, err)
+		}
+	}
+}
+
+// TestResolveHostPortPrecedence pins the host/port chain used by share links.
+func TestResolveHostPortPrecedence(t *testing.T) {
+	cases := []struct {
+		name       string
+		publicHost string
+		publicPort int
+		in         model.Inbound
+		fallback   string
+		wantHost   string
+		wantPort   int
+	}{
+		{
+			name:       "inbound domain and port win over global settings",
+			publicHost: "global.example.com", publicPort: 9000,
+			in:       model.Inbound{Domain: "hk.example.com", DomainPort: 8443, Port: 8388},
+			wantHost: "hk.example.com", wantPort: 8443,
+		},
+		{
+			name:       "domain without port falls back to the global port",
+			publicHost: "global.example.com", publicPort: 9000,
+			in:       model.Inbound{Domain: "hk.example.com", Port: 8388},
+			wantHost: "hk.example.com", wantPort: 9000,
+		},
+		{
+			name:     "domain without any global port falls back to the inbound port",
+			in:       model.Inbound{Domain: "hk.example.com", Port: 8388},
+			wantHost: "hk.example.com", wantPort: 8388,
+		},
+		{
+			name:       "no domain keeps the previous behaviour",
+			publicHost: "global.example.com", publicPort: 9000,
+			in:       model.Inbound{Listen: "127.0.0.1", Port: 8388},
+			wantHost: "global.example.com", wantPort: 9000,
+		},
+		{
+			name:     "no domain, no global host: request hint wins over the listen address",
+			in:       model.Inbound{Listen: "203.0.113.5", Port: 8388},
+			fallback: "hint.example.com",
+			wantHost: "hint.example.com", wantPort: 8388,
+		},
+		{
+			name:     "domain ignores the request hint",
+			in:       model.Inbound{Domain: "hk.example.com", Port: 8388},
+			fallback: "hint.example.com",
+			wantHost: "hk.example.com", wantPort: 8388,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &Service{}
+			svc.publicHost = tc.publicHost
+			svc.publicPort = tc.publicPort
+			host, port := svc.resolveHostPort(&tc.in, tc.fallback)
+			if host != tc.wantHost || port != tc.wantPort {
+				t.Fatalf("resolveHostPort = %s:%d, want %s:%d", host, port, tc.wantHost, tc.wantPort)
+			}
+		})
+	}
+}

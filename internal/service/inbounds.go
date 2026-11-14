@@ -13,11 +13,14 @@ import (
 
 // InboundInput is the editable part of an inbound.
 type InboundInput struct {
-	Remark     string `json:"remark"`
-	Listen     string `json:"listen"`
-	Port       int    `json:"port"`
-	Method     string `json:"method"`
-	ServerPSK  string `json:"server_psk"`
+	Remark    string `json:"remark"`
+	Listen    string `json:"listen"`
+	Port      int    `json:"port"`
+	Method    string `json:"method"`
+	ServerPSK string `json:"server_psk"`
+	// Domain overrides the global public host for this inbound's share links.
+	Domain     string `json:"domain"`
+	DomainPort int    `json:"domain_port"`
 	UDPEnabled bool   `json:"udp_enabled"`
 	Enabled    bool   `json:"enabled"`
 }
@@ -98,6 +101,8 @@ func (s *Service) CreateInbound(input InboundInput) (*model.Inbound, error) {
 		Port:       input.Port,
 		Method:     input.Method,
 		ServerPSK:  strings.TrimSpace(input.ServerPSK),
+		Domain:     input.Domain,
+		DomainPort: input.DomainPort,
 		UDPEnabled: input.UDPEnabled,
 		Enabled:    input.Enabled,
 	}
@@ -135,6 +140,8 @@ func (s *Service) UpdateInbound(id int64, input InboundInput) (*model.Inbound, e
 	updated.Listen = strings.TrimSpace(input.Listen)
 	updated.Port = input.Port
 	updated.Method = input.Method
+	updated.Domain = input.Domain
+	updated.DomainPort = input.DomainPort
 	updated.UDPEnabled = input.UDPEnabled
 	updated.Enabled = input.Enabled
 	// An empty server PSK means "keep the current one" when the method still
@@ -259,6 +266,20 @@ func (s *Service) prepareInbound(in *model.Inbound) error {
 	if len(in.Remark) > 64 {
 		return invalid("remark must be at most 64 characters")
 	}
+	in.Domain = normalizeHost(in.Domain)
+	if in.Domain != "" {
+		if err := validateHostValue(in.Domain); err != nil {
+			return invalid("invalid domain: %v", err)
+		}
+	}
+	if in.DomainPort < 0 || in.DomainPort > 65535 {
+		return invalid("domain_port must be between 0 and 65535")
+	}
+	// A port without a host would be silently ignored when links are built, which
+	// is the easiest mistake to make in the form.
+	if in.DomainPort > 0 && in.Domain == "" {
+		return invalid("domain_port requires a domain")
+	}
 	return nil
 }
 
@@ -299,11 +320,35 @@ func validateListenAddress(listen string) error {
 }
 
 // resolveHostPort decides which host and port to embed in share links.
+//
+// Precedence, most specific first:
+//
+//	host: inbound domain -> global public_host -> request hint -> listen address
+//	port: inbound domain_port -> global public_port -> inbound port
+//
+// The inbound domain wins because it is the only value that describes one inbound
+// while the global setting is shared by all of them. The port chain keeps a
+// domain-only configuration from silently changing the port: falling back to the
+// global port (and then the inbound port) matches what the link showed before.
 func (s *Service) resolveHostPort(in *model.Inbound, fallbackHost string) (string, int) {
 	s.mu.RLock()
-	host := s.publicHost
-	port := s.publicPort
+	globalHost := s.publicHost
+	globalPort := s.publicPort
 	s.mu.RUnlock()
+
+	if in != nil && in.Domain != "" {
+		port := in.DomainPort
+		if port <= 0 {
+			port = globalPort
+		}
+		if port <= 0 {
+			port = in.Port
+		}
+		return in.Domain, port
+	}
+
+	host := globalHost
+	port := globalPort
 	if host == "" {
 		host = strings.TrimSpace(fallbackHost)
 	}
