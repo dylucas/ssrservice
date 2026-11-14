@@ -1,4 +1,5 @@
 import { readRuntimeConfig } from './runtime-config'
+import type { AuditResponse } from './types'
 import type { Client, ClientSummary } from './types'
 
 const config = readRuntimeConfig()
@@ -101,5 +102,10 @@ export const api = {
   settings: () => request<any>('GET', '/settings'),
   updateSettings: (input: unknown) => request<any>('PUT', '/settings', input),
   backupURL: () => apiURL('/backup'),
+  audit: (params: Record<string, string | number>) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) query.set(key, String(value))
+    return request<AuditResponse>('GET', `/audit?${query.toString()}`)
+  },
   subURL: (path: string) => `${basePath}${path}`,
 }

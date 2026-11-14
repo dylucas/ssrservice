@@ -127,3 +127,24 @@ export interface ClientInput {
   reset_day: number
   note: string
 }
+
+/** One audit trail entry. */
+export interface AuditLog {
+  id: number
+  created_at: number
+  admin_id: number
+  username: string
+  action: string
+  target_type: string
+  target_id: number
+  detail: string
+  ip: string
+}
+
+export interface AuditResponse {
+  items: AuditLog[]
+  total: number
+  limit: number
+  offset: number
+  actions: string[]
+}

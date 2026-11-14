@@ -14,6 +14,7 @@ const router = createRouter({
         { path: 'inbounds', name: 'inbounds', component: () => import('@/views/InboundsView.vue') },
         { path: 'clients', name: 'clients', component: () => import('@/views/ClientsView.vue') },
         { path: 'settings', name: 'settings', component: () => import('@/views/SettingsView.vue') },
+        { path: 'audit', name: 'audit', component: () => import('@/views/AuditView.vue') },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

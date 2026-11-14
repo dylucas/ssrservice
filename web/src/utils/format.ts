@@ -61,3 +61,14 @@ export async function copyText(value: string): Promise<void> {
   document.execCommand('copy')
   document.body.removeChild(area)
 }
+
+/** formatDateTime renders a unix timestamp as YYYY-MM-DD HH:mm:ss in local time. */
+export function formatDateTime(unix: number | null | undefined): string {
+  if (!unix) return '—'
+  const date = new Date(unix * 1000)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  )
+}

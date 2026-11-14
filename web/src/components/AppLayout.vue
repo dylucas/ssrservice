@@ -26,6 +26,10 @@
           <el-icon><User /></el-icon>
           <template #title>用户管理</template>
         </el-menu-item>
+        <el-menu-item index="/audit">
+          <el-icon><Document /></el-icon>
+          <template #title>审计日志</template>
+        </el-menu-item>
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>
           <template #title>系统设置</template>
@@ -76,6 +80,7 @@ import {
   ArrowDown,
   Avatar,
   Connection,
+  Document,
   Expand,
   Fold,
   Odometer,
@@ -96,6 +101,7 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/inbounds')) return '/inbounds'
   if (route.path.startsWith('/clients')) return '/clients'
   if (route.path.startsWith('/settings')) return '/settings'
+  if (route.path.startsWith('/audit')) return '/audit'
   return '/'
 })
 
