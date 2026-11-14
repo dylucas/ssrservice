@@ -130,10 +130,3 @@ function downloadBackup() {
 onMounted(load)
 </script>
 
-<style scoped>
-.hint {
-  margin-left: 10px;
-  color: #8a94a6;
-  font-size: 12px;
-}
-</style>

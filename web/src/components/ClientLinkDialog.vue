@@ -91,9 +91,9 @@ async function copy(value: string) {
 .qr {
   width: 220px;
   height: 220px;
-  border: 1px solid #e7ebf0;
+  border: 1px solid var(--sspanel-border);
   border-radius: 8px;
   padding: 6px;
-  background: #fff;
+  background: var(--sspanel-surface);
 }
 </style>

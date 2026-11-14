@@ -124,12 +124,6 @@ function reset() {
 </script>
 
 <style scoped>
-.hint {
-  margin-top: 6px;
-  font-size: 12px;
-  color: #909399;
-  line-height: 1.6;
-}
 .result {
   margin-top: 8px;
   display: flex;

@@ -9,9 +9,6 @@
         :default-active="activeMenu"
         :collapse="collapsed"
         :collapse-transition="false"
-        background-color="#1f2d3d"
-        text-color="#cfd8e3"
-        active-text-color="#ffffff"
         router
       >
         <el-menu-item index="/">
@@ -123,21 +120,21 @@ async function onCommand(command: string) {
   min-height: 100vh;
 }
 .aside {
-  background: #1f2d3d;
+  background: var(--sspanel-aside-bg);
   display: flex;
   flex-direction: column;
   transition: width 0.2s;
 }
 .brand {
-  height: 56px;
+  height: var(--sspanel-header-height);
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 0 18px;
-  color: #fff;
+  color: var(--sspanel-surface);
   font-weight: 700;
   font-size: 17px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--sspanel-brand-divider);
 }
 .brand-mark {
   display: inline-flex;
@@ -146,22 +143,30 @@ async function onCommand(command: string) {
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #409eff, #1f6feb);
+  background: linear-gradient(135deg, var(--sspanel-primary-soft), var(--sspanel-primary));
   font-size: 13px;
 }
+/* The side menu is themed through Element Plus' own CSS variables rather than the
+ * background-color/text-color props: those props are mixed in JavaScript to derive
+ * hover shades, which a var() reference cannot survive. */
 .aside :deep(.el-menu) {
   border-right: none;
   flex: 1;
+  --el-menu-bg-color: var(--sspanel-aside-bg);
+  --el-menu-text-color: var(--sspanel-aside-text);
+  --el-menu-active-color: var(--sspanel-surface);
+  --el-menu-hover-bg-color: var(--sspanel-aside-hover);
+  --el-menu-hover-text-color: var(--sspanel-surface);
 }
 .aside-footer {
   padding: 12px 18px;
-  color: #6b7a8d;
+  color: var(--sspanel-aside-muted);
   font-size: 12px;
 }
 .header {
-  height: 56px;
-  background: #fff;
-  border-bottom: 1px solid #e7ebf0;
+  height: var(--sspanel-header-height);
+  background: var(--sspanel-surface);
+  border-bottom: 1px solid var(--sspanel-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -184,7 +189,7 @@ async function onCommand(command: string) {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  color: #1f2d3d;
+  color: var(--sspanel-text);
 }
 .main {
   padding: 0;

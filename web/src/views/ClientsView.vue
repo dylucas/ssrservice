@@ -304,10 +304,3 @@ onMounted(async () => {
 })
 </script>
 
-<style scoped>
-.pagination {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 12px;
-}
-</style>

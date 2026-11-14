@@ -21,7 +21,7 @@
     </div>
 
     <div v-loading="loading" class="chart-wrap">
-      <div v-if="!loading && !hasData" class="empty">该区间还没有流量记录</div>
+      <div v-if="!loading && !hasData" class="empty-state">该区间还没有流量记录</div>
       <div v-else ref="chartEl" class="chart"></div>
     </div>
 
@@ -127,22 +127,7 @@ onBeforeUnmount(reset)
 .totals {
   display: flex;
   gap: 16px;
-  color: #606266;
+  color: var(--sspanel-text-muted);
   font-size: 13px;
-}
-.chart-wrap {
-  position: relative;
-  min-height: 300px;
-}
-.chart {
-  width: 100%;
-  height: 300px;
-}
-.empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 300px;
-  color: #909399;
 }
 </style>

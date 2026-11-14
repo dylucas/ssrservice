@@ -1,0 +1,201 @@
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import { fileURLToPath, URL } from 'node:url'
+import { describe, expect, it } from 'vitest'
+
+// Style guards.
+//
+// These tests do not render anything: they read the CSS and the component
+// sources and check the invariants that would otherwise erode silently as the
+// panel grows:
+//   1. every colour lives in the token block of styles.css,
+//   2. component <style> blocks reference tokens instead of literals,
+//   3. the text tokens actually meet WCAG AA against the surfaces they sit on,
+//   4. shared utility classes are defined once.
+// The comparison is a computed contrast ratio, so lightening a "muted" colour to
+// taste fails here instead of shipping unreadable text.
+
+const srcDir = fileURLToPath(new URL('../src', import.meta.url))
+const stylesPath = join(srcDir, 'styles.css')
+
+function walk(dir: string): string[] {
+  const out: string[] = []
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry)
+    if (statSync(full).isDirectory()) {
+      out.push(...walk(full))
+      continue
+    }
+    out.push(full)
+  }
+  return out
+}
+
+/** tokenBlock returns the text of the first :root block. */
+function tokenBlock(css: string): string {
+  const start = css.indexOf(':root {')
+  expect(start, 'styles.css must open with a :root token block').toBeGreaterThanOrEqual(0)
+  const end = css.indexOf('\n}', start)
+  expect(end, 'the :root block must be closed').toBeGreaterThan(start)
+  return css.slice(start, end)
+}
+
+/** outsideTokenBlock returns the css with the :root block removed. */
+function outsideTokenBlock(css: string): string {
+  const block = tokenBlock(css)
+  return css.replace(block, '')
+}
+
+/** colorLiterals finds #rgb/#rrggbb values and rgb()/rgba() calls. */
+function colorLiterals(text: string): string[] {
+  const found: string[] = []
+  for (const match of text.matchAll(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|rgba?\(/g)) {
+    found.push(match[0])
+  }
+  return found
+}
+
+/** parseTokens extracts custom properties from the :root block. */
+function parseTokens(css: string): Map<string, string> {
+  const tokens = new Map<string, string>()
+  for (const match of tokenBlock(css).matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
+    tokens.set(match[1], match[2].trim())
+  }
+  return tokens
+}
+
+/** resolveToken follows var() indirection to a literal colour. */
+function resolveToken(tokens: Map<string, string>, name: string, depth = 0): string {
+  expect(depth, `token ${name} has a var() cycle`).toBeLessThan(10)
+  const raw = tokens.get(name)
+  expect(raw, `token ${name} is not defined`).toBeTruthy()
+  const reference = raw!.match(/^var\((--[a-z0-9-]+)\)$/i)
+  if (reference) return resolveToken(tokens, reference[1], depth + 1)
+  return raw!
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const value = hex.replace('#', '')
+  const full =
+    value.length === 3
+      ? value
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : value
+  return [
+    parseInt(full.slice(0, 2), 16),
+    parseInt(full.slice(2, 4), 16),
+    parseInt(full.slice(4, 6), 16),
+  ]
+}
+
+/** relativeLuminance implements the WCAG 2.x definition. */
+function relativeLuminance(hex: string): number {
+  const [r, g, b] = hexToRgb(hex).map((channel) => {
+    const value = channel / 255
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/** contrastRatio returns the WCAG contrast ratio between two colours. */
+function contrastRatio(a: string, b: string): number {
+  const la = relativeLuminance(a)
+  const lb = relativeLuminance(b)
+  const [hi, lo] = la > lb ? [la, lb] : [lb, la]
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+const css = readFileSync(stylesPath, 'utf8')
+const tokens = parseTokens(css)
+
+describe('design tokens', () => {
+  it('keeps every colour literal inside the token block', () => {
+    // rgba() shadows and the brand divider are the only allowed escapes, and they
+    // are declared in :root like everything else.
+    const literals = colorLiterals(outsideTokenBlock(css))
+    expect(literals, `colours outside :root: ${literals.join(', ')}`).toEqual([])
+  })
+
+  it('does not hardcode colours in component style blocks', () => {
+    const offenders: string[] = []
+    for (const file of walk(srcDir).filter((path) => path.endsWith('.vue'))) {
+      const source = readFileSync(file, 'utf8')
+      const styleStart = source.indexOf('<style')
+      if (styleStart < 0) continue
+      const styleEnd = source.indexOf('</style>', styleStart)
+      const style = source.slice(styleStart, styleEnd)
+      const literals = colorLiterals(style)
+      if (literals.length > 0) {
+        offenders.push(`${relative(srcDir, file)}: ${literals.join(', ')}`)
+      }
+    }
+    expect(offenders, `use design tokens instead: ${offenders.join('; ')}`).toEqual([])
+  })
+
+  it('defines each shared utility class once', () => {
+    const shared = ['.chart', '.pagination', '.hint', '.unit', '.empty-state', '.muted']
+    for (const className of shared) {
+      // Match "selector {" at any nesting depth, anchored to the class token.
+      const pattern = new RegExp(`(?<![\\w-])\\${className}(?![\\w-])[^{}]*\\{`, 'g')
+      const matches = css.match(pattern) ?? []
+      expect(matches.length, `${className} should be defined once in styles.css`).toBe(1)
+      const componentRedefinitions: string[] = []
+      for (const file of walk(srcDir).filter((path) => path.endsWith('.vue'))) {
+        const source = readFileSync(file, 'utf8')
+        const styleStart = source.indexOf('<style')
+        if (styleStart < 0) continue
+        const style = source.slice(styleStart, source.indexOf('</style>', styleStart))
+        if (new RegExp(`(?<![\\w-])\\${className}(?![\\w-])[^{}]*\\{`).test(style)) {
+          componentRedefinitions.push(relative(srcDir, file))
+        }
+      }
+      expect(
+        componentRedefinitions,
+        `${className} is global; drop the copy in ${componentRedefinitions.join(', ')}`,
+      ).toEqual([])
+    }
+  })
+})
+
+describe('text contrast (WCAG AA)', () => {
+  const cases: Array<{ name: string; token: string; background: string; min: number }> = [
+    // Body and normal sized text on the page surfaces must reach 4.5:1.
+    { name: 'body text', token: '--sspanel-text', background: '--sspanel-bg', min: 7 },
+    { name: 'body text on card', token: '--sspanel-text', background: '--sspanel-surface', min: 7 },
+    { name: 'muted text', token: '--sspanel-text-muted', background: '--sspanel-surface', min: 4.5 },
+    { name: 'muted text on page', token: '--sspanel-text-muted', background: '--sspanel-bg', min: 4.5 },
+    { name: 'hint text', token: '--sspanel-text-hint', background: '--sspanel-surface', min: 4.5 },
+    { name: 'aside text', token: '--sspanel-aside-text', background: '--sspanel-aside-bg', min: 4.5 },
+    { name: 'aside muted text', token: '--sspanel-aside-muted', background: '--sspanel-aside-bg', min: 4.5 },
+  ]
+
+  for (const testCase of cases) {
+    it(`${testCase.name} reaches ${testCase.min}:1`, () => {
+      const foreground = resolveToken(tokens, testCase.token)
+      const background = resolveToken(tokens, testCase.background)
+      const ratio = contrastRatio(foreground, background)
+      expect(
+        ratio,
+        `${testCase.name}: ${foreground} on ${background} = ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(testCase.min)
+    })
+  }
+
+  it('primary button text is readable', () => {
+    const primary = resolveToken(tokens, '--sspanel-primary')
+    const ratio = contrastRatio('#ffffff', primary)
+    // The Element Plus default (#409eff) only reaches 2.78:1, which is why the
+    // token exists; anything below 4.5 fails normal sized button labels.
+    expect(ratio, `white on ${primary} = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('exports the brand colour as the Element Plus primary', () => {
+    // Guards against the two drifting apart: a primary that no longer matches the
+    // token would leave buttons on a colour nobody checked the contrast of.
+    const primary = resolveToken(tokens, '--sspanel-primary')
+    const elementPrimary = resolveToken(tokens, '--el-color-primary')
+    expect(elementPrimary).toBe(primary)
+  })
+})

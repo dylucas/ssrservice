@@ -1,7 +1,58 @@
+/* Design tokens and shared utility classes.
+ *
+ * Rules for this file:
+ * - every colour, radius, shadow and shared size is a custom property declared
+ *   in :root. Component <style> blocks must reference these variables instead of
+ *   hardcoding values, which web/tests/styles.test.ts enforces.
+ * - text colours are chosen for WCAG AA: the ratios noted below are asserted by
+ *   that test, so lightening a "muted" colour to taste will fail CI.
+ */
 :root {
+  /* Brand. #1f6feb already appeared in the brand mark gradient, gives white
+   * button text 4.63:1 (the Element Plus default #409eff only reaches 2.78:1)
+   * and is re-exported as the Element Plus primary below. */
+  --sspanel-primary: #1f6feb;
+  --sspanel-primary-soft: #409eff;
+
+  /* Surfaces */
   --sspanel-bg: #f5f7fa;
-  --sspanel-aside: #1f2d3d;
-  --sspanel-aside-text: #cfd8e3;
+  --sspanel-surface: #ffffff;
+  --sspanel-aside-bg: #1f2d3d;
+  --sspanel-aside-footer-bg: #16222e;
+  --sspanel-aside-hover: #2a3b4d;
+  --sspanel-brand-divider: rgba(255, 255, 255, 0.06);
+  --sspanel-border: #e7ebf0;
+  --sspanel-login-bg-inner: #20344d;
+  --sspanel-login-bg-outer: #101a26;
+
+  /* Text. Ratios in comments are against the surface it is used on. */
+  --sspanel-text: #1f2d3d; /* 13.04 on --sspanel-bg */
+  --sspanel-text-muted: #5f6b7a; /*  5.43 on --sspanel-surface */
+  --sspanel-text-hint: #6b7280; /*  4.83 on --sspanel-surface */
+  --sspanel-aside-text: #cfd8e3; /*  9.72 on --sspanel-aside-bg */
+  --sspanel-aside-muted: #93a2b3; /*  5.37 on --sspanel-aside-bg */
+
+  /* Elevation and shape */
+  --sspanel-shadow: 0 1px 2px rgba(31, 45, 61, 0.06);
+  --sspanel-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.35);
+  --sspanel-radius: 10px;
+  --sspanel-radius-lg: 14px;
+  --sspanel-gap: 14px;
+
+  /* Sizes */
+  --sspanel-header-height: 56px;
+  --sspanel-chart-height: 300px;
+
+  /* Element Plus primary override. The derived shades are declared explicitly:
+   * overriding only the base colour leaves hover/disabled states on the old hue. */
+  --el-color-primary: var(--sspanel-primary);
+  --el-color-primary-light-3: #3d81d9;
+  --el-color-primary-light-5: #6ba0e5;
+  --el-color-primary-light-7: #98bfee;
+  --el-color-primary-light-8: #b0cdf3;
+  --el-color-primary-light-9: #e3edfc;
+  --el-color-primary-dark-2: #1657bb;
+
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
 }
@@ -15,7 +66,7 @@ body,
 }
 
 body {
-  color: #1f2d3d;
+  color: var(--sspanel-text);
 }
 
 .page {
@@ -38,7 +89,7 @@ body {
 }
 
 .page-subtitle {
-  color: #8a94a6;
+  color: var(--sspanel-text-muted);
   font-size: 13px;
   margin-top: 4px;
 }
@@ -46,19 +97,19 @@ body {
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 14px;
+  gap: var(--sspanel-gap);
   margin-bottom: 18px;
 }
 
 .stat-card {
-  background: #fff;
-  border-radius: 10px;
+  background: var(--sspanel-surface);
+  border-radius: var(--sspanel-radius);
   padding: 16px 18px;
-  box-shadow: 0 1px 2px rgba(31, 45, 61, 0.06);
+  box-shadow: var(--sspanel-shadow);
 }
 
 .stat-label {
-  color: #8a94a6;
+  color: var(--sspanel-text-muted);
   font-size: 13px;
 }
 
@@ -70,16 +121,16 @@ body {
 }
 
 .stat-hint {
-  color: #a6b0c0;
+  color: var(--sspanel-text-hint);
   font-size: 12px;
   margin-top: 4px;
 }
 
 .card {
-  background: #fff;
-  border-radius: 10px;
+  background: var(--sspanel-surface);
+  border-radius: var(--sspanel-radius);
   padding: 18px;
-  box-shadow: 0 1px 2px rgba(31, 45, 61, 0.06);
+  box-shadow: var(--sspanel-shadow);
   margin-bottom: 18px;
 }
 
@@ -108,7 +159,22 @@ body {
 }
 
 .muted {
-  color: #8a94a6;
+  color: var(--sspanel-text-muted);
+  font-size: 12px;
+}
+
+/* Form field hint text, used under inputs across settings and dialogs. */
+.hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--sspanel-text-hint);
+  line-height: 1.6;
+}
+
+/* Inline unit suffix next to a number input. */
+.unit {
+  margin-left: 8px;
+  color: var(--sspanel-text-muted);
   font-size: 12px;
 }
 
@@ -123,17 +189,21 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle at 20% 20%, #20344d, #101a26 70%);
+  background: radial-gradient(
+    circle at 20% 20%,
+    var(--sspanel-login-bg-inner),
+    var(--sspanel-login-bg-outer) 70%
+  );
   padding: 24px;
 }
 
 .login-card {
   width: 380px;
   max-width: 100%;
-  background: #fff;
-  border-radius: 14px;
+  background: var(--sspanel-surface);
+  border-radius: var(--sspanel-radius-lg);
   padding: 32px 30px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--sspanel-shadow-lg);
 }
 
 .login-brand {
@@ -143,14 +213,14 @@ body {
 }
 
 .login-sub {
-  color: #8a94a6;
+  color: var(--sspanel-text-muted);
   font-size: 13px;
   margin-bottom: 24px;
 }
 
 .login-footer {
   margin-top: 20px;
-  color: #a6b0c0;
+  color: var(--sspanel-text-hint);
   font-size: 12px;
   text-align: center;
 }
@@ -163,9 +233,30 @@ body {
   word-break: break-word;
 }
 
+/* Chart containers: the dashboard and the per-client usage dialog share these. */
 .chart {
   width: 100%;
-  height: 300px;
+  height: var(--sspanel-chart-height);
+}
+
+.chart-wrap {
+  position: relative;
+  min-height: var(--sspanel-chart-height);
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--sspanel-chart-height);
+  color: var(--sspanel-text-hint);
+}
+
+/* Table footers (clients, audit) share one alignment. */
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
 }
 
 @media (max-width: 782px) {

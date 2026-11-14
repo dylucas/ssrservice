@@ -160,19 +160,9 @@ onMounted(load)
 </script>
 
 <style scoped>
-.filters {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-.pagination {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 12px;
-}
 .detail {
   font-size: 12px;
   word-break: break-all;
+  color: var(--sspanel-text-muted);
 }
 </style>

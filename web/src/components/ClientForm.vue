@@ -184,10 +184,3 @@ async function submit() {
 }
 </script>
 
-<style scoped>
-.unit {
-  margin-left: 8px;
-  color: #8a94a6;
-  font-size: 12px;
-}
-</style>
