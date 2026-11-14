@@ -5,19 +5,19 @@
         <h2 class="page-title">用户管理</h2>
         <div class="page-subtitle">按用户统计流量、限制配额与到期时间</div>
       </div>
-      <div class="toolbar" style="margin: 0">
+      <div class="page-actions">
         <el-input
           v-model="search"
           :prefix-icon="Search"
           placeholder="搜索用户名 / 备注"
           clearable
-          style="width: 200px"
+          class="w-control-md"
         />
-        <el-select v-model="statusFilter" style="width: 140px">
+        <el-select v-model="statusFilter" class="w-control-sm">
           <el-option label="全部状态" value="all" />
           <el-option v-for="(meta, key) in statusMeta" :key="key" :label="meta.label" :value="key" />
         </el-select>
-        <el-select v-model="inboundFilter" style="width: 200px" @change="onInboundChange">
+        <el-select v-model="inboundFilter" class="w-control-md" @change="onInboundChange">
           <el-option label="全部入站" :value="0" />
           <el-option v-for="item in inbounds" :key="item.id" :label="`${item.remark || '入站'} (:${item.port})`" :value="item.id" />
         </el-select>
@@ -149,7 +149,7 @@ const filteredClients = computed(() =>
 )
 const pagedClients = computed(() => paginate(filteredClients.value, page.value, pageSize))
 const emptyText = computed(() =>
-  clients.value.length === 0 ? '还没有用户' : '没有符合条件的用户',
+  clients.value.length === 0 ? '暂无用户' : '没有符合条件的用户',
 )
 
 watch([search, statusFilter], () => {

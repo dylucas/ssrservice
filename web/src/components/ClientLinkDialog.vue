@@ -92,7 +92,7 @@ async function copy(value: string) {
   width: 220px;
   height: 220px;
   border: 1px solid var(--sspanel-border);
-  border-radius: 8px;
+  border-radius: var(--sspanel-radius-sm);
   padding: 6px;
   background: var(--sspanel-surface);
 }

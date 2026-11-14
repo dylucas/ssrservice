@@ -5,7 +5,9 @@
         <h2 class="page-title">仪表盘</h2>
         <div class="page-subtitle">运行状态与最近 30 天流量</div>
       </div>
-      <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      <div class="page-actions">
+        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      </div>
     </div>
 
     <div class="stat-grid">

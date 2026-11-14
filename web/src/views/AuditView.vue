@@ -5,21 +5,21 @@
         <h2 class="page-title">审计日志</h2>
         <div class="page-subtitle">面板写操作与登录记录，保留 90 天（最多 5 万条）</div>
       </div>
-      <div class="toolbar" style="margin: 0">
+      <div class="page-actions">
         <el-button :icon="Refresh" :loading="loading" @click="reload">刷新</el-button>
       </div>
     </div>
 
     <div class="card">
       <div class="toolbar card-toolbar">
-        <el-select v-model="filters.action" placeholder="全部动作" clearable style="width: 220px">
+        <el-select v-model="filters.action" placeholder="全部动作" clearable class="w-control-md">
           <el-option v-for="action in actions" :key="action" :label="actionLabel(action)" :value="action" />
         </el-select>
         <el-input
           v-model="filters.username"
           placeholder="操作人"
           clearable
-          style="width: 160px"
+          class="w-control-md"
           @keyup.enter="reload"
         />
         <el-date-picker
@@ -28,12 +28,12 @@
           value-format="x"
           start-placeholder="开始日期"
           end-placeholder="结束日期"
-          style="width: 260px"
+          class="w-control-lg"
         />
         <el-button type="primary" @click="reload">查询</el-button>
       </div>
 
-      <el-table :data="logs" v-loading="loading" row-key="id" empty-text="暂无记录">
+      <el-table :data="logs" v-loading="loading" row-key="id" empty-text="暂无审计记录">
         <el-table-column label="时间" width="170">
           <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
@@ -161,7 +161,7 @@ onMounted(load)
 
 <style scoped>
 .detail {
-  font-size: 12px;
+  font-size: var(--sspanel-fs-xs);
   word-break: break-all;
   color: var(--sspanel-text-muted);
 }

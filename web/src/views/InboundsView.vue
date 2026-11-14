@@ -5,14 +5,14 @@
         <h2 class="page-title">入站管理</h2>
         <div class="page-subtitle">每个入站是一个独立端口上的 Shadowsocks 监听器</div>
       </div>
-      <div class="toolbar" style="margin: 0">
+      <div class="page-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreate">新建入站</el-button>
       </div>
     </div>
 
     <div class="card">
-      <el-table :data="inbounds" v-loading="loading" row-key="id" empty-text="还没有入站，点击右上角创建">
+      <el-table :data="inbounds" v-loading="loading" row-key="id" empty-text="暂无入站，点击右上角创建">
         <el-table-column prop="remark" label="备注" min-width="140">
           <template #default="{ row }">
             <div>{{ row.remark || '未命名' }}</div>

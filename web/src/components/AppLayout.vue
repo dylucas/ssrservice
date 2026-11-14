@@ -133,7 +133,7 @@ async function onCommand(command: string) {
   padding: 0 18px;
   color: var(--sspanel-surface);
   font-weight: 700;
-  font-size: 17px;
+  font-size: var(--sspanel-fs-lg);
   border-bottom: 1px solid var(--sspanel-brand-divider);
 }
 .brand-mark {
@@ -142,9 +142,9 @@ async function onCommand(command: string) {
   justify-content: center;
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: var(--sspanel-radius-sm);
   background: linear-gradient(135deg, var(--sspanel-primary-soft), var(--sspanel-primary));
-  font-size: 13px;
+  font-size: var(--sspanel-fs-sm);
 }
 /* The side menu is themed through Element Plus' own CSS variables rather than the
  * background-color/text-color props: those props are mixed in JavaScript to derive
@@ -161,7 +161,7 @@ async function onCommand(command: string) {
 .aside-footer {
   padding: 12px 18px;
   color: var(--sspanel-aside-muted);
-  font-size: 12px;
+  font-size: var(--sspanel-fs-xs);
 }
 .header {
   height: var(--sspanel-header-height);

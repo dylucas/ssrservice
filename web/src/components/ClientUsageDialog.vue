@@ -7,7 +7,7 @@
     @opened="load"
     @closed="reset"
   >
-    <div class="toolbar">
+    <div class="toolbar toolbar--split card-toolbar">
       <el-radio-group v-model="days" size="small" @change="load">
         <el-radio-button :value="7">7 天</el-radio-button>
         <el-radio-button :value="30">30 天</el-radio-button>
@@ -116,18 +116,10 @@ onBeforeUnmount(reset)
 </script>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
 .totals {
   display: flex;
-  gap: 16px;
+  gap: var(--sspanel-space-7);
   color: var(--sspanel-text-muted);
-  font-size: 13px;
+  font-size: var(--sspanel-fs-sm);
 }
 </style>

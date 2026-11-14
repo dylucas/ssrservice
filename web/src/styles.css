@@ -39,6 +39,35 @@
   --sspanel-radius-lg: 14px;
   --sspanel-gap: 14px;
 
+  /* Type scale. Values are the ones already in use; naming them is what lets the
+   * tests forbid naked font-size values in component styles. */
+  --sspanel-fs-xs: 12px; /* hints, mono text, table meta */
+  --sspanel-fs-sm: 13px; /* secondary body text, subtitles */
+  --sspanel-fs-md: 15px; /* card titles */
+  --sspanel-fs-lg: 18px; /* stat values on narrow screens */
+  --sspanel-fs-xl: 20px; /* page titles */
+  --sspanel-fs-2xl: 22px; /* stat values, login brand */
+
+  /* Spacing scale (4px base). */
+  --sspanel-space-1: 4px;
+  --sspanel-space-2: 6px;
+  --sspanel-space-3: 8px;
+  --sspanel-space-4: 10px;
+  --sspanel-space-5: 12px;
+  --sspanel-space-6: 14px;
+  --sspanel-space-7: 18px;
+  --sspanel-space-8: 20px;
+  --sspanel-space-9: 24px;
+  --sspanel-space-10: 32px;
+
+  /* Small radius for inline chips and QR frames, larger for cards and dialogs. */
+  --sspanel-radius-sm: 8px;
+
+  /* Control widths, so select/input sizing stops being an inline style. */
+  --sspanel-control-sm: 140px;
+  --sspanel-control-md: 200px;
+  --sspanel-control-lg: 260px;
+
   /* Sizes */
   --sspanel-header-height: 56px;
   --sspanel-chart-height: 300px;
@@ -70,130 +99,160 @@ body {
 }
 
 .page {
-  padding: 20px 24px 40px;
+  padding: var(--sspanel-space-8) var(--sspanel-space-9) 40px;
 }
 
 .page-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 18px;
-  gap: 12px;
+  margin-bottom: var(--sspanel-space-7);
+  gap: var(--sspanel-space-5);
   flex-wrap: wrap;
 }
 
 .page-title {
-  font-size: 20px;
+  font-size: var(--sspanel-fs-xl);
   font-weight: 600;
   margin: 0;
 }
 
 .page-subtitle {
   color: var(--sspanel-text-muted);
-  font-size: 13px;
-  margin-top: 4px;
+  font-size: var(--sspanel-fs-sm);
+  margin-top: var(--sspanel-space-1);
 }
 
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: var(--sspanel-gap);
-  margin-bottom: 18px;
+  margin-bottom: var(--sspanel-space-7);
 }
 
 .stat-card {
   background: var(--sspanel-surface);
   border-radius: var(--sspanel-radius);
-  padding: 16px 18px;
+  padding: var(--sspanel-space-7) var(--sspanel-space-7);
   box-shadow: var(--sspanel-shadow);
 }
 
 .stat-label {
   color: var(--sspanel-text-muted);
-  font-size: 13px;
+  font-size: var(--sspanel-fs-sm);
 }
 
 .stat-value {
-  font-size: 22px;
+  font-size: var(--sspanel-fs-2xl);
   font-weight: 650;
-  margin-top: 6px;
+  margin-top: var(--sspanel-space-2);
   word-break: break-all;
 }
 
 .stat-hint {
   color: var(--sspanel-text-hint);
-  font-size: 12px;
-  margin-top: 4px;
+  font-size: var(--sspanel-fs-xs);
+  margin-top: var(--sspanel-space-1);
 }
 
 .card {
   background: var(--sspanel-surface);
   border-radius: var(--sspanel-radius);
-  padding: 18px;
+  padding: var(--sspanel-space-7);
   box-shadow: var(--sspanel-shadow);
-  margin-bottom: 18px;
+  margin-bottom: var(--sspanel-space-7);
 }
 
 .card-title {
-  font-size: 15px;
+  font-size: var(--sspanel-fs-md);
   font-weight: 600;
-  margin: 0 0 14px;
+  margin: 0 0 var(--sspanel-space-6);
+}
+
+/* Action row in a page header. */
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sspanel-space-4);
+  flex-wrap: wrap;
 }
 
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sspanel-space-4);
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: var(--sspanel-space-6);
 }
 
-.spacer {
-  flex: 1;
+/* Toolbar/filter row inside a card, where the bottom margin is the card's job. */
+.card-toolbar {
+  margin-bottom: var(--sspanel-space-5);
 }
 
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  word-break: break-all;
+/* Spreads the two ends of a toolbar apart (used by the usage dialog). */
+.toolbar--split {
+  justify-content: space-between;
 }
 
-.muted {
-  color: var(--sspanel-text-muted);
-  font-size: 12px;
-}
-
-/* Brand wordmark next to the logo mark. Kept on one line so it does not wrap
- * while the sidebar width animates during collapse. */
+/* Brand wordmark next to the logo. Kept on one line while the sidebar collapses. */
 .brand-name {
   white-space: nowrap;
   letter-spacing: 0.2px;
 }
 
-/* Toolbar/filter row inside a card, where the bottom margin is the card's job. */
-.card-toolbar {
-  margin-bottom: 12px;
+/* Narrow form column, so a long settings form keeps a readable line length. */
+.form-narrow {
+  max-width: 640px;
+}
+
+/* Vertical rhythm helper for standalone blocks. */
+.mb-4 {
+  margin-bottom: var(--sspanel-space-7);
+}
+
+/* Inline spacing helper for a control that follows a field on the same line. */
+.ml-4 {
+  margin-left: var(--sspanel-space-4);
+}
+
+/* Control widths. Applied to el-input/el-select so the widths are not inline styles. */
+.w-control-sm {
+  width: var(--sspanel-control-sm);
+}
+
+.w-control-md {
+  width: var(--sspanel-control-md);
+}
+
+.w-control-lg {
+  width: var(--sspanel-control-lg);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--sspanel-fs-xs);
+  word-break: break-all;
+}
+
+.muted {
+  color: var(--sspanel-text-muted);
+  font-size: var(--sspanel-fs-xs);
 }
 
 /* Form field hint text, used under inputs across settings and dialogs. */
 .hint {
-  margin-top: 6px;
-  font-size: 12px;
+  margin-top: var(--sspanel-space-2);
+  font-size: var(--sspanel-fs-xs);
   color: var(--sspanel-text-hint);
   line-height: 1.6;
 }
 
 /* Inline unit suffix next to a number input. */
 .unit {
-  margin-left: 8px;
+  margin-left: var(--sspanel-space-3);
   color: var(--sspanel-text-muted);
-  font-size: 12px;
-}
-
-.link-cell {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+  font-size: var(--sspanel-fs-xs);
 }
 
 .login-page {
@@ -206,7 +265,7 @@ body {
     var(--sspanel-login-bg-inner),
     var(--sspanel-login-bg-outer) 70%
   );
-  padding: 24px;
+  padding: var(--sspanel-space-9);
 }
 
 .login-card {
@@ -214,26 +273,26 @@ body {
   max-width: 100%;
   background: var(--sspanel-surface);
   border-radius: var(--sspanel-radius-lg);
-  padding: 32px 30px;
+  padding: var(--sspanel-space-10) var(--sspanel-space-10);
   box-shadow: var(--sspanel-shadow-lg);
 }
 
 .login-brand {
-  font-size: 22px;
+  font-size: var(--sspanel-fs-2xl);
   font-weight: 700;
-  margin-bottom: 4px;
+  margin-bottom: var(--sspanel-space-1);
 }
 
 .login-sub {
   color: var(--sspanel-text-muted);
-  font-size: 13px;
-  margin-bottom: 24px;
+  font-size: var(--sspanel-fs-sm);
+  margin-bottom: var(--sspanel-space-9);
 }
 
 .login-footer {
-  margin-top: 20px;
+  margin-top: var(--sspanel-space-8);
   color: var(--sspanel-text-hint);
-  font-size: 12px;
+  font-size: var(--sspanel-fs-xs);
   text-align: center;
 }
 
@@ -268,7 +327,7 @@ body {
 .pagination {
   display: flex;
   justify-content: flex-end;
-  padding-top: 12px;
+  padding-top: var(--sspanel-space-5);
 }
 
 @media (max-width: 782px) {
@@ -276,24 +335,24 @@ body {
     --sspanel-chart-height: 220px;
   }
   .page {
-    padding: 14px;
+    padding: var(--sspanel-space-6);
   }
   .page-header {
     align-items: flex-start;
   }
   .stat-value {
-    font-size: 18px;
+    font-size: var(--sspanel-fs-lg);
   }
   .stat-grid {
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
   .card {
-    padding: 12px;
+    padding: var(--sspanel-space-5);
     /* The tables keep fixed action columns, so on a narrow screen the card has to
      * scroll sideways rather than squeeze the flexible columns into vertical text. */
     overflow-x: auto;
   }
   .login-card {
-    padding: 24px 20px;
+    padding: var(--sspanel-space-9) var(--sspanel-space-8);
   }
 }

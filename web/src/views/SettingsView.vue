@@ -5,7 +5,9 @@
         <h2 class="page-title">系统设置</h2>
         <div class="page-subtitle">分享链接、订阅与安全策略</div>
       </div>
-      <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      <div class="page-actions">
+        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      </div>
     </div>
 
     <el-alert
@@ -14,12 +16,12 @@
       show-icon
       :closable="false"
       title="当前仍在使用初始密码，请立即修改。"
-      style="margin-bottom: 16px"
+      class="mb-4"
     />
 
     <div class="card">
       <h3 class="card-title">分享与订阅</h3>
-      <el-form ref="formRef" :model="form" label-width="150px" style="max-width: 640px">
+      <el-form ref="formRef" :model="form" label-width="150px" class="form-narrow">
         <el-form-item label="公共主机名">
           <el-input v-model="form.public_host" placeholder="例如 node.example.com，留空使用入站监听地址" />
         </el-form-item>
@@ -39,7 +41,7 @@
           <span class="hint">0 表示不自动重置，1–28 日 00:00</span>
         </el-form-item>
         <el-form-item label="时区">
-          <el-select v-model="form.timezone" filterable allow-create style="width: 260px">
+          <el-select v-model="form.timezone" filterable allow-create class="w-control-lg">
             <el-option v-for="zone in zones" :key="zone" :label="zone" :value="zone" />
           </el-select>
         </el-form-item>

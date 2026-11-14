@@ -36,7 +36,7 @@
         <span class="unit">个不同 IP（0 表示不限）</span>
       </el-form-item>
       <el-form-item label="月度重置">
-        <el-select v-model="form.reset_policy" style="width: 140px">
+        <el-select v-model="form.reset_policy" class="w-control-sm">
           <el-option label="不重置" value="none" />
           <el-option label="每月重置" value="monthly" />
         </el-select>
@@ -45,7 +45,7 @@
           v-model="form.reset_day"
           :min="0"
           :max="28"
-          style="margin-left: 10px"
+          class="ml-4"
           controls-position="right"
         />
         <span v-if="form.reset_policy === 'monthly'" class="unit">日（0 表示跟随全局）</span>

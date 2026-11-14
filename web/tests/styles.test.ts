@@ -135,11 +135,20 @@ describe('design tokens', () => {
   })
 
   it('defines each shared utility class once', () => {
-    const shared = ['.chart', '.pagination', '.hint', '.unit', '.empty-state', '.muted']
+    // Every class defined globally must not be redefined in a component. Deriving
+    // the list from styles.css (instead of naming a few) is what would have caught
+    // the duplicated .toolbar that shipped earlier.
+    // Media-query blocks may legitimately restate a class (e.g. .page shrinks on
+    // phones), so only the top-level declarations are counted here.
+    const baseRules = css.replace(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '')
+    const shared = [...baseRules.matchAll(/^\.([a-zA-Z][\w-]*)\s*\{/gm)].map(
+      (match) => `.${match[1]}`,
+    )
+    expect(shared.length).toBeGreaterThan(10)
     for (const className of shared) {
       // Match "selector {" at any nesting depth, anchored to the class token.
       const pattern = new RegExp(`(?<![\\w-])\\${className}(?![\\w-])[^{}]*\\{`, 'g')
-      const matches = css.match(pattern) ?? []
+      const matches = baseRules.match(pattern) ?? []
       expect(matches.length, `${className} should be defined once in styles.css`).toBe(1)
       const componentRedefinitions: string[] = []
       for (const file of walk(srcDir).filter((path) => path.endsWith('.vue'))) {
@@ -159,7 +168,7 @@ describe('design tokens', () => {
   })
 })
 
-describe('template classes', () => {
+describe('template and token hygiene', () => {
   const vueFiles = walk(srcDir).filter((path) => path.endsWith('.vue'))
   const globalClasses = new Set(
     [...css.matchAll(/^\.([a-zA-Z][\w-]*)\s*\{/gm)].map((match) => match[1]),
@@ -167,14 +176,13 @@ describe('template classes', () => {
 
   it('defines every class a template uses', () => {
     // A renamed or mistyped class is invisible: the element simply loses its
-    // styling. This is how the audit filter bar lost its flex layout: the
-    // .filters rule was deleted while the template still referenced it.
+    // styling. This caught .filters, which a previous refactor deleted from the
+    // CSS while the template still referenced it.
     const offenders: string[] = []
     for (const file of vueFiles) {
       const source = readFileSync(file, 'utf8')
       const styleStart = source.indexOf('<style')
-      const style =
-        styleStart < 0 ? '' : source.slice(styleStart, source.indexOf('</style>', styleStart))
+      const style = styleStart < 0 ? '' : source.slice(styleStart, source.indexOf('</style>', styleStart))
       const local = new Set(
         [...style.matchAll(/\.([a-zA-Z][\w-]*)\s*(?:,|\{)/g)].map((match) => match[1]),
       )
@@ -188,6 +196,46 @@ describe('template classes', () => {
       }
     }
     expect(offenders, `class used but never styled: ${offenders.join('; ')}`).toEqual([])
+  })
+
+  it('keeps font sizes and radii on the scale', () => {
+    // Everything below :root must reference a token, otherwise the type scale is
+    // decorative rather than enforced.
+    const offenders: string[] = []
+    for (const rule of outsideTokenBlock(css).matchAll(/(font-size|border-radius)\s*:\s*([^;]+);/g)) {
+      if (!rule[2].includes('var(')) offenders.push(`${rule[1]}: ${rule[2].trim()}`)
+    }
+    for (const file of vueFiles) {
+      const source = readFileSync(file, 'utf8')
+      const styleStart = source.indexOf('<style')
+      if (styleStart < 0) continue
+      const style = source.slice(styleStart, source.indexOf('</style>', styleStart))
+      for (const rule of style.matchAll(/(font-size|border-radius)\s*:\s*([^;]+);/g)) {
+        if (!rule[2].includes('var(')) {
+          offenders.push(`${relative(srcDir, file)}: ${rule[1]}: ${rule[2].trim()}`)
+        }
+      }
+    }
+    expect(offenders, `use the type/radius tokens: ${offenders.join('; ')}`).toEqual([])
+  })
+
+  it('does not override spacing or control widths inline', () => {
+    // Inline styles escape the token system entirely. width: 100% is allowed: it
+    // expresses "fill the container", not a size on the scale.
+    const offenders: string[] = []
+    for (const file of vueFiles) {
+      const source = readFileSync(file, 'utf8')
+      for (const match of source.matchAll(/style="([^"]+)"/g)) {
+        for (const declaration of match[1].split(';').map((part) => part.trim()).filter(Boolean)) {
+          if (/^width\s*:\s*100%$/.test(declaration)) continue
+          offenders.push(`${relative(srcDir, file)}: ${declaration}`)
+        }
+      }
+    }
+    expect(
+      offenders,
+      `use a utility class instead of inline styles: ${offenders.join('; ')}`,
+    ).toEqual([])
   })
 })
 
