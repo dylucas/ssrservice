@@ -16,11 +16,15 @@ export interface Inbound {
   online_ips: number
 }
 
-export interface Client {
+/**
+ * ClientSummary is what the client list endpoints return: the fields the list
+ * view renders. It carries no credentials or share link, so a bulk response
+ * holds no secret and can safely be compressed.
+ */
+export interface ClientSummary {
   id: number
   inbound_id: number
   name: string
-  psk?: string
   enabled: boolean
   quota_bytes: number
   up_bytes: number
@@ -29,17 +33,25 @@ export interface Client {
   ip_limit: number
   reset_policy: 'none' | 'monthly'
   reset_day: number
-  last_reset_at: number
-  sub_token: string
   note: string
-  created_at: number
-  updated_at: number
   status: 'active' | 'disabled' | 'expired' | 'quota_exceeded'
   used_bytes: number
   remaining_bytes: number
   online_ips: string[]
   inbound_remark: string
   method: string
+}
+
+/**
+ * Client is the single-client representation (GET /clients/:id): the summary
+ * plus the credentials and the rendered share links.
+ */
+export interface Client extends ClientSummary {
+  psk?: string
+  sub_token: string
+  last_reset_at: number
+  created_at: number
+  updated_at: number
   link: string
   subscription_url: string
 }

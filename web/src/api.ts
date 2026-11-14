@@ -1,4 +1,5 @@
 import { readRuntimeConfig } from './runtime-config'
+import type { ClientSummary } from './types'
 
 const config = readRuntimeConfig()
 export const basePath = config.basePath && config.basePath !== '/' ? config.basePath.replace(/\/$/, '') : ''
@@ -78,8 +79,12 @@ export const api = {
     request<{ ok: boolean }>('POST', `/inbounds/${id}/toggle`, { enabled }),
   restartInbound: (id: number) => request<{ ok: boolean }>('POST', `/inbounds/${id}/restart`),
   clients: (inboundId?: number) =>
-    request<any>('GET', inboundId ? `/clients?inbound_id=${inboundId}` : '/clients'),
-  clientsOf: (inboundId: number) => request<any>('GET', `/inbounds/${inboundId}/clients`),
+    request<ListResponse<ClientSummary>>(
+      'GET',
+      inboundId ? `/clients?inbound_id=${inboundId}` : '/clients',
+    ),
+  clientsOf: (inboundId: number) =>
+    request<ListResponse<ClientSummary>>('GET', `/inbounds/${inboundId}/clients`),
   createClient: (inboundId: number, input: unknown) =>
     request<any>('POST', `/inbounds/${inboundId}/clients`, input),
   updateClient: (id: number, input: unknown) => request<any>('PUT', `/clients/${id}`, input),

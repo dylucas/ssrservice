@@ -101,6 +101,18 @@ assert client["online_ips"] is not None
 print(f"counted {client['used_bytes']} bytes for {client['name']}")
 PY
 
+log "checking client list carries no secrets"
+CLIENTS_LIST=$(api GET /api/v1/clients)
+CLIENTS_LIST="$CLIENTS_LIST" python3 - <<'PY'
+import json, os
+item = json.loads(os.environ["CLIENTS_LIST"])["items"][0]
+for field in ("psk", "sub_token", "link", "subscription_url",
+              "created_at", "updated_at", "last_reset_at"):
+    assert field not in item, f"client list leaked {field}: {item}"
+for field in ("status", "used_bytes", "online_ips", "inbound_remark", "method"):
+    assert field in item, f"client list is missing {field}: {item}"
+PY
+
 log "checking dashboard"
 api GET /api/v1/dashboard >/dev/null
 

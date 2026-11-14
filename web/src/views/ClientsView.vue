@@ -103,7 +103,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '@/api'
-import type { Client, Inbound } from '@/types'
+import type { ClientSummary, Inbound } from '@/types'
 import { formatBytes, formatDate, percent, quotaLabel, statusMeta } from '@/utils/format'
 import { filterClients, lastPage, paginate } from '@/utils/clients'
 import ClientForm from '@/components/ClientForm.vue'
@@ -112,10 +112,10 @@ import ClientLinkDialog from '@/components/ClientLinkDialog.vue'
 const route = useRoute()
 const loading = ref(false)
 const inbounds = ref<Inbound[]>([])
-const clients = ref<Client[]>([])
+const clients = ref<ClientSummary[]>([])
 const inboundFilter = ref(0)
 const search = ref('')
-const statusFilter = ref<'all' | Client['status']>('all')
+const statusFilter = ref<'all' | ClientSummary['status']>('all')
 const page = ref(1)
 const pageSize = 20
 
@@ -138,7 +138,7 @@ watch(filteredClients, (items) => {
 
 const formVisible = ref(false)
 const formInboundId = ref(0)
-const editing = ref<Client | null>(null)
+const editing = ref<ClientSummary | null>(null)
 const editingMethod = ref('')
 
 const linkVisible = ref(false)
@@ -176,19 +176,19 @@ function openCreate() {
   formVisible.value = true
 }
 
-function openEdit(row: Client) {
+function openEdit(row: ClientSummary) {
   editing.value = row
   formInboundId.value = row.inbound_id
   editingMethod.value = editingMethodComputed.value || row.method
   formVisible.value = true
 }
 
-function openLink(row: Client) {
+function openLink(row: ClientSummary) {
   linkClientId.value = row.id
   linkVisible.value = true
 }
 
-async function toggle(row: Client) {
+async function toggle(row: ClientSummary) {
   try {
     await api.toggleClient(row.id, !row.enabled)
     row.enabled = !row.enabled
@@ -199,7 +199,7 @@ async function toggle(row: Client) {
   }
 }
 
-async function resetTraffic(row: Client) {
+async function resetTraffic(row: ClientSummary) {
   try {
     await ElMessageBox.confirm(`确定将用户「${row.name}」的流量清零吗？`, '重置流量', {
       type: 'warning',
@@ -218,7 +218,7 @@ async function resetTraffic(row: Client) {
   }
 }
 
-async function kick(row: Client) {
+async function kick(row: ClientSummary) {
   try {
     await api.kickClient(row.id)
     ElMessage.success('已断开该用户的连接')
@@ -228,7 +228,7 @@ async function kick(row: Client) {
   }
 }
 
-async function remove(row: Client) {
+async function remove(row: ClientSummary) {
   try {
     await ElMessageBox.confirm(`删除用户「${row.name}」及其流量记录，且不可恢复。`, '确认删除', {
       type: 'warning',

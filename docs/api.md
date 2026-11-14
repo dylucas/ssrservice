@@ -145,7 +145,7 @@
 - `quota_bytes=0` 不限；`expires_at=0` 永不过期；`ip_limit=0` 不限。
 - `reset_policy` 为 `none` 或 `monthly`；`reset_day` 为 `0`（跟随全局）或 `1–28`。
 
-用户响应在数据库字段之外增加：
+`GET /clients` 与 `GET /inbounds/:id/clients` 返回**摘要**，`GET /clients/:id` 返回**详情**。两者共用以下计算字段：
 
 ```json
 {
@@ -154,13 +154,18 @@
   "remaining_bytes": 1048576,
   "online_ips": ["203.0.113.5"],
   "inbound_remark": "香港 8388",
-  "method": "2022-blake3-aes-128-gcm",
-  "link": "ss://...",
-  "subscription_url": "/sub/<token>"
+  "method": "2022-blake3-aes-128-gcm"
 }
 ```
 
 `status` 取值：`active`、`disabled`、`expired`、`quota_exceeded`。
+
+列表摘要**不包含**凭据与派生字段：`psk`、`sub_token`、`link`、`subscription_url`，以及列表不展示的 `created_at`、`updated_at`、`last_reset_at`。这样批量响应里不含任何秘密。需要这些字段时按单个用户取：
+
+- 详情：`GET /clients/:id`，返回摘要字段 + `psk`、`sub_token`、`link`、`subscription_url` 与上述时间戳；
+- 只要链接：`GET /clients/:id/link`。
+
+> 兼容性说明：早期版本的列表条目包含 `psk`/`sub_token`/`link`，依赖这些字段的脚本请改调详情端点。
 
 ## 设置
 

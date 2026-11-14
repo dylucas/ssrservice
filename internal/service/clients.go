@@ -38,36 +38,95 @@ type ClientView struct {
 	SubscriptionURL string   `json:"subscription_url"`
 }
 
-// ListClients returns all clients, optionally filtered by inbound.
-func (s *Service) ListClients(inboundID int64) ([]ClientView, error) {
+// ClientSummary is the list representation of a client.
+//
+// It deliberately omits every credential and derived secret: the client PSK,
+// the subscription token and the rendered share link are fetched per client
+// from /clients/:id or /clients/:id/link. Keeping them out of the list means a
+// bulk response carries no secret, which is also why the list can safely be
+// gzip-compressed while the rest of the API cannot.
+//
+// The timestamps a list view never renders (created_at, updated_at,
+// last_reset_at) are left out too.
+type ClientSummary struct {
+	ID             int64    `json:"id"`
+	InboundID      int64    `json:"inbound_id"`
+	Name           string   `json:"name"`
+	Enabled        bool     `json:"enabled"`
+	QuotaBytes     int64    `json:"quota_bytes"`
+	UpBytes        int64    `json:"up_bytes"`
+	DownBytes      int64    `json:"down_bytes"`
+	ExpiresAt      int64    `json:"expires_at"`
+	IPLimit        int      `json:"ip_limit"`
+	ResetPolicy    string   `json:"reset_policy"`
+	ResetDay       int      `json:"reset_day"`
+	Note           string   `json:"note"`
+	Status         string   `json:"status"`
+	UsedBytes      int64    `json:"used_bytes"`
+	RemainingBytes int64    `json:"remaining_bytes"`
+	OnlineIPs      []string `json:"online_ips"`
+	InboundRemark  string   `json:"inbound_remark"`
+	Method         string   `json:"method"`
+}
+
+// ListClients returns the summary of every client, optionally filtered by
+// inbound. Share links are not built here: the list is the hot path for large
+// deployments (one row per user), and the view never renders them.
+func (s *Service) ListClients(inboundID int64) ([]ClientSummary, error) {
 	clients, err := s.store.ListClients(inboundID)
 	if err != nil {
 		return nil, err
 	}
-	// The endpoint and subscription state only depend on the inbound and on the
-	// settings, so compute them once per inbound instead of once per client.
-	contexts := make(map[int64]clientViewContext)
+	// Resolve every inbound in one query instead of one query per distinct
+	// inbound id in the client list.
+	inbounds, err := s.store.ListInbounds()
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[int64]*model.Inbound, len(inbounds))
+	for i := range inbounds {
+		byID[inbounds[i].ID] = &inbounds[i]
+	}
 	online := s.mgr.OnlineIPs()
-	subEnabled := s.SubscriptionEnabled()
 	now := time.Now().Unix()
-	views := make([]ClientView, 0, len(clients))
+	summaries := make([]ClientSummary, 0, len(clients))
 	for _, c := range clients {
-		ctx, ok := contexts[c.InboundID]
-		if !ok {
-			in, err := s.store.InboundByID(c.InboundID)
-			if err != nil {
-				contexts[c.InboundID] = clientViewContext{}
-				continue
-			}
-			ctx = s.clientViewContextFor(in, subEnabled, online, now)
-			contexts[c.InboundID] = ctx
-		}
-		if ctx.inbound == nil {
+		in := byID[c.InboundID]
+		if in == nil {
 			continue
 		}
-		views = append(views, s.clientView(c, ctx))
+		summaries = append(summaries, s.clientSummary(c, in, online, now))
 	}
-	return views, nil
+	return summaries, nil
+}
+
+// clientSummary projects one client into its list representation.
+func (s *Service) clientSummary(c model.Client, in *model.Inbound, online map[int64][]string, now int64) ClientSummary {
+	c, status := s.withLiveStatus(c, now)
+	ips := online[c.ID]
+	if ips == nil {
+		ips = []string{}
+	}
+	return ClientSummary{
+		ID:             c.ID,
+		InboundID:      c.InboundID,
+		Name:           c.Name,
+		Enabled:        c.Enabled,
+		QuotaBytes:     c.QuotaBytes,
+		UpBytes:        c.UpBytes,
+		DownBytes:      c.DownBytes,
+		ExpiresAt:      c.ExpiresAt,
+		IPLimit:        c.IPLimit,
+		ResetPolicy:    c.ResetPolicy,
+		ResetDay:       c.ResetDay,
+		Note:           c.Note,
+		Status:         status,
+		UsedBytes:      c.UsedBytes(),
+		RemainingBytes: c.RemainingBytes(),
+		OnlineIPs:      ips,
+		InboundRemark:  in.Remark,
+		Method:         in.Method,
+	}
 }
 
 // GetClient returns one client view.
@@ -109,19 +168,27 @@ func (s *Service) clientViewContextFor(in *model.Inbound, subEnabled bool, onlin
 	}
 }
 
-func (s *Service) clientView(c model.Client, ctx clientViewContext) ClientView {
-	status := c.StatusAt(ctx.now)
-	if status != model.StatusDisabled {
-		// Live counters may be ahead of the persisted ones.
-		up, down := s.mgr.ClientTraffic(c.ID)
-		if up > c.UpBytes {
-			c.UpBytes = up
-		}
-		if down > c.DownBytes {
-			c.DownBytes = down
-		}
-		status = c.StatusAt(ctx.now)
+// withLiveStatus raises the persisted counters of a client to the live ones and
+// recomputes its status. Live counters may be ahead of the database by up to one
+// flush interval, and a disabled client is skipped because it cannot have served
+// traffic since it was disabled.
+func (s *Service) withLiveStatus(c model.Client, now int64) (model.Client, string) {
+	status := c.StatusAt(now)
+	if status == model.StatusDisabled {
+		return c, status
 	}
+	up, down := s.mgr.ClientTraffic(c.ID)
+	if up > c.UpBytes {
+		c.UpBytes = up
+	}
+	if down > c.DownBytes {
+		c.DownBytes = down
+	}
+	return c, c.StatusAt(now)
+}
+
+func (s *Service) clientView(c model.Client, ctx clientViewContext) ClientView {
+	c, status := s.withLiveStatus(c, ctx.now)
 	view := ClientView{
 		Client:         c,
 		Status:         status,

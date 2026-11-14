@@ -88,6 +88,9 @@ func (tp *testPanel) doRaw(method, path string, header http.Header) *httptest.Re
 			req.Header.Add(key, value)
 		}
 	}
+	for _, cookie := range tp.cookies {
+		req.AddCookie(cookie)
+	}
 	rec := httptest.NewRecorder()
 	tp.handler.ServeHTTP(rec, req)
 	return rec

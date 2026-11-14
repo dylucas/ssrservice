@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { Client } from '../src/types'
+import type { ClientSummary } from '../src/types'
 import { filterClients, lastPage, paginate } from '../src/utils/clients'
 
-function client(overrides: Partial<Client>): Client {
+function client(overrides: Partial<ClientSummary>): ClientSummary {
   return {
     id: 1,
     inbound_id: 1,
@@ -15,24 +15,18 @@ function client(overrides: Partial<Client>): Client {
     ip_limit: 0,
     reset_policy: 'none',
     reset_day: 0,
-    last_reset_at: 0,
-    sub_token: 'token',
     note: '',
-    created_at: 0,
-    updated_at: 0,
     status: 'active',
     used_bytes: 0,
     remaining_bytes: -1,
     online_ips: [],
     inbound_remark: '香港',
     method: '2022-blake3-aes-128-gcm',
-    link: '',
-    subscription_url: '',
     ...overrides,
   }
 }
 
-const clients: Client[] = [
+const clients: ClientSummary[] = [
   client({ id: 1, name: 'alice', note: 'laptop', status: 'active' }),
   client({ id: 2, name: 'Bob', note: 'phone', status: 'expired' }),
   client({ id: 3, name: 'carol', inbound_remark: '东京', status: 'quota_exceeded' }),

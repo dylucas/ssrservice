@@ -19,6 +19,7 @@ sspanel 面向**单机、自托管、个人或小团队**场景。它不是多�
 | 请求体上限 | `/api/v1` JSON 请求体限制 1 MiB，超出返回 `413 payload_too_large`；建议反代再加 `client_max_body_size 2m` |
 | 压缩 | 只压缩内嵌静态资源（`Accept-Encoding: gzip`）；API 的 JSON 响应不压缩，避免与 PSK、订阅 token 等秘密同连接压缩带来的 BREACH 类风险 |
 | API 缓存 | `/api/v1` 响应统一带 `Cache-Control: no-store` 与 `Pragma: no-cache`，避免浏览器或中间缓存留存含 PSK、订阅 token 的响应 |
+| 批量接口 | 用户列表只返回摘要，不含 `psk`/`sub_token`/`link`，凭据只在单个用户端点返回，减少秘密在批量响应中的暴露面 |
 | 日志 | `password`/`psk`/`token` 不写入日志；`/sub/<token>` 路径脱敏 |
 
 建议：

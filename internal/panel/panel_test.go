@@ -834,3 +834,121 @@ func TestAPIResponsesAreNotCacheable(t *testing.T) {
 		t.Fatalf("anonymous api cache-control = %q, want no-store", got)
 	}
 }
+
+// listClientsBody returns the decoded items of GET /api/v1/clients.
+func (tp *testPanel) listClientsBody(header http.Header) []map[string]any {
+	tp.t.Helper()
+	rec := tp.doRaw(http.MethodGet, "/api/v1/clients", header)
+	if rec.Code != http.StatusOK {
+		tp.t.Fatalf("list clients: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	body := rec.Body.Bytes()
+	if rec.Header().Get("Content-Encoding") == "gzip" {
+		body = gunzip(tp.t, body)
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		tp.t.Fatalf("decode clients: %v", err)
+	}
+	if payload.Total != len(payload.Items) {
+		tp.t.Fatalf("total %d != items %d", payload.Total, len(payload.Items))
+	}
+	return payload.Items
+}
+
+// TestClientListOmitsSecrets verifies the list representation carries no
+// credentials, while the single client endpoints still expose them.
+func TestClientListOmitsSecrets(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	port := freeTestPort(t)
+
+	rec := tp.do(http.MethodPost, "/api/v1/inbounds", map[string]any{
+		"remark": "list-secrets", "listen": "127.0.0.1", "port": port,
+		"method": model.Method2022AES128GCM, "udp_enabled": true, "enabled": true,
+	}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create inbound: %d %s", rec.Code, rec.Body.String())
+	}
+	in := decode[model.Inbound](t, rec)
+	rec = tp.do(http.MethodPost, "/api/v1/inbounds/"+itoa(in.ID)+"/clients", map[string]any{
+		"name": "no-secrets", "enabled": true, "quota_bytes": 1024,
+	}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create client: %d %s", rec.Code, rec.Body.String())
+	}
+	client := decode[model.Client](t, rec)
+
+	items := tp.listClientsBody(http.Header{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 client, got %d", len(items))
+	}
+	item := items[0]
+	for _, forbidden := range []string{
+		"psk", "sub_token", "link", "subscription_url",
+		// Timestamps the list view never renders.
+		"created_at", "updated_at", "last_reset_at",
+	} {
+		if _, present := item[forbidden]; present {
+			t.Fatalf("list item must not contain %q: %v", forbidden, item)
+		}
+	}
+	for _, required := range []string{
+		"id", "inbound_id", "name", "enabled", "quota_bytes", "up_bytes", "down_bytes",
+		"expires_at", "ip_limit", "reset_policy", "reset_day", "note",
+		"status", "used_bytes", "remaining_bytes", "online_ips", "inbound_remark", "method",
+	} {
+		if _, present := item[required]; !present {
+			t.Fatalf("list item is missing %q: %v", required, item)
+		}
+	}
+	if item["status"] != model.StatusActive {
+		t.Fatalf("unexpected status %v", item["status"])
+	}
+
+	// The detail endpoint still carries the credentials and the share link.
+	rec = tp.do(http.MethodGet, "/api/v1/clients/"+itoa(client.ID), nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get client: %d", rec.Code)
+	}
+	detail := decode[model.Client](t, rec)
+	if detail.PSK == "" {
+		t.Fatal("detail must include the client PSK")
+	}
+	var full map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &full); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if full["link"] == "" || full["link"] == nil {
+		t.Fatal("detail must include the share link")
+	}
+	if full["subscription_url"] == "" || full["subscription_url"] == nil {
+		t.Fatal("detail must include the subscription URL")
+	}
+}
+
+// seedClients creates n clients in one inbound and returns the inbound id.
+func (tp *testPanel) seedClients(n int) int64 {
+	tp.t.Helper()
+	port := freeTestPort(tp.t)
+	rec := tp.do(http.MethodPost, "/api/v1/inbounds", map[string]any{
+		"remark": "seeded", "listen": "127.0.0.1", "port": port,
+		"method": model.Method2022AES128GCM, "udp_enabled": false, "enabled": true,
+	}, nil)
+	if rec.Code != http.StatusCreated {
+		tp.t.Fatalf("create inbound: %d %s", rec.Code, rec.Body.String())
+	}
+	in := decode[model.Inbound](tp.t, rec)
+	for i := 0; i < n; i++ {
+		rec = tp.do(http.MethodPost, "/api/v1/inbounds/"+itoa(in.ID)+"/clients", map[string]any{
+			"name": "seeded-" + itoa(int64(i)), "enabled": true,
+		}, nil)
+		if rec.Code != http.StatusCreated {
+			tp.t.Fatalf("create client %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	return in.ID
+}

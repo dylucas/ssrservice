@@ -1,6 +1,6 @@
-import type { Client } from '@/types'
+import type { ClientSummary } from '@/types'
 
-export type ClientStatusFilter = 'all' | Client['status']
+export type ClientStatusFilter = 'all' | ClientSummary['status']
 
 export interface ClientFilter {
   query?: string
@@ -11,7 +11,10 @@ export interface ClientFilter {
  * Filters clients by a free-text query (name, note, inbound remark, method)
  * and by computed status. The query is case-insensitive and trimmed.
  */
-export function filterClients(clients: Client[], filter: ClientFilter = {}): Client[] {
+export function filterClients(
+  clients: ClientSummary[],
+  filter: ClientFilter = {},
+): ClientSummary[] {
   const query = (filter.query ?? '').trim().toLowerCase()
   const status = filter.status ?? 'all'
   return clients.filter((client) => {

@@ -68,9 +68,14 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { api } from '@/api'
-import type { Client } from '@/types'
+import type { ClientSummary } from '@/types'
 
-const props = defineProps<{ modelValue: boolean; inboundId: number; client: Client | null; method: string }>()
+const props = defineProps<{
+  modelValue: boolean
+  inboundId: number
+  client: ClientSummary | null
+  method: string
+}>()
 const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void; (e: 'saved'): void }>()
 
 const formRef = ref<FormInstance>()
