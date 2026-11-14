@@ -267,6 +267,109 @@ func TestExportImportRoundTrip(t *testing.T) {
 	}
 }
 
+// TestImportClientsBulk imports a full-size batch and pins the properties the
+// batched writer has to preserve: every row lands, every token differs, and the
+// inbound is reloaded exactly once.
+func TestImportClientsBulk(t *testing.T) {
+	svc, st, in := newImportEnv(t, model.Method2022AES128GCM)
+	// The CSV header counts towards the line limit.
+	const rows = maxImportLines - 1
+	var content strings.Builder
+	content.WriteString("name,psk\n")
+	for i := 0; i < rows; i++ {
+		content.WriteString("bulk-" + itoaService(i) + ",\n")
+	}
+
+	before := svc.ReloadCount()
+	start := time.Now()
+	result, err := svc.ImportClients(in.ID, ImportRequest{
+		Format: ImportFormatCSV, Content: content.String(),
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	t.Logf("imported %d clients in %s", result.Created, elapsed)
+	if result.Created != rows || len(result.Failed) != 0 {
+		t.Fatalf("created %d (failures %+v), want %d", result.Created, result.Failed, rows)
+	}
+	// One reload for the whole batch, not one per user.
+	if got := svc.ReloadCount() - before; got != 1 {
+		t.Fatalf("import reloaded the inbound %d times, want 1", got)
+	}
+
+	clients, err := st.ListClients(in.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(clients) != rows {
+		t.Fatalf("stored %d clients, want %d", len(clients), rows)
+	}
+	tokens := make(map[string]struct{}, len(clients))
+	for _, c := range clients {
+		if c.PSK == "" {
+			t.Fatalf("client %q has no PSK", c.Name)
+		}
+		if c.SubToken == "" {
+			t.Fatalf("client %q has no subscription token", c.Name)
+		}
+		if _, duplicate := tokens[c.SubToken]; duplicate {
+			t.Fatalf("subscription token of %q was reused", c.Name)
+		}
+		tokens[c.SubToken] = struct{}{}
+	}
+}
+
+// TestInsertImportRowsAttributesFailures verifies the bulk insert falls back to
+// per-row statements when the database rejects a chunk, so a conflicting line is
+// reported with its own line number and the other lines still land.
+func TestInsertImportRowsAttributesFailures(t *testing.T) {
+	svc, st, in := newImportEnv(t, model.Method2022AES128GCM)
+	if _, err := svc.CreateClient(in.ID, ClientInput{Name: "taken", Enabled: true}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tokens, err := svc.uniqueTokens(2)
+	if err != nil {
+		t.Fatalf("tokens: %v", err)
+	}
+	makeRow := func(line int, name, token string) importRow {
+		psk, err := ssserver.GenerateClientPSK(in.Method)
+		if err != nil {
+			t.Fatalf("psk: %v", err)
+		}
+		return importRow{line: line, client: model.Client{InboundID: in.ID, Name: name,
+			PSK: psk, Enabled: true, SubToken: token, LastResetAt: model.NowUnix()}}
+	}
+	rows := []importRow{
+		makeRow(2, "fresh", tokens[0]),
+		makeRow(3, "taken", tokens[1]),
+	}
+	created, failed := svc.insertImportRows(rows)
+	if created != 1 {
+		t.Fatalf("created %d, want 1", created)
+	}
+	if len(failed) != 1 {
+		t.Fatalf("expected exactly one failure, got %+v", failed)
+	}
+	if failed[0].Line != 3 || failed[0].Name != "taken" {
+		t.Fatalf("failure points at the wrong line: %+v", failed[0])
+	}
+	stored, err := st.ListClients(in.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	names := make(map[string]bool, len(stored))
+	for _, c := range stored {
+		names[c.Name] = true
+	}
+	if !names["fresh"] || !names["taken"] {
+		t.Fatalf("unexpected stored clients: %v", names)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored %d clients, want 2", len(stored))
+	}
+}
+
 func b64url(value string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(value))
 }

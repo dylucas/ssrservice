@@ -62,6 +62,24 @@ func benchStore(b *testing.B, n int) *Store {
 	return st
 }
 
+// benchEmptyStore opens a store with one inbound and no clients, for the insert
+// benchmarks that seed their own rows.
+func benchEmptyStore(b *testing.B, port int) *Store {
+	b.Helper()
+	b.StopTimer()
+	st, err := Open(b.TempDir() + "/insert-bench.db")
+	if err != nil {
+		b.Fatalf("open: %v", err)
+	}
+	b.Cleanup(func() { st.Close() })
+	in := model.Inbound{Listen: "127.0.0.1", Port: port, Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		b.Fatalf("inbound: %v", err)
+	}
+	b.StartTimer()
+	return st
+}
+
 // BenchmarkInboundAggregates measures the grouped query the inbound list uses.
 func BenchmarkInboundAggregates(b *testing.B) {
 	st := benchStore(b, 5000)
@@ -151,6 +169,41 @@ func BenchmarkDailyTotals(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := st.DailyTotals(since); err != nil {
 			b.Fatalf("daily totals: %v", err)
+		}
+	}
+}
+
+// BenchmarkCreateClientPerRow measures the per-row insert the import path used
+// to run, kept so the batched form can be compared against it.
+func BenchmarkCreateClientPerRow(b *testing.B) {
+	st := benchEmptyStore(b, 9600)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for r := 0; r < 999; r++ {
+			c := model.Client{InboundID: 1, Name: "row-" + itoaBench(i) + "-" + itoaBench(r),
+				PSK: "psk", Enabled: true, SubToken: "row-tok-" + itoaBench(i) + "-" + itoaBench(r)}
+			if err := st.CreateClient(&c); err != nil {
+				b.Fatalf("client: %v", err)
+			}
+		}
+	}
+}
+
+// BenchmarkCreateClientsBatch measures one bulk import insert.
+func BenchmarkCreateClientsBatch(b *testing.B) {
+	st := benchEmptyStore(b, 9601)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		batch := make([]*model.Client, 0, 999)
+		for r := 0; r < 999; r++ {
+			batch = append(batch, &model.Client{InboundID: 1,
+				Name: "batch-" + itoaBench(i) + "-" + itoaBench(r), PSK: "psk",
+				Enabled: true, SubToken: "batch-tok-" + itoaBench(i) + "-" + itoaBench(r)})
+		}
+		if err := st.CreateClients(batch); err != nil {
+			b.Fatalf("batch: %v", err)
 		}
 	}
 }

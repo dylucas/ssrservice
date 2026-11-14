@@ -460,6 +460,136 @@ func TestClientRowModelRoundTrip(t *testing.T) {
 	}
 }
 
+// TestListClientIdentities checks the narrow projection an import uses to
+// reject duplicates and to count enabled users.
+func TestListClientIdentities(t *testing.T) {
+	st := newTestStore(t)
+	in := model.Inbound{Listen: "127.0.0.1", Port: 9300, Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+	other := model.Inbound{Listen: "127.0.0.1", Port: 9301, Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&other); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+	for i, c := range []model.Client{
+		{InboundID: in.ID, Name: "a", Enabled: true},
+		{InboundID: in.ID, Name: "b", Enabled: false},
+		{InboundID: other.ID, Name: "c", Enabled: true},
+	} {
+		c.PSK = "psk"
+		c.SubToken = "tok-" + itoaStore(i)
+		if err := st.CreateClient(&c); err != nil {
+			t.Fatalf("client %d: %v", i, err)
+		}
+	}
+
+	all, err := st.ListClientIdentities(0)
+	if err != nil {
+		t.Fatalf("identities: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 identities, got %d", len(all))
+	}
+	if all[0].Name != "a" || !all[0].Enabled || all[1].Name != "b" || all[1].Enabled {
+		t.Fatalf("unexpected identities: %+v", all)
+	}
+	filtered, err := st.ListClientIdentities(in.ID)
+	if err != nil {
+		t.Fatalf("filtered identities: %v", err)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 identities for the inbound, got %d", len(filtered))
+	}
+	for _, identity := range filtered {
+		if identity.Name == "c" {
+			t.Fatalf("filter leaked a client from another inbound")
+		}
+	}
+}
+
+// TestCreateClientsBatch covers the chunked bulk insert: ids come back in input
+// order across chunk boundaries, the defaults match CreateClient, and a
+// rejected batch is atomic so the caller can retry row by row.
+func TestCreateClientsBatch(t *testing.T) {
+	st := newTestStore(t)
+	in := model.Inbound{Listen: "127.0.0.1", Port: 9400, Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+
+	// More than two chunks, so the ordering guarantee is exercised across
+	// statements rather than inside a single one.
+	const rows = createClientsChunk*2 + 7
+	batch := make([]*model.Client, 0, rows)
+	for i := 0; i < rows; i++ {
+		batch = append(batch, &model.Client{
+			InboundID: in.ID,
+			Name:      "bulk-" + itoaStore(i),
+			PSK:       "psk",
+			Enabled:   i%2 == 0,
+			SubToken:  "bulk-tok-" + itoaStore(i),
+		})
+	}
+	if err := st.CreateClients(batch); err != nil {
+		t.Fatalf("create batch: %v", err)
+	}
+	for i, c := range batch {
+		if c.ID == 0 {
+			t.Fatalf("row %d has no id after the batch insert", i)
+		}
+		if i > 0 && batch[i-1].ID >= c.ID {
+			t.Fatalf("ids are not in input order: %d then %d", batch[i-1].ID, c.ID)
+		}
+	}
+	// The ids must be the ones actually stored, in the same order.
+	stored, err := st.ListClients(in.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(stored) != rows {
+		t.Fatalf("stored %d rows, want %d", len(stored), rows)
+	}
+	for i := range stored {
+		if stored[i].ID != batch[i].ID || stored[i].Name != batch[i].Name ||
+			stored[i].Enabled != batch[i].Enabled {
+			t.Fatalf("row %d mismatch: stored %+v, batch %+v", i, stored[i], batch[i])
+		}
+		// Defaults must match the single-row insert.
+		if stored[i].ResetPolicy != model.ResetNone {
+			t.Fatalf("row %d reset policy %q", i, stored[i].ResetPolicy)
+		}
+		if stored[i].CreatedAt == 0 || stored[i].UpdatedAt == 0 {
+			t.Fatalf("row %d lost its timestamps: %+v", i, stored[i])
+		}
+	}
+
+	// An empty batch is a no-op, not an error.
+	if err := st.CreateClients(nil); err != nil {
+		t.Fatalf("empty batch: %v", err)
+	}
+
+	// A duplicate name is rejected and the whole batch rolls back, which is what
+	// the import's per-row fallback relies on.
+	duplicate := []*model.Client{
+		{InboundID: in.ID, Name: "bulk-0", PSK: "psk", SubToken: "dup-1"},
+		{InboundID: in.ID, Name: "bulk-0", PSK: "psk", SubToken: "dup-2"},
+	}
+	if err := st.CreateClients(duplicate); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict for a duplicate, got %v", err)
+	}
+	afterConflict, err := st.ListClients(in.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(afterConflict) != rows {
+		t.Fatalf("a rejected batch left %d extra rows", len(afterConflict)-rows)
+	}
+	if duplicate[0].ID != 0 || duplicate[1].ID != 0 {
+		t.Fatalf("a rejected batch must not report ids: %+v", duplicate)
+	}
+}
+
 // TestInboundDomainRoundTrip verifies the domain columns survive create, update
 // and clearing.
 func TestInboundDomainRoundTrip(t *testing.T) {

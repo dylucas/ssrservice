@@ -400,7 +400,13 @@ func (s *Service) Usage(clientID int64, days int) ([]model.DailyUsage, error) {
 	return s.store.DailyUsage(clientID, since)
 }
 
-func (s *Service) prepareClient(in *model.Inbound, c *model.Client, selfID int64) error {
+// validateClientFields checks everything about a client that does not depend on
+// the other clients of its inbound.
+//
+// It is split out of prepareClient (which also enforces the per-inbound
+// single-user rule) so a bulk import can validate a whole batch without
+// re-reading the inbound's user list for every line.
+func validateClientFields(in *model.Inbound, c *model.Client) error {
 	if c.Name == "" {
 		return invalid("name must not be empty")
 	}
@@ -426,13 +432,17 @@ func (s *Service) prepareClient(in *model.Inbound, c *model.Client, selfID int64
 	if c.ResetDay < 0 || c.ResetDay > 28 {
 		return invalid("reset_day must be between 0 and 28")
 	}
-	if c.ResetPolicy == model.ResetMonthly && c.ResetDay == 0 {
-		// 0 means "use the global reset day"; leave it.
-	}
 	if c.PSK != "" {
 		if err := ssserver.ValidateClientPSK(in.Method, c.PSK); err != nil {
 			return invalid("%v", err)
 		}
+	}
+	return nil
+}
+
+func (s *Service) prepareClient(in *model.Inbound, c *model.Client, selfID int64) error {
+	if err := validateClientFields(in, c); err != nil {
+		return err
 	}
 	if !model.IsMultiUser(in.Method) && c.Enabled {
 		clients, err := s.store.ListClients(in.ID)
@@ -449,18 +459,60 @@ func (s *Service) prepareClient(in *model.Inbound, c *model.Client, selfID int64
 	return nil
 }
 
+// uniqueToken returns one unused subscription token.
 func (s *Service) uniqueToken() (string, error) {
-	for attempt := 0; attempt < 5; attempt++ {
-		token, err := auth.RandomToken(18)
-		if err != nil {
-			return "", err
-		}
-		if _, err := s.store.ClientBySubToken(token); err == nil {
-			continue
-		} else if !errors.Is(err, store.ErrNotFound) {
-			return "", err
-		}
-		return token, nil
+	tokens, err := s.uniqueTokens(1)
+	if err != nil {
+		return "", err
 	}
-	return "", errors.New("could not generate a unique subscription token")
+	return tokens[0], nil
+}
+
+// uniqueTokens returns n distinct, unused subscription tokens.
+//
+// A bulk import needs one token per created user; generating them one at a time
+// cost one collision query each. This picks the whole batch up front, checks the
+// batch's existence with a few queries and regenerates only the collisions.
+func (s *Service) uniqueTokens(n int) ([]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	tokens := make([]string, n)
+	// Distinct within the batch first, so the existence check sees true
+	// duplicates rather than two copies of the same fresh token.
+	seen := make(map[string]struct{}, n)
+	for i := range tokens {
+		for {
+			token, err := auth.RandomToken(18)
+			if err != nil {
+				return nil, err
+			}
+			if _, duplicate := seen[token]; duplicate {
+				continue
+			}
+			seen[token] = struct{}{}
+			tokens[i] = token
+			break
+		}
+	}
+	for attempt := 0; attempt < 5; attempt++ {
+		taken, err := s.store.TokensInUse(tokens)
+		if err != nil {
+			return nil, err
+		}
+		if len(taken) == 0 {
+			return tokens, nil
+		}
+		for i, token := range tokens {
+			if !taken[token] {
+				continue
+			}
+			replacement, err := auth.RandomToken(18)
+			if err != nil {
+				return nil, err
+			}
+			tokens[i] = replacement
+		}
+	}
+	return nil, errors.New("could not generate unique subscription tokens")
 }

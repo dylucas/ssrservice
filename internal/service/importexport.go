@@ -72,11 +72,23 @@ type importCandidate struct {
 	enabled   *bool
 }
 
+// importRow pairs a validated client with the line it came from, so a rejected
+// chunk can be retried row by row and still report line numbers.
+type importRow struct {
+	client model.Client
+	line   int
+}
+
 // ImportClients creates users in one inbound from CSV or ss:// links.
 //
-// The whole batch goes through the same validation as the create endpoint, but
-// the inbound is reloaded only once at the end: the create flow reloads after
-// every insert, which would rebuild the listeners N times for an N user import.
+// The whole batch is validated up front and then inserted in bulk: the created
+// users go in through a handful of statements inside one transaction, one token
+// per user is allocated with a couple of queries instead of one per row, and the
+// inbound is reloaded once at the end. Doing any of that per row is what made a
+// 999 line import take 119ms.
+//
+// Partial success stays a normal result: the created users remain, and each
+// rejected line keeps its own message and line number.
 func (s *Service) ImportClients(inboundID int64, req ImportRequest) (*ImportResult, error) {
 	in, err := s.store.InboundByID(inboundID)
 	if err != nil {
@@ -119,30 +131,31 @@ func (s *Service) ImportClients(inboundID int64, req ImportRequest) (*ImportResu
 	}
 
 	// Existing names are rejected per line, matching the create endpoint, which
-	// relies on the (inbound_id, name) uniqueness constraint.
-	existing, err := s.store.ListClients(inboundID)
+	// relies on the (inbound_id, name) uniqueness constraint. Only the identity
+	// columns are read: the import never needs the PSKs of existing users.
+	existing, err := s.store.ListClientIdentities(inboundID)
 	if err != nil {
 		return nil, err
 	}
-	taken := make(map[string]struct{}, len(existing))
-	for _, c := range existing {
-		taken[c.Name] = struct{}{}
-	}
-	// A single-user method may only have one enabled user. Count the ones that
-	// already exist so the per-line check can be done without re-reading.
+	taken := make(map[string]struct{}, len(existing)+len(candidates))
 	enabledExisting := 0
-	for _, c := range existing {
-		if c.Enabled {
+	for _, identity := range existing {
+		taken[identity.Name] = struct{}{}
+		if identity.Enabled {
 			enabledExisting++
 		}
 	}
 	singleUser := !model.IsMultiUser(in.Method)
 
-	created := 0
+	// Validate every line before writing anything. `taken` and the enabled
+	// counter are updated as lines are accepted, so a duplicate inside the batch
+	// or a second enabled user on a single-user method is caught without a
+	// second query per line.
+	planned := make([]importRow, 0, len(candidates))
 	for _, candidate := range candidates {
 		client := s.importCandidateToClient(in, candidate, req.Defaults)
 		client.InboundID = inboundID
-		if err := s.prepareClient(in, &client, 0); err != nil {
+		if err := validateClientFields(in, &client); err != nil {
 			result.Failed = append(result.Failed, ImportFailure{
 				Line: candidate.line, Name: candidate.name, Error: err.Error(),
 			})
@@ -161,6 +174,10 @@ func (s *Service) ImportClients(inboundID int64, req ImportRequest) (*ImportResu
 			})
 			continue
 		}
+		taken[client.Name] = struct{}{}
+		if client.Enabled {
+			enabledExisting++
+		}
 		if client.PSK == "" {
 			psk, err := ssserver.GenerateClientPSK(in.Method)
 			if err != nil {
@@ -168,24 +185,22 @@ func (s *Service) ImportClients(inboundID int64, req ImportRequest) (*ImportResu
 			}
 			client.PSK = psk
 		}
-		token, err := s.uniqueToken()
-		if err != nil {
-			return nil, err
-		}
-		client.SubToken = token
-		client.LastResetAt = model.NowUnix()
-		if err := s.store.CreateClient(&client); err != nil {
-			result.Failed = append(result.Failed, ImportFailure{
-				Line: candidate.line, Name: client.Name, Error: err.Error(),
-			})
-			continue
-		}
-		taken[client.Name] = struct{}{}
-		if client.Enabled {
-			enabledExisting++
-		}
-		created++
+		planned = append(planned, importRow{client: client, line: candidate.line})
 	}
+
+	tokens, err := s.uniqueTokens(len(planned))
+	if err != nil {
+		return nil, err
+	}
+	now := model.NowUnix()
+	for i := range planned {
+		planned[i].client.SubToken = tokens[i]
+		// Start the monthly reset clock at creation, as the create endpoint does.
+		planned[i].client.LastResetAt = now
+	}
+
+	created, insertFailures := s.insertImportRows(planned)
+	result.Failed = append(result.Failed, insertFailures...)
 
 	if created > 0 {
 		if err := s.reloadInbound(inboundID); err != nil {
@@ -196,6 +211,39 @@ func (s *Service) ImportClients(inboundID int64, req ImportRequest) (*ImportResu
 	}
 	result.Created = created
 	return result, nil
+}
+
+// insertImportRows stores the validated batch in bulk.
+//
+// The normal path is one transaction with chunked multi-row inserts. A chunk the
+// database rejects as a whole (a name inserted concurrently by another request
+// is the realistic case) is retried row by row, so every rejected line still
+// keeps its own message and line number and only that line is lost.
+func (s *Service) insertImportRows(rows []importRow) (int, []ImportFailure) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	clients := make([]*model.Client, len(rows))
+	for i := range rows {
+		clients[i] = &rows[i].client
+	}
+	if err := s.store.CreateClients(clients); err == nil {
+		return len(rows), nil
+	}
+	// The batch is atomic, so nothing was written: retry one row at a time to
+	// attribute the failure.
+	failed := make([]ImportFailure, 0, 1)
+	created := 0
+	for i := range rows {
+		if err := s.store.CreateClient(&rows[i].client); err != nil {
+			failed = append(failed, ImportFailure{
+				Line: rows[i].line, Name: rows[i].client.Name, Error: err.Error(),
+			})
+			continue
+		}
+		created++
+	}
+	return created, failed
 }
 
 // importCandidateToClient turns a parsed line into a client, applying defaults.
