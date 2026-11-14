@@ -360,6 +360,8 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 |---|---|---|
 | GET | `/backup` | 下载 `sspanel-YYYYMMDD-HHMMSS.db` 快照 |
 
+`VACUUM INTO` 在单个读事务内读取整库，因此快照本身一致，无需暂停写入：备份期间 WAL 允许并发读，流量落库与面板写操作都继续执行。代价是快照描述的是某一时刻的一致状态，不一定包含请求那一刻刚排队的写入。
+
 恢复不支持在线进行，需要停机替换数据库文件，见 [deployment.md](deployment.md)。
 
 ## 订阅

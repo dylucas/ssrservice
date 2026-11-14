@@ -172,7 +172,9 @@ sudo ufw allow from 203.0.113.10 to any port 2096 proto tcp
 
 ### 备份
 
-面板「系统设置」→「下载备份」会通过 `VACUUM INTO` 生成一致的 SQLite 快照。也可以：
+面板「系统设置」→「下载备份」会通过 `VACUUM INTO` 生成一致的 SQLite 快照，且**不阻塞服务**：快照在一个读事务内完成，备份期间写入照常进行（此前该操作会持写锁约 95 ms / 11.5 MB 库，并随库体积线性增长）。
+
+也可以停机复制：
 
 ```bash
 sudo systemctl stop sspanel

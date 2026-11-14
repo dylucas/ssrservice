@@ -311,6 +311,34 @@ STATUS=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
 [[ "$STATUS" == "400" ]] || fail "out-of-range offset returned $STATUS, want 400"
 log "client list paging: 5 users, 2 per page, filters and 400s verified"
 
+log "checking online backup"
+# The backup must be a real SQLite file, and taking it must not stop the API: a
+# write issued right after it still has to succeed. BackupTo used to hold the
+# store write lock for the whole copy.
+BACKUP_HEADERS=$(curl -fsS -D - -o "$WORK/backup.db" -b "$COOKIE_JAR" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/backup" | tr -d '\r')
+grep -qi 'content-disposition: attachment' <<<"$BACKUP_HEADERS" || fail "backup is not an attachment"
+grep -qi 'cache-control: no-store' <<<"$BACKUP_HEADERS" || fail "backup is cacheable"
+[[ "$(head -c 15 "$WORK/backup.db")" == "SQLite format 3" ]] || fail "backup is not a SQLite database"
+BACKUP_CLIENTS=$(python3 - "$WORK/backup.db" <<'PYEOF'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+row = db.execute("SELECT COUNT(*) FROM clients").fetchone()
+db.close()
+print(row[0])
+PYEOF
+)
+[[ "$BACKUP_CLIENTS" -ge 1 ]] || fail "backup has no clients"
+# A write immediately after the backup proves the server was not stalled.
+api POST "/api/v1/inbounds/$IMPORT_INBOUND_ID/clients" '{"name":"post-backup","enabled":true}' >/dev/null
+POST_BACKUP=$(api GET "/api/v1/inbounds/$IMPORT_INBOUND_ID/clients?q=post-backup")
+POST_BACKUP="$POST_BACKUP" python3 - <<'PYEOF'
+import json, os
+payload = json.loads(os.environ["POST_BACKUP"])
+assert payload["total"] == 1, payload
+PYEOF
+log "backup: $(stat -c%s "$WORK/backup.db" 2>/dev/null || wc -c <"$WORK/backup.db") bytes, $BACKUP_CLIENTS clients, writes continue afterwards"
+
 log "checking frontend"
 curl -fsS "http://127.0.0.1:$PANEL_PORT/" | grep -q 'id="sspanel-config"' || fail "frontend config not injected"
 
