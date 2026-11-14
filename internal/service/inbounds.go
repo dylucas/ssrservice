@@ -199,10 +199,24 @@ func (s *Service) UpdateInbound(id int64, input InboundInput) (*model.Inbound, e
 }
 
 // DeleteInbound stops and removes an inbound.
+//
+// The client rows are read before the delete so their runtime accounting
+// accounts can be reclaimed afterwards. The order matters: stop serving first,
+// then delete the rows (which cascades to clients and traffic), and only drop
+// the in-memory counters once the database committed. Otherwise a failed delete
+// would leave the rows intact while the counters -- and therefore the quota
+// verdict for those users -- were already discarded.
 func (s *Service) DeleteInbound(id int64) error {
+	clients, err := s.store.ListClients(id)
+	if err != nil {
+		return err
+	}
 	s.mgr.RemoveInbound(id)
 	if err := s.store.DeleteInbound(id); err != nil {
 		return err
+	}
+	for _, c := range clients {
+		s.mgr.RemoveClient(c.ID)
 	}
 	return nil
 }

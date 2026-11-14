@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -747,5 +748,61 @@ func TestAPIBodyLimit(t *testing.T) {
 	}
 	if payload.Error.Code != "payload_too_large" {
 		t.Fatalf("unexpected error code %q", payload.Error.Code)
+	}
+}
+
+// TestDeleteInboundClearsAccounting verifies that deleting an inbound also
+// reclaims the in-memory accounts of its clients, so the dashboard totals stop
+// counting removed users.
+func TestDeleteInboundClearsAccounting(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	port := freeTestPort(t)
+
+	rec := tp.do(http.MethodPost, "/api/v1/inbounds", map[string]any{
+		"remark": "delete-accounting", "listen": "127.0.0.1", "port": port,
+		"method": model.Method2022AES128GCM, "udp_enabled": true, "enabled": true,
+	}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create inbound: %d %s", rec.Code, rec.Body.String())
+	}
+	in := decode[model.Inbound](t, rec)
+
+	rec = tp.do(http.MethodPost, "/api/v1/inbounds/"+itoa(in.ID)+"/clients", map[string]any{
+		"name": "accounted", "enabled": true,
+	}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create client: %d %s", rec.Code, rec.Body.String())
+	}
+	client := decode[model.Client](t, rec)
+
+	// Give the client persisted counters, then reload them into the runtime so
+	// the live totals are non-zero before the delete.
+	if err := tp.store.SaveUsage([]model.UsageSnapshot{{
+		ClientID: client.ID, UpBytes: 1234, DownBytes: 5678,
+		Day: "2026-06-01", DayUpBytes: 1234, DayDownBytes: 5678,
+	}}); err != nil {
+		t.Fatalf("save usage: %v", err)
+	}
+	persisted, err := tp.store.ClientByID(client.ID)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	// Drop the account created when the client was added, then seed it with the
+	// persisted counters.
+	tp.svc.Manager().RemoveClient(client.ID)
+	tp.svc.Manager().SeedUsage([]model.Client{*persisted})
+	if up, down := tp.svc.Manager().TotalTraffic(); up != 1234 || down != 5678 {
+		t.Fatalf("unexpected seeded totals: up=%d down=%d", up, down)
+	}
+
+	if resp := tp.do(http.MethodDelete, "/api/v1/inbounds/"+itoa(in.ID), nil, nil); resp.Code != http.StatusOK {
+		t.Fatalf("delete inbound: %d %s", resp.Code, resp.Body.String())
+	}
+	if up, down := tp.svc.Manager().TotalTraffic(); up != 0 || down != 0 {
+		t.Fatalf("deleted client still counted: up=%d down=%d", up, down)
+	}
+	if _, err := tp.store.ClientByID(client.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("client row should be gone, got %v", err)
 	}
 }
