@@ -113,6 +113,17 @@ for field in ("status", "used_bytes", "online_ips", "inbound_remark", "method"):
     assert field in item, f"client list is missing {field}: {item}"
 PY
 
+log "checking client list compression"
+LIST_HEADERS=$(curl -fsS -D - -o /dev/null -H 'Accept-Encoding: gzip' \
+  -b "$COOKIE_JAR" "http://127.0.0.1:$PANEL_PORT/api/v1/clients" | tr -d '\r')
+grep -qi 'vary:.*accept-encoding' <<<"$LIST_HEADERS" || fail "client list lacks Vary: Accept-Encoding"
+PLAIN_JSON=$(curl -fsS -b "$COOKIE_JAR" "http://127.0.0.1:$PANEL_PORT/api/v1/clients")
+if grep -qi 'content-encoding: gzip' <<<"$LIST_HEADERS"; then
+  GZIP_JSON=$(curl -fsS --compressed -b "$COOKIE_JAR" "http://127.0.0.1:$PANEL_PORT/api/v1/clients")
+  [[ "$PLAIN_JSON" == "$GZIP_JSON" ]] || fail "compressed client list differs from the plain one"
+  log "client list gzip: ${#PLAIN_JSON} -> ${#GZIP_JSON} bytes"
+fi
+
 log "checking dashboard"
 api GET /api/v1/dashboard >/dev/null
 

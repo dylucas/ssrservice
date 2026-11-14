@@ -16,7 +16,9 @@ func (s *Server) handleListClients(c *gin.Context) {
 		writeServiceError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items)})
+	// The client list carries no credentials, so it is safe to compress; see
+	// jsonWriter.writeJSON.
+	s.json.writeJSON(c, http.StatusOK, gin.H{"items": items, "total": len(items)})
 }
 
 func (s *Server) handleGetClient(c *gin.Context) {

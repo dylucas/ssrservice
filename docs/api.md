@@ -26,6 +26,7 @@
 - `/api/v1` 的 JSON 请求体上限为 1 MiB，超出返回 `413 payload_too_large`。
 - 面板静态资源在请求带 `Accept-Encoding: gzip` 时返回 `Content-Encoding: gzip`，并始终带 `Vary: Accept-Encoding`；`HEAD` 与 `Range` 请求返回未压缩文件。API 的 JSON 响应不压缩。
 - `/api/v1` 的全部响应带 `Cache-Control: no-store` 与 `Pragma: no-cache`：响应可能包含用户 PSK、订阅 token 等信息，不允许任何缓存保存副本。
+- 只有 `GET /clients` 与 `GET /inbounds/:id/clients` 两个列表端点在响应体 ≥ 4 KiB 且请求带 `Accept-Encoding: gzip` 时返回 `Content-Encoding: gzip`（这两个响应不含凭据，压缩没有 BREACH 类风险）。其余 API 响应不压缩；所有可能被压缩的响应都带 `Vary: Accept-Encoding`。
 
 ## 认证
 

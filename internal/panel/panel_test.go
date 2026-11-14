@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -951,4 +953,139 @@ func (tp *testPanel) seedClients(n int) int64 {
 		}
 	}
 	return in.ID
+}
+
+// TestClientListGzip verifies the credential-free list is compressed when the
+// client accepts it, and that both forms decode to the same JSON.
+func TestClientListGzip(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	tp.seedClients(40)
+
+	plain := tp.doRaw(http.MethodGet, "/api/v1/clients", http.Header{})
+	if plain.Code != http.StatusOK {
+		t.Fatalf("plain list: %d", plain.Code)
+	}
+	if got := plain.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("plain list was compressed")
+	}
+	if got := plain.Header().Get("Vary"); !strings.Contains(strings.ToLower(got), "accept-encoding") {
+		t.Fatalf("plain list vary = %q", got)
+	}
+
+	compressed := tp.doRaw(http.MethodGet, "/api/v1/clients",
+		http.Header{"Accept-Encoding": []string{"gzip, deflate"}})
+	if compressed.Code != http.StatusOK {
+		t.Fatalf("compressed list: %d", compressed.Code)
+	}
+	if got := compressed.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("list content-encoding = %q, want gzip", got)
+	}
+	if compressed.Body.Len() >= plain.Body.Len() {
+		t.Fatalf("compressed body %d is not smaller than %d", compressed.Body.Len(), plain.Body.Len())
+	}
+	if got := compressed.Header().Get("Content-Length"); got != strconv.Itoa(compressed.Body.Len()) {
+		t.Fatalf("content-length = %q, body = %d", got, compressed.Body.Len())
+	}
+	var plainPayload, gzPayload any
+	if err := json.Unmarshal(plain.Body.Bytes(), &plainPayload); err != nil {
+		t.Fatalf("decode plain: %v", err)
+	}
+	if err := json.Unmarshal(gunzip(t, compressed.Body.Bytes()), &gzPayload); err != nil {
+		t.Fatalf("decode compressed: %v", err)
+	}
+	if !reflect.DeepEqual(plainPayload, gzPayload) {
+		t.Fatal("compressed and plain payloads differ")
+	}
+}
+
+// TestClientListSkipsGzipForSmallResponses verifies tiny lists are sent plain.
+func TestClientListSkipsGzipForSmallResponses(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	tp.seedClients(1)
+
+	rec := tp.doRaw(http.MethodGet, "/api/v1/clients", http.Header{"Accept-Encoding": []string{"gzip"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("small list was compressed")
+	}
+	if got := rec.Header().Get("Vary"); !strings.Contains(strings.ToLower(got), "accept-encoding") {
+		t.Fatalf("vary = %q", got)
+	}
+}
+
+// TestInboundClientListUsesSummary verifies the per-inbound list is trimmed too.
+func TestInboundClientListUsesSummary(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	inboundID := tp.seedClients(1)
+
+	rec := tp.doRaw(http.MethodGet, "/api/v1/inbounds/"+itoa(inboundID)+"/clients", http.Header{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbound clients: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(payload.Items))
+	}
+	for _, forbidden := range []string{"psk", "sub_token", "link", "subscription_url"} {
+		if _, present := payload.Items[0][forbidden]; present {
+			t.Fatalf("inbound client list must not contain %q", forbidden)
+		}
+	}
+}
+
+// BenchmarkClientListEncode measures JSON encoding of a 2000 row summary list.
+func BenchmarkClientListEncode(b *testing.B) {
+	items := benchmarkClientSummaries(2000)
+	payload := gin.H{"items": items, "total": len(items)}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/clients", nil)
+	writer := newJSONWriter()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		recorder.Body.Reset()
+		writer.writeJSON(c, http.StatusOK, payload)
+	}
+}
+
+// BenchmarkClientListEncodeGzip measures the compressed variant.
+func BenchmarkClientListEncodeGzip(b *testing.B) {
+	items := benchmarkClientSummaries(2000)
+	payload := gin.H{"items": items, "total": len(items)}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/clients", nil)
+	c.Request.Header.Set("Accept-Encoding", "gzip")
+	writer := newJSONWriter()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		recorder.Body.Reset()
+		writer.writeJSON(c, http.StatusOK, payload)
+	}
+}
+
+func benchmarkClientSummaries(n int) []service.ClientSummary {
+	items := make([]service.ClientSummary, 0, n)
+	for i := 0; i < n; i++ {
+		items = append(items, service.ClientSummary{
+			ID: int64(i + 1), InboundID: 1, Name: "benchmark-user-" + itoa(int64(i)),
+			Enabled: true, QuotaBytes: 100 << 30, UpBytes: int64(i) * 1024,
+			DownBytes: int64(i) * 2048, Status: model.StatusActive,
+			UsedBytes: int64(i) * 3072, RemainingBytes: 100 << 30,
+			OnlineIPs: []string{}, InboundRemark: "benchmark", Method: model.Method2022AES128GCM,
+		})
+	}
+	return items
 }

@@ -46,6 +46,8 @@ type Server struct {
 	trustedProxies []*net.IPNet
 	// assets caches gzip variants of the embedded frontend assets.
 	assets *assetCache
+	// json writes API responses and compresses the credential-free lists.
+	json *jsonWriter
 }
 
 // runtimeConfig is serialized into index.html.
@@ -75,6 +77,7 @@ func New(cfg *config.Config, svc *service.Service, logger *slog.Logger, sessions
 		monitor:        system.NewCollector(),
 		trustedProxies: proxies,
 		assets:         newAssetCache(),
+		json:           newJSONWriter(),
 	}
 }
 
