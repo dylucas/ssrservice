@@ -342,6 +342,82 @@ log "backup: $(stat -c%s "$WORK/backup.db" 2>/dev/null || wc -c <"$WORK/backup.d
 log "checking frontend"
 curl -fsS "http://127.0.0.1:$PANEL_PORT/" | grep -q 'id="sspanel-config"' || fail "frontend config not injected"
 
+log "checking deep links resolve assets from the panel root"
+# Vite emits relative asset URLs. Without a <base href>, "/clients/" resolves
+# "./assets/index-xxx.js" against "/clients/", the SPA fallback answers with HTML
+# and the browser refuses the module: a blank page.
+DEEP_LINK=$(curl -fsS "http://127.0.0.1:$PANEL_PORT/clients/")
+grep -q '<base href="/">' <<<"$DEEP_LINK" || fail "deep link lacks a base href"
+DEEP_ASSET=$(grep -o 'src="\./assets/[^"]*"' <<<"$DEEP_LINK" | head -1 | sed 's/^src="//; s/"$//')
+[[ -n "$DEEP_ASSET" ]] || fail "deep link has no relative asset to resolve"
+# The path the base resolves to must really be served, not the HTML fallback.
+curl -fsS -o /dev/null "http://127.0.0.1:$PANEL_PORT/${DEEP_ASSET#./}" || fail "resolved asset is not served"
+
+log "checking a single-user inbound cannot enable a second client"
+# 2022-blake3-chacha20-poly1305 has no identity header, so a second enabled user
+# would be accounted against the first. Enabling it must be rejected, not
+# accepted and then only partly served.
+SOLO=$(api POST /api/v1/inbounds "{\"remark\":\"smoke-solo\",\"listen\":\"127.0.0.1\",\"port\":$((SS_PORT + 4)),\"method\":\"2022-blake3-chacha20-poly1305\",\"udp_enabled\":false,\"enabled\":true}")
+SOLO_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$SOLO")
+api POST "/api/v1/inbounds/$SOLO_ID/clients" '{"name":"solo-a","enabled":true}' >/dev/null
+SOLO_SECOND=$(api POST "/api/v1/inbounds/$SOLO_ID/clients" '{"name":"solo-b","enabled":false}')
+SOLO_SECOND_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$SOLO_SECOND")
+SOLO_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -X POST \
+  -H 'Content-Type: application/json' -d '{"enabled":true}' \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/clients/$SOLO_SECOND_ID/toggle")
+[[ "$SOLO_STATUS" == "400" ]] || fail "enabling a second single-user client returned $SOLO_STATUS, want 400"
+SOLO_ENABLED=$(api GET "/api/v1/inbounds/$SOLO_ID/clients" | python3 -c 'import json,sys; print(sum(1 for c in json.load(sys.stdin)["items"] if c["enabled"]))')
+[[ "$SOLO_ENABLED" == "1" ]] || fail "rejected toggle still left $SOLO_ENABLED enabled clients"
+api DELETE "/api/v1/inbounds/$SOLO_ID" >/dev/null
+log "single-user rule: second enable rejected, one enabled client remains"
+
+log "checking import failure line numbers survive blank lines"
+INVALID_LINKS=$(python3 -c 'import json; print(json.dumps({"format":"ss","content":"ss://bogus-one\n\nss://bogus-two\n"}))')
+LINE_RESULT=$(api POST "/api/v1/inbounds/$IMPORT_INBOUND_ID/clients/import" "$INVALID_LINKS")
+LINE_RESULT="$LINE_RESULT" python3 - <<'PYSMOKE'
+import json, os
+result = json.loads(os.environ["LINE_RESULT"])
+assert result["created"] == 0, result
+lines = sorted(item["line"] for item in result["failed"])
+# The blank separator must not shift the reported line: these are the first and
+# third lines of the paste, not the first and second of a filtered slice.
+assert lines == [1, 3], lines
+PYSMOKE
+log "import line numbers: 1 and 3 (blank line preserved)"
+
+log "checking an inbound that fails to start is reported"
+BLOCK_PORT=$((SS_PORT + 5))
+BLOCKED=$(api POST /api/v1/inbounds "{\"remark\":\"smoke-blocked\",\"listen\":\"127.0.0.1\",\"port\":$BLOCK_PORT,\"method\":\"2022-blake3-aes-128-gcm\",\"udp_enabled\":false,\"enabled\":false}")
+BLOCKED_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$BLOCKED")
+python3 - "$BLOCK_PORT" <<'PYSMOKE' &
+import socket, sys, time
+sock = socket.socket()
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(("127.0.0.1", int(sys.argv[1])))
+sock.listen(1)
+time.sleep(30)
+PYSMOKE
+BLOCKER_PID=$!
+sleep 1
+BLOCK_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -X POST \
+  -H 'Content-Type: application/json' -d '{"enabled":true}' \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/inbounds/$BLOCKED_ID/toggle")
+kill "$BLOCKER_PID" 2>/dev/null || true
+wait "$BLOCKER_PID" 2>/dev/null || true
+[[ "$BLOCK_STATUS" != "200" ]] || fail "enabling an inbound on an occupied port returned 200"
+# The row must stay disabled: the panel has to describe what is actually
+# listening, not what the operator asked for.
+BLOCKED_ENABLED=$(api GET "/api/v1/inbounds/$BLOCKED_ID" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["enabled"]).lower())')
+[[ "$BLOCKED_ENABLED" == "false" ]] || fail "a failed enable left the inbound marked enabled"
+api DELETE "/api/v1/inbounds/$BLOCKED_ID" >/dev/null
+log "failed start: toggle rejected and the row stayed disabled"
+
+log "checking the repair command"
+"$BIN" repair --db "$WORK/sspanel.db" >"$WORK/repair.log" 2>&1 || { cat "$WORK/repair.log"; fail "repair failed"; }
+grep -q 'integrity: ok' "$WORK/repair.log" || fail "repair did not report a clean integrity check"
+grep -q 'daily totals rebuilt' "$WORK/repair.log" || fail "repair did not rebuild the rollup"
+log "repair: $(tr '\n' ' ' <"$WORK/repair.log")"
+
 log "checking asset compression"
 ASSET=$(curl -fsS "http://127.0.0.1:$PANEL_PORT/" | grep -o 'assets/index-[A-Za-z0-9_-]*\.js' | head -1)
 [[ -n "$ASSET" ]] || fail "could not locate the main asset"
@@ -364,5 +440,54 @@ kill "$SERVER_PID"
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 grep -q 'stopped' "$WORK/server.log" || true
+
+log "checking subscription tokens are redacted under a base path"
+# The redaction prefix used to be built as basePath + "sub/", which produced
+# "/panelsub/" and never matched a sub-path deployment, so the token (which
+# unlocks the client's share link, both PSKs included) was written to the log.
+SUBPATH_DIR="$WORK/subpath"
+mkdir -p "$SUBPATH_DIR"
+cat >"$SUBPATH_DIR/config.yaml" <<EOF
+panel:
+  listen: 127.0.0.1
+  port: $((PANEL_PORT + 1))
+  base_path: /panel
+  session_ttl: 1h
+database:
+  path: $SUBPATH_DIR/sspanel.db
+log:
+  level: info
+  format: text
+EOF
+SSPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD" "$BIN" run --config "$SUBPATH_DIR/config.yaml" \
+  >"$SUBPATH_DIR/server.log" 2>&1 &
+SUBPATH_PID=$!
+for _ in $(seq 1 100); do
+  if curl -fsS "http://127.0.0.1:$((PANEL_PORT + 1))/healthz" >/dev/null 2>&1; then break; fi
+  sleep 0.1
+done
+SUBPATH_BASE="http://127.0.0.1:$((PANEL_PORT + 1))"
+curl -fsS -c "$SUBPATH_DIR/cookies.txt" -b "$SUBPATH_DIR/cookies.txt" -X POST \
+  -H 'Content-Type: application/json' \
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" \
+  "$SUBPATH_BASE/panel/api/v1/auth/login" >/dev/null
+SUBPATH_INBOUND=$(curl -fsS -c "$SUBPATH_DIR/cookies.txt" -b "$SUBPATH_DIR/cookies.txt" -X POST \
+  -H 'Content-Type: application/json' \
+  -d "{\"remark\":\"sub\",\"listen\":\"127.0.0.1\",\"port\":$((SS_PORT + 6)),\"method\":\"2022-blake3-aes-128-gcm\",\"udp_enabled\":false,\"enabled\":true}" \
+  "$SUBPATH_BASE/panel/api/v1/inbounds")
+SUBPATH_INBOUND_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$SUBPATH_INBOUND")
+SUBPATH_CLIENT=$(curl -fsS -c "$SUBPATH_DIR/cookies.txt" -b "$SUBPATH_DIR/cookies.txt" -X POST \
+  -H 'Content-Type: application/json' -d '{"name":"sub-user","enabled":true}' \
+  "$SUBPATH_BASE/panel/api/v1/inbounds/$SUBPATH_INBOUND_ID/clients")
+SUBPATH_TOKEN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["sub_token"])' <<<"$SUBPATH_CLIENT")
+curl -fsS "$SUBPATH_BASE/panel/sub/$SUBPATH_TOKEN" >/dev/null || fail "sub-path subscription is not served"
+kill "$SUBPATH_PID" 2>/dev/null || true
+wait "$SUBPATH_PID" 2>/dev/null || true
+if grep -Fq "$SUBPATH_TOKEN" "$SUBPATH_DIR/server.log"; then
+  cat "$SUBPATH_DIR/server.log" >&2
+  fail "the subscription token was written to the access log"
+fi
+grep -q '/panel/sub/<redacted>' "$SUBPATH_DIR/server.log" || fail "the sub-path request was not logged as redacted"
+log "sub-path log: /panel/sub/<redacted>"
 
 log "PASS"
