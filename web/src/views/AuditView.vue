@@ -74,6 +74,8 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
+// Page-specific Element Plus components; see src/element-parts.ts.
+import { ElDatePicker, ElOption, ElPagination, ElSelect, ElTable, ElTableColumn } from '@/element-parts'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'

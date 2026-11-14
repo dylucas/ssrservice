@@ -52,7 +52,7 @@
                 :status="percent(row.used_bytes, row.quota_bytes) >= 100 ? 'exception' : undefined"
                 :stroke-width="8"
               />
-              <div class="muted">{{ quotaLabel(row) }}</div>
+              <div class="muted">{{ quotaLabel(asClient(row)) }}</div>
             </div>
           </template>
         </el-table-column>
@@ -67,10 +67,10 @@
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="openLink(row)">链接</el-button>
-            <el-button size="small" text @click="openUsage(row)">趋势</el-button>
-            <el-button size="small" text @click="openEdit(row)">编辑</el-button>
-            <el-dropdown trigger="click" @command="(command: string) => onRowCommand(command, row)">
+            <el-button size="small" text type="primary" @click="openLink(asClient(row))">链接</el-button>
+            <el-button size="small" text @click="openUsage(asClient(row))">趋势</el-button>
+            <el-button size="small" text @click="openEdit(asClient(row))">编辑</el-button>
+            <el-dropdown trigger="click" @command="(command: string) => onRowCommand(command, asClient(row))">
               <el-button size="small" text>
                 更多<el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>
@@ -123,6 +123,8 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+// Page-specific Element Plus components; see src/element-parts.ts.
+import { ElOption, ElPagination, ElProgress, ElSelect, ElTable, ElTableColumn } from '@/element-parts'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
@@ -140,6 +142,14 @@ import ClientForm from '@/components/ClientForm.vue'
 import ClientLinkDialog from '@/components/ClientLinkDialog.vue'
 import ClientUsageDialog from '@/components/ClientUsageDialog.vue'
 import ClientImportDialog from '@/components/ClientImportDialog.vue'
+
+// el-table's slot row is typed as DefaultRow, but this table is always bound to
+// ClientSummary rows. Narrowing here keeps the handlers strongly typed instead of
+// widening every signature to `any` (which is what the previous global
+// registration effectively did).
+function asClient(row: unknown): ClientSummary {
+  return row as ClientSummary
+}
 
 const route = useRoute()
 const loading = ref(false)

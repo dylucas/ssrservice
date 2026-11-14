@@ -64,6 +64,8 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+// Page-specific Element Plus components; see src/element-parts.ts.
+import { ElAlert, ElOption, ElRadioButton, ElRadioGroup, ElSelect, ElTable, ElTableColumn } from '@/element-parts'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api'
 import type { ImportResult, Inbound } from '@/types'

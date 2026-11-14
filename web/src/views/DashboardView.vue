@@ -65,6 +65,8 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+// Page-specific Element Plus components; see src/element-parts.ts.
+import { ElDescriptions, ElDescriptionsItem } from '@/element-parts'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'

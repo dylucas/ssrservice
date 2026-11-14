@@ -9,14 +9,10 @@
 import type { App, Component } from 'vue'
 
 import {
-  ElAlert,
   ElAside,
   ElButton,
   ElConfigProvider,
   ElContainer,
-  ElDatePicker,
-  ElDescriptions,
-  ElDescriptionsItem,
   ElDialog,
   ElDropdown,
   ElDropdownItem,
@@ -26,19 +22,9 @@ import {
   ElHeader,
   ElIcon,
   ElInput,
-  ElInputNumber,
   ElMain,
   ElMenu,
   ElMenuItem,
-  ElOption,
-  ElPagination,
-  ElProgress,
-  ElRadioButton,
-  ElRadioGroup,
-  ElSelect,
-  ElSwitch,
-  ElTable,
-  ElTableColumn,
   ElTag,
 } from 'element-plus'
 import { ElLoading } from 'element-plus'
@@ -48,14 +34,13 @@ import { ElLoading } from 'element-plus'
 // tooltip, scrollbar, checkbox, ...), so listing the registered components is
 // enough. Message, MessageBox and Loading have no component tag but still need
 // their styles.
-import 'element-plus/es/components/alert/style/css'
+//
+// Only the shell is registered here. Page-specific components live in
+// ./element-parts.ts so they land in a chunk only the pages that use them load.
 import 'element-plus/es/components/aside/style/css'
 import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/config-provider/style/css'
 import 'element-plus/es/components/container/style/css'
-import 'element-plus/es/components/date-picker/style/css'
-import 'element-plus/es/components/descriptions/style/css'
-import 'element-plus/es/components/descriptions-item/style/css'
 import 'element-plus/es/components/dialog/style/css'
 import 'element-plus/es/components/dropdown/style/css'
 import 'element-plus/es/components/dropdown-item/style/css'
@@ -65,19 +50,9 @@ import 'element-plus/es/components/form-item/style/css'
 import 'element-plus/es/components/header/style/css'
 import 'element-plus/es/components/icon/style/css'
 import 'element-plus/es/components/input/style/css'
-import 'element-plus/es/components/input-number/style/css'
 import 'element-plus/es/components/main/style/css'
 import 'element-plus/es/components/menu/style/css'
 import 'element-plus/es/components/menu-item/style/css'
-import 'element-plus/es/components/option/style/css'
-import 'element-plus/es/components/pagination/style/css'
-import 'element-plus/es/components/progress/style/css'
-import 'element-plus/es/components/radio-button/style/css'
-import 'element-plus/es/components/radio-group/style/css'
-import 'element-plus/es/components/select/style/css'
-import 'element-plus/es/components/switch/style/css'
-import 'element-plus/es/components/table/style/css'
-import 'element-plus/es/components/table-column/style/css'
 import 'element-plus/es/components/tag/style/css'
 import 'element-plus/es/components/loading/style/css'
 import 'element-plus/es/components/message/style/css'
@@ -85,14 +60,10 @@ import 'element-plus/es/components/message-box/style/css'
 
 // registry maps the tag name used in templates to the component definition.
 const registry: Record<string, Component> = {
-  ElAlert,
   ElAside,
   ElButton,
   ElConfigProvider,
   ElContainer,
-  ElDatePicker,
-  ElDescriptions,
-  ElDescriptionsItem,
   ElDialog,
   ElDropdown,
   ElDropdownItem,
@@ -102,19 +73,9 @@ const registry: Record<string, Component> = {
   ElHeader,
   ElIcon,
   ElInput,
-  ElInputNumber,
   ElMain,
   ElMenu,
   ElMenuItem,
-  ElOption,
-  ElPagination,
-  ElProgress,
-  ElRadioButton,
-  ElRadioGroup,
-  ElSelect,
-  ElSwitch,
-  ElTable,
-  ElTableColumn,
   ElTag,
 }
 

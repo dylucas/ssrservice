@@ -49,16 +49,16 @@
             <el-switch
               :model-value="row.enabled"
               size="small"
-              @change="(value: boolean) => toggle(row, value)"
+              @change="(value: string | number | boolean) => toggle(asInbound(row), value === true)"
             />
           </template>
         </el-table-column>
         <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="goClients(row)">用户</el-button>
-            <el-button size="small" text @click="openEdit(row)">编辑</el-button>
-            <el-button size="small" text @click="restart(row)">重启</el-button>
-            <el-button size="small" text type="danger" @click="remove(row)">删除</el-button>
+            <el-button size="small" text type="primary" @click="goClients(asInbound(row))">用户</el-button>
+            <el-button size="small" text @click="openEdit(asInbound(row))">编辑</el-button>
+            <el-button size="small" text @click="restart(asInbound(row))">重启</el-button>
+            <el-button size="small" text type="danger" @click="remove(asInbound(row))">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -75,6 +75,8 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+// Page-specific Element Plus components; see src/element-parts.ts.
+import { ElSwitch, ElTable, ElTableColumn } from '@/element-parts'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
@@ -82,6 +84,13 @@ import { api } from '@/api'
 import type { Inbound } from '@/types'
 import { formatBytes } from '@/utils/format'
 import InboundForm from '@/components/InboundForm.vue'
+
+// el-table's slot row is typed as DefaultRow, but this table is always bound to
+// Inbound rows. Narrowing here keeps the handlers strongly typed instead of
+// widening every signature to `any`.
+function asInbound(row: unknown): Inbound {
+  return row as Inbound
+}
 
 const router = useRouter()
 const loading = ref(false)

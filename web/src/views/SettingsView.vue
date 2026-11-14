@@ -69,6 +69,8 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+// Page-specific Element Plus components; see src/element-parts.ts.
+import { ElAlert, ElInputNumber, ElOption, ElSelect, ElSwitch } from '@/element-parts'
 import { ElMessage } from 'element-plus'
 import { Download, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'

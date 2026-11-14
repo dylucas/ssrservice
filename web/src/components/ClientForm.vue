@@ -66,6 +66,8 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+// Page-specific Element Plus components; see src/element-parts.ts.
+import { ElDatePicker, ElInputNumber, ElOption, ElSelect, ElSwitch } from '@/element-parts'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { api } from '@/api'
 import type { ClientSummary } from '@/types'

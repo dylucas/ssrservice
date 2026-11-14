@@ -38,6 +38,8 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+// Page-specific Element Plus components; see src/element-parts.ts.
+import { ElRadioButton, ElRadioGroup } from '@/element-parts'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api'
 import type { DailyUsage } from '@/types'
