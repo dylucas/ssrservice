@@ -806,3 +806,31 @@ func TestDeleteInboundClearsAccounting(t *testing.T) {
 		t.Fatalf("client row should be gone, got %v", err)
 	}
 }
+
+// TestAPIResponsesAreNotCacheable verifies sensitive API payloads carry
+// no-store, while the immutable assets and the SPA shell keep their policies.
+func TestAPIResponsesAreNotCacheable(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+
+	rec := tp.do(http.MethodGet, "/api/v1/inbounds", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbounds: %d", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("api cache-control = %q, want no-store", got)
+	}
+	if got := rec.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("api pragma = %q, want no-cache", got)
+	}
+
+	// Unauthenticated API responses are uncacheable too.
+	anon := newTestPanel(t)
+	rec = anon.do(http.MethodGet, "/api/v1/inbounds", nil, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous inbounds: %d", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("anonymous api cache-control = %q, want no-store", got)
+	}
+}

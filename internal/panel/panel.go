@@ -186,6 +186,7 @@ func (s *Server) Handler() http.Handler {
 	router := engine.Group(base)
 	apiV1 := router.Group("/api/v1")
 	apiV1.Use(limitRequestBody(maxAPIRequestBody))
+	apiV1.Use(noStore())
 	apiV1.POST("/auth/login", s.handleLogin)
 	api := apiV1.Group("")
 	api.Use(s.requireAuth())

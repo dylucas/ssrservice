@@ -51,6 +51,17 @@ func writeBadRequest(c *gin.Context, message string) {
 	writeError(c, http.StatusBadRequest, "invalid_request", message)
 }
 
+// noStore marks API responses as uncacheable. They carry PSKs, subscription
+// tokens and session state, so no browser or intermediary cache may keep a
+// copy.
+func noStore() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
+		c.Next()
+	}
+}
+
 // limitRequestBody caps the size of request bodies. It is registered on the
 // API group only so subscriptions and static assets are unaffected.
 func limitRequestBody(max int64) gin.HandlerFunc {
