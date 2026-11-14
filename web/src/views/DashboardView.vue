@@ -61,15 +61,26 @@
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
+import * as echarts from 'echarts/core'
+import { LineChart } from 'echarts/charts'
+import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import type { ECharts } from 'echarts/core'
 import { api } from '@/api'
 import type { Dashboard } from '@/types'
 import { formatBytes, formatDuration } from '@/utils/format'
 
+// Only the parts of ECharts this view uses are registered, which keeps the
+// dashboard route chunk far smaller than the full echarts bundle.
+echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
+
 const loading = ref(false)
 const chartEl = ref<HTMLDivElement>()
-let chart: echarts.ECharts | null = null
+let chart: ECharts | null = null
 let timer: number | undefined
+// inFlight prevents the manual refresh button and the polling timer from
+// stacking requests on a slow link.
+let inFlight = false
 
 const data = reactive<Dashboard>({
   version: '',
@@ -119,6 +130,8 @@ function renderChart() {
 }
 
 async function load() {
+  if (inFlight) return
+  inFlight = true
   loading.value = true
   try {
     Object.assign(data, await api.dashboard())
@@ -127,7 +140,19 @@ async function load() {
     ElMessage.error(error?.message || '加载失败')
   } finally {
     loading.value = false
+    inFlight = false
   }
+}
+
+// tick runs on the polling interval and skips background tabs, so a panel left
+// open in a hidden tab does not keep querying the server.
+function tick() {
+  if (document.hidden) return
+  load()
+}
+
+function onVisibilityChange() {
+  if (!document.hidden) load()
 }
 
 function onResize() {
@@ -137,11 +162,13 @@ function onResize() {
 onMounted(() => {
   load()
   window.addEventListener('resize', onResize)
-  timer = window.setInterval(load, 15000)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  timer = window.setInterval(tick, 15000)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   if (timer) window.clearInterval(timer)
   chart?.dispose()
 })
