@@ -541,7 +541,18 @@ func indexRuntimeConfig(t *testing.T, body string) runtimeConfig {
 	return cfg
 }
 
+// requireBuiltFrontend skips tests that assert on the embedded frontend
+// assets. The assets are a build artifact (make web), so a checkout without a
+// frontend build can only exercise the "not built" placeholder.
+func requireBuiltFrontend(t *testing.T) {
+	t.Helper()
+	if !webui.Built() {
+		t.Skip("frontend not built; run make web first")
+	}
+}
+
 func TestIndexServesJSONRuntimeConfig(t *testing.T) {
+	requireBuiltFrontend(t)
 	tp := newTestPanel(t)
 	rec := tp.do(http.MethodGet, "/", nil, nil)
 	if rec.Code != http.StatusOK {
@@ -576,12 +587,16 @@ func TestBasePathRouting(t *testing.T) {
 		t.Fatalf("unexpected redirect target %q", loc)
 	}
 
-	rec = tp.do(http.MethodGet, "/panel/", nil, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("index under base path: %d", rec.Code)
-	}
-	if cfg := indexRuntimeConfig(t, rec.Body.String()); cfg.BasePath != "/panel/" {
-		t.Fatalf("unexpected base path %q", cfg.BasePath)
+	// The index under the base path is served from the embedded build, which a
+	// checkout without a frontend build does not have.
+	if webui.Built() {
+		rec = tp.do(http.MethodGet, "/panel/", nil, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("index under base path: %d", rec.Code)
+		}
+		if cfg := indexRuntimeConfig(t, rec.Body.String()); cfg.BasePath != "/panel/" {
+			t.Fatalf("unexpected base path %q", cfg.BasePath)
+		}
 	}
 
 	rec = tp.do(http.MethodGet, "/panel/api/v1/auth/me", nil, nil)
@@ -594,6 +609,7 @@ func TestBasePathRouting(t *testing.T) {
 }
 
 func TestHashedAssetsAreImmutable(t *testing.T) {
+	requireBuiltFrontend(t)
 	entries, err := fs.ReadDir(webui.FS(), "assets")
 	if err != nil {
 		t.Fatalf("read assets: %v", err)
