@@ -47,6 +47,28 @@ export interface ClientSummary {
 }
 
 /**
+ * ClientListParams is the query of the paged client list endpoints.
+ *
+ * Filtering and paging run in SQL: `limit` and `offset` select the slice, and
+ * the optional fields narrow the row set before it is counted.
+ */
+export interface ClientListParams {
+  inbound_id?: number
+  status?: ClientSummary['status']
+  q?: string
+  limit: number
+  offset: number
+}
+
+/** One page of the client list plus the paging values the server applied. */
+export interface ClientListResponse {
+  items: ClientSummary[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/**
  * Client is the single-client representation (GET /clients/:id): the summary
  * plus the credentials and the rendered share links.
  */

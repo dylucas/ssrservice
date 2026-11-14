@@ -371,13 +371,17 @@ func TestInboundAggregates(t *testing.T) {
 
 // TestListClientRows verifies the lean list projection matches the full rows
 // field by field, for both the filtered and the unfiltered query.
-func TestListClientRows(t *testing.T) {
+// TestListClientPage covers paging, inbound filtering, the joined inbound
+// fields, LIKE escaping and the agreement between `total` and `items`.
+func TestListClientPage(t *testing.T) {
 	st := newTestStore(t)
-	in := model.Inbound{Listen: "127.0.0.1", Port: 9100, Method: model.Method2022AES128GCM, Enabled: true}
+	in := model.Inbound{Remark: "香港", Listen: "127.0.0.1", Port: 9100,
+		Method: model.Method2022AES128GCM, Enabled: true}
 	if err := st.CreateInbound(&in); err != nil {
 		t.Fatalf("inbound: %v", err)
 	}
-	other := model.Inbound{Listen: "127.0.0.1", Port: 9101, Method: model.Method2022AES128GCM, Enabled: true}
+	other := model.Inbound{Remark: "東京", Listen: "127.0.0.1", Port: 9101,
+		Method: model.MethodAES128GCM, Enabled: true}
 	if err := st.CreateInbound(&other); err != nil {
 		t.Fatalf("inbound: %v", err)
 	}
@@ -387,6 +391,8 @@ func TestListClientRows(t *testing.T) {
 			ResetDay: 5, Note: "note-b", SubToken: "t-b"},
 		{InboundID: in.ID, Name: "a", PSK: "psk-a", Enabled: true, UpBytes: 1, DownBytes: 2, SubToken: "t-a"},
 		{InboundID: other.ID, Name: "c", PSK: "psk-c", Enabled: true, UpBytes: 3, DownBytes: 4, SubToken: "t-c"},
+		{InboundID: in.ID, Name: "pct-100%", PSK: "psk-d", Enabled: true, SubToken: "t-d"},
+		{InboundID: in.ID, Name: "under_score", PSK: "psk-e", Enabled: true, SubToken: "t-e"},
 	}
 	for i := range full {
 		if err := st.CreateClient(&full[i]); err != nil {
@@ -394,54 +400,202 @@ func TestListClientRows(t *testing.T) {
 		}
 	}
 
-	want, err := st.ListClients(0)
+	// The projection carries every field of the full row it renders.
+	page, total, err := st.ListClientPage(ClientPageFilter{Limit: 10})
 	if err != nil {
-		t.Fatalf("full rows: %v", err)
+		t.Fatalf("page: %v", err)
 	}
-	got, err := st.ListClientRows(0)
-	if err != nil {
-		t.Fatalf("rows: %v", err)
+	if total != int64(len(full)) || len(page) != len(full) {
+		t.Fatalf("total=%d len(page)=%d, want %d", total, len(page), len(full))
 	}
-	if len(got) != len(want) {
-		t.Fatalf("row count %d != full %d", len(got), len(want))
-	}
-	for i := range want {
-		w, g := want[i], got[i]
+	for i := range full {
+		w, g := full[i], page[i]
 		if w.ID != g.ID || w.InboundID != g.InboundID || w.Name != g.Name || w.Enabled != g.Enabled ||
 			w.QuotaBytes != g.QuotaBytes || w.UpBytes != g.UpBytes || w.DownBytes != g.DownBytes ||
 			w.ExpiresAt != g.ExpiresAt || w.IPLimit != g.IPLimit || w.ResetPolicy != g.ResetPolicy ||
 			w.ResetDay != g.ResetDay || w.Note != g.Note {
-			t.Fatalf("row %d mismatch:\nfull %+v\nlean %+v", i, w, g)
+			t.Fatalf("row %d mismatch:\nfull %+v\npage %+v", i, w, g)
 		}
 	}
-	// Rows stay ordered by id, matching the full query.
-	for i := 1; i < len(got); i++ {
-		if got[i-1].ID >= got[i].ID {
-			t.Fatalf("rows are not ordered by id: %+v", got)
-		}
+	// The join supplies the inbound fields, so the list never has to read the
+	// inbound rows (which carry the server PSK).
+	if page[0].InboundRemark != "香港" || page[0].Method != model.Method2022AES128GCM {
+		t.Fatalf("joined inbound fields missing: %+v", page[0])
+	}
+	if page[2].InboundRemark != "東京" || page[2].Method != model.MethodAES128GCM {
+		t.Fatalf("joined inbound fields missing: %+v", page[2])
 	}
 
-	filtered, err := st.ListClientRows(in.ID)
-	if err != nil {
-		t.Fatalf("filtered rows: %v", err)
+	// Paging walks the same ordered sequence without skipping or repeating.
+	seen := make(map[int64]bool, len(full))
+	for offset := 0; offset < len(full); offset += 2 {
+		part, partTotal, err := st.ListClientPage(ClientPageFilter{Limit: 2, Offset: offset})
+		if err != nil {
+			t.Fatalf("page at %d: %v", offset, err)
+		}
+		if partTotal != int64(len(full)) {
+			t.Fatalf("total at offset %d = %d", offset, partTotal)
+		}
+		for _, row := range part {
+			if seen[row.ID] {
+				t.Fatalf("row %d appeared twice", row.ID)
+			}
+			seen[row.ID] = true
+		}
 	}
-	if len(filtered) != 2 {
-		t.Fatalf("expected 2 rows for the inbound, got %d", len(filtered))
+	if len(seen) != len(full) {
+		t.Fatalf("paging saw %d of %d rows", len(seen), len(full))
+	}
+
+	// An offset past the end is an empty page with the real total, not an error.
+	past, pastTotal, err := st.ListClientPage(ClientPageFilter{Limit: 10, Offset: 1000})
+	if err != nil {
+		t.Fatalf("past end: %v", err)
+	}
+	if len(past) != 0 || pastTotal != int64(len(full)) {
+		t.Fatalf("past end: %d rows, total %d", len(past), pastTotal)
+	}
+
+	// Inbound filter.
+	filtered, filteredTotal, err := st.ListClientPage(ClientPageFilter{InboundID: in.ID, Limit: 10})
+	if err != nil {
+		t.Fatalf("filtered: %v", err)
+	}
+	if filteredTotal != 4 || len(filtered) != 4 {
+		t.Fatalf("expected 4 rows for the inbound, got %d (total %d)", len(filtered), filteredTotal)
 	}
 	for _, row := range filtered {
 		if row.InboundID != in.ID {
 			t.Fatalf("filter leaked row from another inbound: %+v", row)
 		}
 	}
+
+	// The free-text filter matches name, note, inbound remark and method, and
+	// treats the LIKE wildcards in the input literally.
+	queries := map[string]int{
+		"香港":           4, // inbound remark
+		"東京":           1, // inbound remark
+		"note-b":       1, // client note
+		"blake3":       4, // method
+		"100%":         1, // % is literal, not "any run of characters"
+		"under_score":  1, // _ is literal, not "any single character"
+		"underXscore":  0,
+		"no-such-user": 0,
+	}
+	for query, want := range queries {
+		rows, gotTotal, err := st.ListClientPage(ClientPageFilter{Query: query, Limit: 10})
+		if err != nil {
+			t.Fatalf("query %q: %v", query, err)
+		}
+		if int(gotTotal) != want || len(rows) != want {
+			t.Fatalf("query %q: %d rows (total %d), want %d", query, len(rows), gotTotal, want)
+		}
+	}
+
+	// An unknown status and an over-large limit are normalised by the store,
+	// which is what keeps a non-panel caller from widening the page.
+	if _, _, err := st.ListClientPage(ClientPageFilter{Status: "bogus"}); err == nil {
+		t.Fatalf("expected an error for an unknown status")
+	}
+	clamped, _, err := st.ListClientPage(ClientPageFilter{Limit: ClientPageMaxLimit + 1})
+	if err != nil {
+		t.Fatalf("clamped: %v", err)
+	}
+	if len(clamped) != len(full) {
+		t.Fatalf("clamped page has %d rows", len(clamped))
+	}
 }
 
-// TestClientRowModelRoundTrip verifies Model() carries every field of the lean
-// projection, so the service can reuse the domain status/quota rules safely.
-func TestClientRowModelRoundTrip(t *testing.T) {
-	row := ClientRow{
+// TestClientStatusClauseMatchesStatusAt pins the SQL status filter to the Go
+// rule it mirrors. If the two ever drift, the panel would render a row with one
+// status while claiming to filter by another.
+func TestClientStatusClauseMatchesStatusAt(t *testing.T) {
+	st := newTestStore(t)
+	in := model.Inbound{Remark: "status", Listen: "127.0.0.1", Port: 9200,
+		Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+	now := int64(1_800_000_000)
+	// Every branch of model.Client.StatusAt, including the edges: expiry exactly
+	// now, quota exactly reached, and the zero values that disable each rule.
+	fixtures := []model.Client{
+		{Name: "disabled", Enabled: false},
+		{Name: "disabled-and-expired-and-over-quota", Enabled: false, ExpiresAt: now - 1, QuotaBytes: 1, UpBytes: 5},
+		{Name: "expired", Enabled: true, ExpiresAt: now - 1},
+		{Name: "expired-at-now", Enabled: true, ExpiresAt: now},
+		{Name: "expires-later", Enabled: true, ExpiresAt: now + 1},
+		{Name: "never-expires", Enabled: true},
+		{Name: "quota-exactly-reached", Enabled: true, QuotaBytes: 10, UpBytes: 4, DownBytes: 6},
+		{Name: "quota-below", Enabled: true, QuotaBytes: 10, UpBytes: 4, DownBytes: 5},
+		{Name: "unlimited", Enabled: true, QuotaBytes: 0, UpBytes: 1 << 40},
+		{Name: "expired-wins-over-quota", Enabled: true, ExpiresAt: now - 1, QuotaBytes: 1, UpBytes: 9},
+		{Name: "quota-wins-over-active", Enabled: true, ExpiresAt: now + 100, QuotaBytes: 1, UpBytes: 1},
+	}
+	for i := range fixtures {
+		fixtures[i].InboundID = in.ID
+		fixtures[i].PSK = "psk"
+		fixtures[i].SubToken = "tok-" + itoaStore(i)
+		if err := st.CreateClient(&fixtures[i]); err != nil {
+			t.Fatalf("client %d: %v", i, err)
+		}
+	}
+
+	for _, status := range []string{model.StatusActive, model.StatusDisabled,
+		model.StatusExpired, model.StatusQuotaExceeded} {
+		want := make(map[int64]string, len(fixtures))
+		for i := range fixtures {
+			if got := fixtures[i].StatusAt(now); got == status {
+				want[fixtures[i].ID] = fixtures[i].Name
+			}
+		}
+		if len(want) == 0 {
+			t.Fatalf("fixtures do not cover %s", status)
+		}
+		rows, total, err := st.ListClientPage(ClientPageFilter{Status: status, Now: now,
+			Limit: ClientPageMaxLimit})
+		if err != nil {
+			t.Fatalf("%s: %v", status, err)
+		}
+		if int(total) != len(want) {
+			t.Fatalf("%s: total %d, want %d (%v)", status, total, len(want), want)
+		}
+		got := make(map[int64]string, len(rows))
+		for _, row := range rows {
+			got[row.ID] = row.Name
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: SQL returned %d rows, Go projected %d\nSQL %v\nGo  %v",
+				status, len(got), len(want), got, want)
+		}
+		for id, name := range want {
+			if got[id] != name {
+				t.Fatalf("%s: row %d missing from SQL result\nSQL %v\nGo  %v", status, id, got, want)
+			}
+		}
+	}
+
+	// "all" and "" mean no filter at all.
+	for _, status := range []string{"", "all"} {
+		_, total, err := st.ListClientPage(ClientPageFilter{Status: status, Now: now,
+			Limit: ClientPageMaxLimit})
+		if err != nil {
+			t.Fatalf("status %q: %v", status, err)
+		}
+		if int(total) != len(fixtures) {
+			t.Fatalf("status %q: total %d, want %d", status, total, len(fixtures))
+		}
+	}
+}
+
+// TestClientPageRowModelRoundTrip verifies Model() carries every field of the
+// lean projection, so the service can reuse the domain status/quota rules.
+func TestClientPageRowModelRoundTrip(t *testing.T) {
+	row := ClientPageRow{
 		ID: 7, InboundID: 3, Name: "alice", Enabled: true, QuotaBytes: 1024,
 		UpBytes: 100, DownBytes: 200, ExpiresAt: 1700000000, IPLimit: 2,
 		ResetPolicy: model.ResetMonthly, ResetDay: 9, Note: "laptop",
+		InboundRemark: "hk", Method: model.Method2022AES128GCM,
 	}
 	c := row.Model()
 	if c.ID != row.ID || c.InboundID != row.InboundID || c.Name != row.Name ||

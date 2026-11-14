@@ -1017,6 +1017,124 @@ func TestClientListSkipsGzipForSmallResponses(t *testing.T) {
 	}
 }
 
+// TestClientListPaging covers the server-side page: the default page bound, an
+// explicit limit/offset, the echoed paging values, and the filters that run in
+// SQL instead of the browser.
+func TestClientListPaging(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	inboundID := tp.seedClients(101)
+
+	first := decode[service.ClientListPage](t, tp.doRaw(http.MethodGet, "/api/v1/clients", http.Header{}))
+	if first.Total != 101 || len(first.Items) != store.ClientPageDefaultLimit {
+		t.Fatalf("default page: %d items, total %d", len(first.Items), first.Total)
+	}
+	if first.Limit != store.ClientPageDefaultLimit || first.Offset != 0 {
+		t.Fatalf("default page echo: limit=%d offset=%d", first.Limit, first.Offset)
+	}
+	// The paged projection is still the credential-free summary.
+	raw := tp.doRaw(http.MethodGet, "/api/v1/clients?limit=100", http.Header{})
+	var rawItems struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(raw.Body.Bytes(), &rawItems); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	for _, forbidden := range []string{"psk", "sub_token", "link", "subscription_url"} {
+		if _, ok := rawItems.Items[0][forbidden]; ok {
+			t.Fatalf("paged list leaked %s", forbidden)
+		}
+	}
+
+	second := decode[service.ClientListPage](t,
+		tp.doRaw(http.MethodGet, "/api/v1/clients?limit=2&offset=1", http.Header{}))
+	if second.Total != 101 || len(second.Items) != 2 || second.Limit != 2 || second.Offset != 1 {
+		t.Fatalf("limited page: %d items, total %d, limit %d, offset %d",
+			len(second.Items), second.Total, second.Limit, second.Offset)
+	}
+	if second.Items[0].Name != "seeded-1" || second.Items[1].Name != "seeded-2" {
+		t.Fatalf("unexpected page contents: %q, %q", second.Items[0].Name, second.Items[1].Name)
+	}
+	if second.Items[0].ID >= second.Items[1].ID {
+		t.Fatalf("page is not ordered by id")
+	}
+
+	// An offset past the end is an empty page with the real total, not a 404.
+	past := decode[service.ClientListPage](t,
+		tp.doRaw(http.MethodGet, "/api/v1/clients?limit=10&offset=500", http.Header{}))
+	if len(past.Items) != 0 || past.Total != 101 {
+		t.Fatalf("past end: %d items, total %d", len(past.Items), past.Total)
+	}
+
+	// Paging and filter values are validated rather than clamped: a caller that
+	// asked for more than a page must not believe it received everything.
+	for _, path := range []string{
+		"/api/v1/clients?limit=0",
+		"/api/v1/clients?limit=501",
+		"/api/v1/clients?limit=abc",
+		"/api/v1/clients?offset=-1",
+		"/api/v1/clients?offset=abc",
+		"/api/v1/clients?inbound_id=abc",
+		"/api/v1/clients?status=bogus",
+		"/api/v1/clients?q=" + strings.Repeat("x", store.ClientQueryMaxLen+1),
+	} {
+		if rec := tp.doRaw(http.MethodGet, path, http.Header{}); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: %d %s", path, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Status filtering agrees with the status the same page reports.
+	disabledID := second.Items[0].ID
+	if rec := tp.do(http.MethodPost, "/api/v1/clients/"+itoa(disabledID)+"/toggle",
+		map[string]any{"enabled": false}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("toggle: %d %s", rec.Code, rec.Body.String())
+	}
+	disabled := decode[service.ClientListPage](t,
+		tp.doRaw(http.MethodGet, "/api/v1/clients?status=disabled&limit=500", http.Header{}))
+	if disabled.Total != 1 || len(disabled.Items) != 1 || disabled.Items[0].ID != disabledID {
+		t.Fatalf("status=disabled: %d items, total %d", len(disabled.Items), disabled.Total)
+	}
+	if disabled.Items[0].Status != model.StatusDisabled {
+		t.Fatalf("disabled row reported status %q", disabled.Items[0].Status)
+	}
+	active := decode[service.ClientListPage](t,
+		tp.doRaw(http.MethodGet, "/api/v1/clients?status=active&limit=500", http.Header{}))
+	if active.Total != 100 || len(active.Items) != 100 {
+		t.Fatalf("status=active: %d items, total %d", len(active.Items), active.Total)
+	}
+	for _, item := range active.Items {
+		if item.Status != model.StatusActive {
+			t.Fatalf("status=active returned a %q row", item.Status)
+		}
+	}
+
+	// The free-text filter matches name, inbound remark and method.
+	for path, want := range map[string]int64{
+		"/api/v1/clients?q=seeded-100":        1,
+		"/api/v1/clients?q=seeded":            101, // inbound remark and every name
+		"/api/v1/clients?q=blake3":            101, // method
+		"/api/v1/clients?q=no-such-user-here": 0,
+	} {
+		got := decode[service.ClientListPage](t, tp.doRaw(http.MethodGet, path, http.Header{}))
+		if got.Total != want {
+			t.Fatalf("%s: total %d, want %d", path, got.Total, want)
+		}
+	}
+
+	// The per-inbound endpoint pages the same way and ignores a conflicting
+	// inbound_id in the query string.
+	perInbound := decode[service.ClientListPage](t, tp.doRaw(http.MethodGet,
+		"/api/v1/inbounds/"+itoa(inboundID)+"/clients?limit=3&inbound_id=999999", http.Header{}))
+	if perInbound.Total != 101 || len(perInbound.Items) != 3 {
+		t.Fatalf("per-inbound page: %d items, total %d", len(perInbound.Items), perInbound.Total)
+	}
+	for _, item := range perInbound.Items {
+		if item.InboundID != inboundID {
+			t.Fatalf("per-inbound page leaked a row of inbound %d", item.InboundID)
+		}
+	}
+}
+
 // TestInboundClientListUsesSummary verifies the per-inbound list is trimmed too.
 func TestInboundClientListUsesSummary(t *testing.T) {
 	tp := newTestPanel(t)

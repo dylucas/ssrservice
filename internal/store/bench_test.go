@@ -92,14 +92,35 @@ func BenchmarkInboundAggregates(b *testing.B) {
 	}
 }
 
-// BenchmarkListClientRows measures the lean list projection.
-func BenchmarkListClientRows(b *testing.B) {
+// BenchmarkListClientPage measures the paged list projection the panel renders.
+// The first page is the case the panel hits on every visit; the unfiltered
+// count dominates it because SQLite has to visit every row to produce a total.
+func BenchmarkListClientPage(b *testing.B) {
 	st := benchStore(b, 5000)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := st.ListClientRows(0); err != nil {
-			b.Fatalf("rows: %v", err)
+		if _, _, err := st.ListClientPage(ClientPageFilter{
+			Limit: ClientPageDefaultLimit, Now: time.Now().Unix(),
+		}); err != nil {
+			b.Fatalf("page: %v", err)
+		}
+	}
+}
+
+// BenchmarkListClientPageFiltered measures the same page with a status filter,
+// which is the slowest documented query because the status has no index and the
+// count must evaluate the predicate on every row.
+func BenchmarkListClientPageFiltered(b *testing.B) {
+	st := benchStore(b, 5000)
+	now := time.Now().Unix()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := st.ListClientPage(ClientPageFilter{
+			Status: model.StatusActive, Limit: ClientPageDefaultLimit, Now: now,
+		}); err != nil {
+			b.Fatalf("page: %v", err)
 		}
 	}
 }

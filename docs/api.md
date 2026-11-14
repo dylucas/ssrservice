@@ -81,6 +81,7 @@
 
 - `traffic_30d` 来自按天汇总表 `traffic_daily_totals`，由运行时在落库（默认每 10 秒）的同一事务内维护，因此与用户明细始终一致；窗口为最近 30 天。
 - `up_bytes` / `down_bytes` 在仪表盘中是内存实时累计值，用户列表会叠加实时计数，而入站列表读的是已落库值——三者的差别只有一个落库周期。
+- 用户列表的 `status` 筛选在 SQL 中按**已落库**计数判断，而行内展示的 `status` 用叠加了实时计数的值。客户端越过配额时会立刻触发一次落库（见 `onClientExceeded`），所以两者不一致的窗口通常远小于一个落库周期；即使偶发，`total` 与 `items` 仍来自同一次查询，不会出现"筛选结果里有 status 不匹配的行"以外的偏差。
 - 删除用户或入站时，其已落库的日流量会随明细一起从汇总表中扣除。
 
 ## 入站
@@ -159,7 +160,8 @@ curl -b cookies.txt -X PUT http://127.0.0.1:2096/api/v1/inbounds/1 \
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/clients?inbound_id=` | 列表 |
+| GET | `/clients?inbound_id=&status=&q=&limit=&offset=` | 分页列表（见下） |
+| GET | `/inbounds/:id/clients?status=&q=&limit=&offset=` | 该入站的分页列表，参数同上 |
 | GET | `/clients/:id` | 详情 |
 | PUT | `/clients/:id` | 更新 |
 | DELETE | `/clients/:id` | 删除 |
@@ -189,6 +191,34 @@ curl -b cookies.txt -X PUT http://127.0.0.1:2096/api/v1/inbounds/1 \
 - `psk` 留空自动生成；传统 AEAD 方法接受任意非空密码，SS2022 要求 base64 且长度匹配。
 - `quota_bytes=0` 不限；`expires_at=0` 永不过期；`ip_limit=0` 不限。
 - `reset_policy` 为 `none` 或 `monthly`；`reset_day` 为 `0`（跟随全局）或 `1–28`。
+
+### 用户列表（分页）
+
+`GET /clients` 与 `GET /inbounds/:id/clients` 在 SQL 中完成筛选与分页，一次只返回一页：
+
+| 参数 | 默认 | 规则 |
+|---|---|---|
+| `inbound_id` | 全部 | `>0` 只返回该入站；`0`/省略=全部。仅顶层 `/clients` 有效，`/inbounds/:id/clients` 由路径决定并忽略此参数 |
+| `status` | `all` | `all`、`active`、`disabled`、`expired`、`quota_exceeded` |
+| `q` | 空 | 去空白后按子串匹配 `name`、`note`、入站 `remark`、`method`；最长 100 字符 |
+| `limit` | `100` | `1–500` |
+| `offset` | `0` | `0–10000000` |
+
+响应：
+
+```json
+{ "items": [], "total": 5000, "limit": 100, "offset": 0 }
+```
+
+`limit` / `offset` 回显实际生效值，`total` 是满足筛选条件的总行数（与 `items` 由同一份 `WHERE` 求出）。
+
+- 参数校验是**拒绝**而不是截断：`limit=0`、`limit=501`、`offset=-1`、`status=bogus`、`inbound_id=abc`、超长 `q` 都返回 `400 invalid_request`，避免调用方以为自己拿到了全量数据。
+- `offset` 超出总数返回 `200` + 空 `items` + 正确的 `total`。
+- 排序固定为 `id` 升序，翻页不跳行不重复。
+- `q` 里的 `%`、`_`、`\` 按字面量匹配（内部使用 `LIKE ... ESCAPE '\'`）。旧版面板在浏览器里把四个字段拼成一个串再匹配，因此**跨字段的短语（如 `alice 香港`）不再命中**，这是有意的简化。
+- 只读 `clients` 的展示列，并从 `inbounds` JOIN 出 `remark`/`method`，所以列表既不读也不返回任何 PSK。
+
+> 兼容性说明：早期版本的 `GET /clients` 一次返回全部用户。现在默认只返回 100 条，上限 500 条。需要全量数据请用 `GET /export/clients`（CSV，含 PSK），或按 `limit`/`offset` 翻页。
 
 `GET /clients` 与 `GET /inbounds/:id/clients` 返回**摘要**，`GET /clients/:id` 返回**详情**。两者共用以下计算字段：
 

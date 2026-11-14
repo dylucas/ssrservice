@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { Client, ClientSummary } from '../src/types'
-import { filterClients, lastPage, paginate, toSummary } from '../src/utils/clients'
+import {
+  CLIENT_PAGE_SIZE,
+  buildClientListParams,
+  hasClientFilter,
+  lastPage,
+  toSummary,
+} from '../src/utils/clients'
 
 function client(overrides: Partial<ClientSummary>): ClientSummary {
   return {
@@ -26,53 +32,56 @@ function client(overrides: Partial<ClientSummary>): ClientSummary {
   }
 }
 
-const clients: ClientSummary[] = [
-  client({ id: 1, name: 'alice', note: 'laptop', status: 'active' }),
-  client({ id: 2, name: 'Bob', note: 'phone', status: 'expired' }),
-  client({ id: 3, name: 'carol', inbound_remark: '东京', status: 'quota_exceeded' }),
-]
-
-describe('filterClients', () => {
-  it('returns every client without filters', () => {
-    expect(filterClients(clients)).toHaveLength(3)
-    expect(filterClients(clients, { query: '   ' })).toHaveLength(3)
-    expect(filterClients(clients, { status: 'all' })).toHaveLength(3)
+describe('buildClientListParams', () => {
+  it('always sends a limit and an offset', () => {
+    const params = buildClientListParams({ page: 1, pageSize: CLIENT_PAGE_SIZE })
+    expect(params).toEqual({ limit: CLIENT_PAGE_SIZE, offset: 0 })
+    expect(buildClientListParams({ page: 3, pageSize: 20 })).toEqual({ limit: 20, offset: 40 })
   })
 
-  it('matches name, note, inbound remark and method case-insensitively', () => {
-    expect(filterClients(clients, { query: 'ALICE' }).map((c) => c.id)).toEqual([1])
-    expect(filterClients(clients, { query: 'phone' }).map((c) => c.id)).toEqual([2])
-    expect(filterClients(clients, { query: '东京' }).map((c) => c.id)).toEqual([3])
-    expect(filterClients(clients, { query: 'blake3' })).toHaveLength(3)
+  it('omits filters that mean "everything"', () => {
+    expect(buildClientListParams({ page: 1, pageSize: 20, inboundId: 0 }).inbound_id).toBeUndefined()
+    expect(buildClientListParams({ page: 1, pageSize: 20, status: 'all' }).status).toBeUndefined()
+    expect(buildClientListParams({ page: 1, pageSize: 20, query: '   ' }).q).toBeUndefined()
+    expect(buildClientListParams({ page: 1, pageSize: 20, query: '' }).q).toBeUndefined()
   })
 
-  it('filters by status', () => {
-    expect(filterClients(clients, { status: 'expired' }).map((c) => c.id)).toEqual([2])
-    expect(filterClients(clients, { status: 'quota_exceeded' }).map((c) => c.id)).toEqual([3])
+  it('sends the filters the operator selected', () => {
+    const params = buildClientListParams({
+      page: 2,
+      pageSize: 20,
+      inboundId: 7,
+      status: 'quota_exceeded',
+      query: '  alice  ',
+    })
+    expect(params).toEqual({
+      inbound_id: 7,
+      status: 'quota_exceeded',
+      q: 'alice',
+      limit: 20,
+      offset: 20,
+    })
   })
 
-  it('combines query and status', () => {
-    expect(filterClients(clients, { query: 'bob', status: 'active' })).toEqual([])
-    expect(filterClients(clients, { query: 'bob', status: 'expired' }).map((c) => c.id)).toEqual([2])
+  it('clamps a page below one and keeps a stale page usable', () => {
+    expect(buildClientListParams({ page: 0, pageSize: 20 }).offset).toBe(0)
+    expect(buildClientListParams({ page: -5, pageSize: 20 }).offset).toBe(0)
+    expect(buildClientListParams({ page: 1.9, pageSize: 20 }).offset).toBe(0)
+    expect(buildClientListParams({ page: 2.9, pageSize: 20 }).offset).toBe(20)
+  })
+
+  it('falls back to the default page size', () => {
+    expect(buildClientListParams({ page: 1, pageSize: 0 }).limit).toBe(CLIENT_PAGE_SIZE)
+    expect(buildClientListParams({ page: 1, pageSize: -1 }).limit).toBe(CLIENT_PAGE_SIZE)
   })
 })
 
-describe('paginate', () => {
-  const items = Array.from({ length: 45 }, (_, index) => index)
-
-  it('slices the requested page', () => {
-    expect(paginate(items, 1, 20)).toEqual(items.slice(0, 20))
-    expect(paginate(items, 3, 20)).toEqual(items.slice(40, 45))
-  })
-
-  it('clamps out-of-range pages', () => {
-    expect(paginate(items, 0, 20)).toEqual(items.slice(0, 20))
-    expect(paginate(items, 99, 20)).toEqual(items.slice(40, 45))
-    expect(paginate([], 5, 20)).toEqual([])
-  })
-
-  it('returns all items when the page size is not positive', () => {
-    expect(paginate(items, 1, 0)).toEqual(items)
+describe('hasClientFilter', () => {
+  it('reports whether anything narrows the list', () => {
+    expect(hasClientFilter({})).toBe(false)
+    expect(hasClientFilter({ status: 'all', query: '   ' })).toBe(false)
+    expect(hasClientFilter({ status: 'expired' })).toBe(true)
+    expect(hasClientFilter({ query: 'alice' })).toBe(true)
   })
 })
 
@@ -83,6 +92,7 @@ describe('lastPage', () => {
     expect(lastPage(20, 20)).toBe(1)
     expect(lastPage(21, 20)).toBe(2)
     expect(lastPage(40, 20)).toBe(2)
+    expect(lastPage(101, 20)).toBe(6)
   })
 })
 

@@ -17,7 +17,7 @@
           <el-option label="全部状态" value="all" />
           <el-option v-for="(meta, key) in statusMeta" :key="key" :label="meta.label" :value="key" />
         </el-select>
-        <el-select v-model="inboundFilter" class="w-control-md" @change="onInboundChange">
+        <el-select v-model="inboundFilter" class="w-control-md" @change="onFilterChange">
           <el-option label="全部入站" :value="0" />
           <el-option v-for="item in inbounds" :key="item.id" :label="`${item.remark || '入站'} (:${item.port})`" :value="item.id" />
         </el-select>
@@ -29,7 +29,7 @@
     </div>
 
     <div class="card">
-      <el-table :data="pagedClients" v-loading="loading" row-key="id" :empty-text="emptyText">
+      <el-table :data="clients" v-loading="loading" row-key="id" :empty-text="emptyText">
         <el-table-column label="用户" min-width="150">
           <template #default="{ row }">
             <div>{{ row.name }}</div>
@@ -90,10 +90,11 @@
         <el-pagination
           v-model:current-page="page"
           :page-size="pageSize"
-          :total="filteredClients.length"
+          :total="total"
           layout="total, prev, pager, next"
           background
           hide-on-single-page
+          @current-change="load"
         />
       </div>
     </div>
@@ -103,14 +104,14 @@
       :inbound-id="formInboundId"
       :client="editing"
       :method="editingMethod"
-      @saved="load"
+      @saved="onClientSaved"
     />
     <ClientLinkDialog v-model="linkVisible" :client-id="linkClientId" />
     <ClientImportDialog
       v-model="importVisible"
       :inbounds="inbounds"
       :default-inbound-id="importInboundId"
-      @imported="load"
+      @imported="onClientsImported"
     />
     <ClientUsageDialog
       v-model="usageVisible"
@@ -121,14 +122,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
 import { api } from '@/api'
-import type { ClientSummary, Inbound } from '@/types'
-import { formatBytes, formatDate, percent, quotaLabel, statusMeta } from '@/utils/format'
-import { filterClients, lastPage, paginate, toSummary } from '@/utils/clients'
+import type { ClientListParams, ClientSummary, Inbound } from '@/types'
+import { formatDate, percent, quotaLabel, statusMeta } from '@/utils/format'
+import {
+  CLIENT_PAGE_SIZE,
+  buildClientListParams,
+  hasClientFilter,
+  lastPage,
+  toSummary,
+} from '@/utils/clients'
 import ClientForm from '@/components/ClientForm.vue'
 import ClientLinkDialog from '@/components/ClientLinkDialog.vue'
 import ClientUsageDialog from '@/components/ClientUsageDialog.vue'
@@ -137,29 +144,27 @@ import ClientImportDialog from '@/components/ClientImportDialog.vue'
 const route = useRoute()
 const loading = ref(false)
 const inbounds = ref<Inbound[]>([])
+// clients holds one page, not the whole table: filtering and paging happen in
+// SQL, which is what keeps the list cheap on a deployment with thousands of
+// users.
 const clients = ref<ClientSummary[]>([])
+const total = ref(0)
 const inboundFilter = ref(0)
 const search = ref('')
 const statusFilter = ref<'all' | ClientSummary['status']>('all')
 const page = ref(1)
-const pageSize = 20
+const pageSize = CLIENT_PAGE_SIZE
 
-const filteredClients = computed(() =>
-  filterClients(clients.value, { query: search.value, status: statusFilter.value }),
-)
-const pagedClients = computed(() => paginate(filteredClients.value, page.value, pageSize))
 const emptyText = computed(() =>
-  clients.value.length === 0 ? '暂无用户' : '没有符合条件的用户',
+  total.value === 0 && !hasClientFilter({ status: statusFilter.value, query: search.value })
+    ? '暂无用户'
+    : '没有符合条件的用户',
 )
 
-watch([search, statusFilter], () => {
-  page.value = 1
-})
-
-watch(filteredClients, (items) => {
-  const max = lastPage(items.length, pageSize)
-  if (page.value > max) page.value = max
-})
+// loadSeq makes the last request win: typing in the search box can start a
+// second request before the first one returns, and a late response must not
+// overwrite the newer page.
+let loadSeq = 0
 
 const formVisible = ref(false)
 const formInboundId = ref(0)
@@ -182,23 +187,47 @@ const editingMethodComputed = computed(() => {
   return inbound?.method || editing.value.method
 })
 
-function onInboundChange() {
-  page.value = 1
-  load()
+function currentParams(): ClientListParams {
+  return buildClientListParams({
+    inboundId: inboundFilter.value,
+    status: statusFilter.value,
+    query: search.value,
+    page: page.value,
+    pageSize,
+  })
+}
+
+/** loadInbounds refreshes the inbound filter and the form's method lookup. */
+async function loadInbounds() {
+  const result = await api.inbounds()
+  inbounds.value = result.items || []
 }
 
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
   try {
-    const inboundResult = await api.inbounds()
-    inbounds.value = inboundResult.items || []
-    const result = await api.clients(inboundFilter.value || undefined)
+    const result = await api.clients(currentParams())
+    if (seq !== loadSeq) return
     clients.value = result.items || []
+    total.value = result.total || 0
   } catch (error: any) {
+    if (seq !== loadSeq) return
     ElMessage.error(error?.message || '加载失败')
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
+}
+
+/** reload refreshes both the pager contents and the inbound aggregates. */
+async function reload() {
+  await Promise.all([loadInbounds(), load()])
+}
+
+/** onFilterChange returns to the first page, which is where a new filter starts. */
+function onFilterChange() {
+  page.value = 1
+  load()
 }
 
 function openImport() {
@@ -230,6 +259,19 @@ function openLink(row: ClientSummary) {
   linkVisible.value = true
 }
 
+/** onClientSaved shows a newly created user by reloading at the last page. */
+function onClientSaved() {
+  if (!editing.value && !hasClientFilter({ status: statusFilter.value, query: search.value })) {
+    page.value = lastPage(total.value + 1, pageSize)
+  }
+  reload()
+}
+
+/** onClientsImported refreshes the list after a bulk import. */
+function onClientsImported() {
+  reload()
+}
+
 /** onRowCommand dispatches the "more" menu to the existing row handlers. */
 function onRowCommand(command: string, row: ClientSummary) {
   switch (command) {
@@ -257,9 +299,10 @@ function openUsage(row: ClientSummary) {
 async function toggle(row: ClientSummary) {
   try {
     await api.toggleClient(row.id, !row.enabled)
-    row.enabled = !row.enabled
-    row.status = row.enabled ? 'active' : 'disabled'
-    ElMessage.success(row.enabled ? '已启用' : '已禁用')
+    // Flipping enabled can move the row in or out of a status filter, so the
+    // page is refetched instead of patched in place.
+    await load()
+    ElMessage.success(row.enabled ? '已禁用' : '已启用')
   } catch (error: any) {
     ElMessage.error(error?.message || '操作失败')
   }
@@ -294,7 +337,7 @@ async function kick(row: ClientSummary) {
   try {
     await api.kickClient(row.id)
     // Every session of the client is gone, so its online IP list is empty; no
-    // need to refetch the whole (potentially large) client list for that.
+    // need to refetch the page for that.
     row.online_ips = []
     ElMessage.success('已断开该用户的连接')
   } catch (error: any) {
@@ -314,20 +357,43 @@ async function remove(row: ClientSummary) {
   }
   try {
     await api.deleteClient(row.id)
-    // Drop the row in place; totals and pagination derive from the array.
-    clients.value = clients.value.filter((item) => item.id !== row.id)
+    // The row is gone from the server's count; step back a page when the last
+    // row of the last page was just deleted.
+    if (clients.value.length === 1 && page.value > 1) {
+      page.value -= 1
+    }
+    await reload()
     ElMessage.success('已删除')
   } catch (error: any) {
     ElMessage.error(error?.message || '删除失败')
   }
 }
 
+// Debounce the search box: one request per meaningful pause instead of one per
+// keystroke, which matters because every request is now a filtered page query.
+let searchTimer: number | undefined
+watch(search, () => {
+  if (searchTimer) window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => {
+    page.value = 1
+    load()
+  }, 300)
+})
+
+watch(statusFilter, () => {
+  page.value = 1
+  load()
+})
+
 onMounted(async () => {
   const inboundParam = Number(route.query.inbound)
   if (Number.isFinite(inboundParam) && inboundParam > 0) {
     inboundFilter.value = inboundParam
   }
-  await load()
+  await reload()
+})
+
+onBeforeUnmount(() => {
+  if (searchTimer) window.clearTimeout(searchTimer)
 })
 </script>
-

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -221,33 +222,188 @@ func (s *Store) UpdateClientToken(id int64, token string) error {
 	})
 }
 
-// clientRowColumns is the narrow projection the client list renders. It skips
-// the credential and audit columns (psk, sub_token, last_reset_at, created_at,
-// updated_at) that the list API no longer returns, so a list request does not
-// pay to read and decode them.
-const clientRowColumns = `id, inbound_id, name, enabled, quota_bytes, up_bytes, down_bytes,
-	expires_at, ip_limit, reset_policy, reset_day, note`
+// Client list paging bounds.
+//
+// A page is capped so that no request can materialise the whole user table: on
+// a 5000 client deployment the unpaged list was 1.71 MB of JSON, 9.6 MB of
+// allocations and 16ms per request, while the panel only ever renders 20 rows.
+const (
+	ClientPageDefaultLimit = 100
+	ClientPageMaxLimit     = 500
 
-// ClientRow is the lean list projection of a client.
-type ClientRow struct {
-	ID          int64
-	InboundID   int64
-	Name        string
-	Enabled     bool
-	QuotaBytes  int64
-	UpBytes     int64
-	DownBytes   int64
-	ExpiresAt   int64
-	IPLimit     int
-	ResetPolicy string
-	ResetDay    int
-	Note        string
+	// ClientPageMaxOffset keeps a pathological offset from making SQLite walk
+	// an unbounded number of rows to find the first row of the page.
+	ClientPageMaxOffset = 10_000_000
+
+	// ClientQueryMaxLen bounds the free-text filter.
+	ClientQueryMaxLen = 100
+)
+
+// clientPageColumns is the narrow projection the client list renders, plus the
+// two inbound fields each row shows. It skips the credential and audit columns
+// (psk, sub_token, last_reset_at, created_at, updated_at), so a page request
+// never reads or decodes them, and it takes the inbound remark and method from
+// a join so the list does not have to load inbound rows (which hold the server
+// PSK) at all.
+const clientPageColumns = `c.id, c.inbound_id, c.name, c.enabled, c.quota_bytes, c.up_bytes,
+	c.down_bytes, c.expires_at, c.ip_limit, c.reset_policy, c.reset_day, c.note,
+	i.remark, i.method`
+
+// ClientPageFilter selects one page of the client list.
+type ClientPageFilter struct {
+	// InboundID restricts the page to one inbound; 0 means all of them.
+	InboundID int64
+	// Status filters by the computed client status (see model.Client.StatusAt).
+	// "" and "all" mean no status filter.
+	Status string
+	// Query is a case-insensitive substring matched against the client name,
+	// the client note, the inbound remark and the method.
+	Query string
+	// Limit and Offset page the result. Non-positive values mean the
+	// documented defaults; an over-large limit is clamped to the maximum.
+	Limit  int
+	Offset int
+	// Now is the instant the computed status is evaluated at, so the page and
+	// its total cannot be evaluated against two different clocks.
+	Now int64
+}
+
+// NormalizeClientPage applies the documented paging defaults and bounds. It is
+// exported so the layer that echoes the effective values back to the client uses
+// the same rule as the query instead of reimplementing it.
+func NormalizeClientPage(limit, offset int) (int, int) {
+	if limit <= 0 {
+		limit = ClientPageDefaultLimit
+	}
+	if limit > ClientPageMaxLimit {
+		limit = ClientPageMaxLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > ClientPageMaxOffset {
+		offset = ClientPageMaxOffset
+	}
+	return limit, offset
+}
+
+// normalized applies the documented defaults and bounds.
+func (f ClientPageFilter) normalized() ClientPageFilter {
+	f.Limit, f.Offset = NormalizeClientPage(f.Limit, f.Offset)
+	if len(f.Query) > ClientQueryMaxLen {
+		// Clamp defensively for non-panel callers. Truncate on a rune boundary
+		// so a cut cannot leave invalid UTF-8 in a LIKE pattern.
+		f.Query = truncateRunes(f.Query, ClientQueryMaxLen)
+	}
+	return f
+}
+
+// truncateRunes keeps at most max leading runes of value, so the result stays
+// valid UTF-8.
+func truncateRunes(value string, max int) string {
+	count := 0
+	for index := range value {
+		if count == max {
+			return value[:index]
+		}
+		count++
+	}
+	return value
+}
+
+// where renders the predicate shared by the page query and the count query, so
+// the returned total always describes the same row set as the returned rows.
+func (f ClientPageFilter) where() (string, []any, error) {
+	clauses := make([]string, 0, 3)
+	args := make([]any, 0, 6)
+	if f.InboundID > 0 {
+		clauses = append(clauses, "c.inbound_id = ?")
+		args = append(args, f.InboundID)
+	}
+	status, statusArgs, err := clientStatusClause(f.Status, f.Now)
+	if err != nil {
+		return "", nil, err
+	}
+	if status != "" {
+		clauses = append(clauses, status)
+		args = append(args, statusArgs...)
+	}
+	if f.Query != "" {
+		pattern := "%" + escapeLike(f.Query) + "%"
+		clauses = append(clauses, `(c.name LIKE ? ESCAPE '\' OR c.note LIKE ? ESCAPE '\' OR `+
+			`i.remark LIKE ? ESCAPE '\' OR i.method LIKE ? ESCAPE '\')`)
+		args = append(args, pattern, pattern, pattern, pattern)
+	}
+	if len(clauses) == 0 {
+		return "", args, nil
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args, nil
+}
+
+// clientStatusClause translates a computed client status into SQL.
+//
+// The predicates mirror model.Client.StatusAt branch for branch: enabled first,
+// then expiry, then the quota. A test walks every branch of both and fails if
+// they ever disagree. An unknown status is an error rather than an ignored
+// filter, so a typo in the query string cannot silently widen the page.
+func clientStatusClause(status string, now int64) (string, []any, error) {
+	switch status {
+	case "", "all":
+		return "", nil, nil
+	case model.StatusDisabled:
+		return "c.enabled = 0", nil, nil
+	case model.StatusExpired:
+		return "c.enabled = 1 AND c.expires_at > 0 AND c.expires_at <= ?", []any{now}, nil
+	case model.StatusQuotaExceeded:
+		return `c.enabled = 1 AND (c.expires_at = 0 OR c.expires_at > ?) AND ` +
+			`c.quota_bytes > 0 AND c.up_bytes + c.down_bytes >= c.quota_bytes`, []any{now}, nil
+	case model.StatusActive:
+		return `c.enabled = 1 AND (c.expires_at = 0 OR c.expires_at > ?) AND ` +
+			`(c.quota_bytes = 0 OR c.up_bytes + c.down_bytes < c.quota_bytes)`, []any{now}, nil
+	default:
+		return "", nil, fmt.Errorf("invalid client status %q", status)
+	}
+}
+
+// ValidClientStatus reports whether status is a value the list filter accepts.
+func ValidClientStatus(status string) bool {
+	return status == "" || status == "all" || status == model.StatusActive ||
+		status == model.StatusDisabled || status == model.StatusExpired ||
+		status == model.StatusQuotaExceeded
+}
+
+// escapeLike turns a user string into a literal LIKE operand. The patterns are
+// used with ESCAPE '\', so "100%" matches the text "100%" instead of "100"
+// followed by anything, and "a_b" does not match "axb".
+func escapeLike(value string) string {
+	if !strings.ContainsAny(value, `\%_`) {
+		return value
+	}
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+}
+
+// ClientPageRow is the list projection of one client.
+type ClientPageRow struct {
+	ID            int64
+	InboundID     int64
+	Name          string
+	Enabled       bool
+	QuotaBytes    int64
+	UpBytes       int64
+	DownBytes     int64
+	ExpiresAt     int64
+	IPLimit       int
+	ResetPolicy   string
+	ResetDay      int
+	Note          string
+	InboundRemark string
+	Method        string
 }
 
 // Model projects the row back onto the domain type. Only the fields the
 // projection carries are set; callers must not rely on psk, sub_token or the
 // audit timestamps being populated.
-func (c ClientRow) Model() model.Client {
+func (c ClientPageRow) Model() model.Client {
 	return model.Client{
 		ID:          c.ID,
 		InboundID:   c.InboundID,
@@ -264,37 +420,47 @@ func (c ClientRow) Model() model.Client {
 	}
 }
 
-// ListClientRows returns the list projection, optionally filtered by inbound id
-// (0 = all), ordered by id.
-func (s *Store) ListClientRows(inboundID int64) ([]ClientRow, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if inboundID > 0 {
-		rows, err = s.db.Query(`SELECT `+clientRowColumns+` FROM clients WHERE inbound_id = ? ORDER BY id`, inboundID)
-	} else {
-		rows, err = s.db.Query(`SELECT ` + clientRowColumns + ` FROM clients ORDER BY id`)
-	}
+// ListClientPage returns one page of the client list plus the total number of
+// rows the filter matches, ordered by client id.
+func (s *Store) ListClientPage(filter ClientPageFilter) ([]ClientPageRow, int64, error) {
+	filter = filter.normalized()
+	where, args, err := filter.where()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	// The inner join both supplies the inbound remark and method and drops an
+	// orphaned client row. The foreign key makes an orphan unreachable, but if
+	// one ever existed the count and the page would otherwise disagree.
+	const from = ` FROM clients c JOIN inbounds i ON i.id = c.inbound_id`
+	var total int64
+	if err := s.db.QueryRow(`SELECT COUNT(*)`+from+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count clients: %w", err)
+	}
+	if total == 0 {
+		return []ClientPageRow{}, 0, nil
+	}
+	pageArgs := append(append([]any{}, args...), filter.Limit, filter.Offset)
+	rows, err := s.db.Query(`SELECT `+clientPageColumns+from+where+` ORDER BY c.id LIMIT ? OFFSET ?`,
+		pageArgs...)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer rows.Close()
-	clients := make([]ClientRow, 0)
+	page := make([]ClientPageRow, 0, filter.Limit)
 	for rows.Next() {
 		var (
-			c       ClientRow
+			c       ClientPageRow
 			enabled int64
 		)
 		if err := rows.Scan(&c.ID, &c.InboundID, &c.Name, &enabled, &c.QuotaBytes,
 			&c.UpBytes, &c.DownBytes, &c.ExpiresAt, &c.IPLimit, &c.ResetPolicy,
-			&c.ResetDay, &c.Note); err != nil {
-			return nil, err
+			&c.ResetDay, &c.Note, &c.InboundRemark, &c.Method); err != nil {
+			return nil, 0, err
 		}
 		c.Enabled = enabled != 0
-		clients = append(clients, c)
+		page = append(page, c)
 	}
-	return clients, rows.Err()
+	return page, total, rows.Err()
 }
 
 // ClientIdentity is the uniqueness projection an import needs: the name to

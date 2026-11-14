@@ -2,7 +2,8 @@ import { readRuntimeConfig } from './runtime-config'
 import type {
   AuditResponse,
   Client,
-  ClientSummary,
+  ClientListParams,
+  ClientListResponse,
   DailyUsage,
   ImportResult,
 } from './types'
@@ -68,6 +69,20 @@ export interface ListResponse<T> {
   total: number
 }
 
+/**
+ * clientListQuery renders the paged client list query. Empty filters are left
+ * out so the URL only says what the operator actually selected.
+ */
+function clientListQuery(params: ClientListParams): string {
+  const search = new URLSearchParams()
+  if (params.inbound_id) search.set('inbound_id', String(params.inbound_id))
+  if (params.status) search.set('status', params.status)
+  if (params.q) search.set('q', params.q)
+  search.set('limit', String(params.limit))
+  search.set('offset', String(params.offset))
+  return search.toString()
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<{ admin: any; expires_at: number }>('POST', '/auth/login', { username, password }),
@@ -84,14 +99,14 @@ export const api = {
   toggleInbound: (id: number, enabled: boolean) =>
     request<{ ok: boolean }>('POST', `/inbounds/${id}/toggle`, { enabled }),
   restartInbound: (id: number) => request<{ ok: boolean }>('POST', `/inbounds/${id}/restart`),
-  clients: (inboundId?: number) =>
-    request<ListResponse<ClientSummary>>(
-      'GET',
-      inboundId ? `/clients?inbound_id=${inboundId}` : '/clients',
-    ),
+  clients: (params: ClientListParams) =>
+    request<ClientListResponse>('GET', `/clients?${clientListQuery(params)}`),
   client: (id: number) => request<Client>('GET', `/clients/${id}`),
-  clientsOf: (inboundId: number) =>
-    request<ListResponse<ClientSummary>>('GET', `/inbounds/${inboundId}/clients`),
+  clientsOf: (inboundId: number, params: ClientListParams) =>
+    request<ClientListResponse>(
+      'GET',
+      `/inbounds/${inboundId}/clients?${clientListQuery(params)}`,
+    ),
   createClient: (inboundId: number, input: unknown) =>
     request<any>('POST', `/inbounds/${inboundId}/clients`, input),
   updateClient: (id: number, input: unknown) => request<any>('PUT', `/clients/${id}`, input),

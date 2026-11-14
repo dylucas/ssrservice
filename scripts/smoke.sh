@@ -160,7 +160,10 @@ fi
 
 log "checking inbound aggregates match the client list"
 INBOUNDS_JSON=$(api GET /api/v1/inbounds)
-CLIENTS_JSON=$(api GET /api/v1/clients)
+# The client list is paged, so ask for the maximum page: the aggregate check has
+# to see every user, and silently comparing against one default page would make
+# the assertions pass for the wrong reason.
+CLIENTS_JSON=$(api GET "/api/v1/clients?limit=500")
 INBOUNDS_JSON="$INBOUNDS_JSON" CLIENTS_JSON="$CLIENTS_JSON" python3 - <<'PY'
 import json, os
 inbounds = json.loads(os.environ["INBOUNDS_JSON"])["items"]
@@ -255,6 +258,58 @@ items = json.loads(os.environ["IMPORTED"])["items"]
 assert len(items) == 1, items
 assert items[0]["name"] == "smoke-user", items
 PY
+
+log "checking client list paging and filters"
+# Five more users on the import inbound, so paging has more rows than one page.
+PAGING_JSON=$(python3 -c 'import json; print(json.dumps({"format":"csv","content":"name,psk\npage-a,\npage-b,\npage-c,\npage-d,\n"}))')
+api POST "/api/v1/inbounds/$IMPORT_INBOUND_ID/clients/import" "$PAGING_JSON" >/dev/null
+PAGING_BASE="/api/v1/inbounds/$IMPORT_INBOUND_ID/clients"
+PAGE1=$(api GET "$PAGING_BASE?limit=2")
+PAGE2=$(api GET "$PAGING_BASE?limit=2&offset=2")
+PAGE1="$PAGE1" PAGE2="$PAGE2" python3 - <<'PY'
+import json, os
+first = json.loads(os.environ["PAGE1"])
+second = json.loads(os.environ["PAGE2"])
+assert first["total"] == 5, first
+assert first["limit"] == 2 and first["offset"] == 0, first
+assert len(first["items"]) == 2, first
+assert second["total"] == 5 and len(second["items"]) == 2, second
+ids = [item["id"] for item in first["items"] + second["items"]]
+assert len(set(ids)) == 4, f"pages overlap: {ids}"
+assert ids == sorted(ids), f"pages are not in id order: {ids}"
+PY
+# The default page is bounded, so a caller that forgets the parameters cannot
+# pull the whole table.
+DEFAULT_LIMIT=$(api GET "$PAGING_BASE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["limit"])')
+[[ "$DEFAULT_LIMIT" == "100" ]] || fail "default page limit is $DEFAULT_LIMIT, want 100"
+# A filtered page reports the filtered total, and its rows really match.
+FILTERED=$(api GET "$PAGING_BASE?status=disabled")
+FILTERED="$FILTERED" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["FILTERED"])
+assert payload["total"] == 0 and not payload["items"], payload
+PY
+SEARCHED=$(api GET "$PAGING_BASE?q=page-c")
+SEARCHED="$SEARCHED" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["SEARCHED"])
+assert payload["total"] == 1, payload
+assert payload["items"][0]["name"] == "page-c", payload
+PY
+for bad in "limit=0" "limit=501" "limit=abc" "offset=-1" "status=bogus"; do
+  STATUS=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+    "http://127.0.0.1:$PANEL_PORT$PAGING_BASE?$bad")
+  [[ "$STATUS" == "400" ]] || fail "invalid paging parameter $bad returned $STATUS, want 400"
+done
+# inbound_id is only a query parameter on the top-level endpoint: the
+# per-inbound route takes it from the path and ignores the query parameter.
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/clients?inbound_id=abc")
+[[ "$STATUS" == "400" ]] || fail "invalid inbound_id returned $STATUS, want 400"
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/clients?offset=999999999")
+[[ "$STATUS" == "400" ]] || fail "out-of-range offset returned $STATUS, want 400"
+log "client list paging: 5 users, 2 per page, filters and 400s verified"
 
 log "checking frontend"
 curl -fsS "http://127.0.0.1:$PANEL_PORT/" | grep -q 'id="sspanel-config"' || fail "frontend config not injected"

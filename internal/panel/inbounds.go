@@ -134,13 +134,17 @@ func (s *Server) handleListInboundClients(c *gin.Context) {
 	if !ok {
 		return
 	}
-	items, err := s.svc.ListClients(id)
+	filter, ok := parseClientListFilter(c, id)
+	if !ok {
+		return
+	}
+	page, err := s.svc.ListClientsPage(filter)
 	if err != nil {
 		writeServiceError(c, err)
 		return
 	}
 	// Credential-free list: safe to compress (see jsonWriter.writeJSON).
-	s.json.writeJSON(c, http.StatusOK, gin.H{"items": items, "total": len(items)})
+	s.json.writeJSON(c, http.StatusOK, page)
 }
 
 func (s *Server) handleCreateClient(c *gin.Context) {
