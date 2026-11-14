@@ -111,7 +111,7 @@ go build -o bin/ssprobe ./scripts/ssprobe
 | `security.allow_private_targets` | 是否允许代理访问内网/回环，默认 `false` |
 | `traffic.flush_interval` | 流量落库间隔，默认 `10s` |
 | `traffic.reset_day` | 全局月度重置日，`0` 关闭 |
-| `traffic.timezone` | 日统计与月度重置使用的时区 |
+| `traffic.timezone` | 日统计与月度重置使用的时区；面板「系统设置」中修改后立即生效，无需重启 |
 
 环境变量 `SSPANEL_PANEL_LISTEN`、`SSPANEL_PANEL_PORT`、`SSPANEL_DB_PATH`、`SSPANEL_LOG_LEVEL` 等可覆盖配置；命令行 `--config`、`--db` 优先级最高。
 
@@ -146,9 +146,12 @@ make race          # 开启竞态检测
 make check         # go vet + race + 前端单元测试 + 类型检查
 make test-web      # 仅前端单元测试（vitest）
 make smoke         # 启动临时实例，走真实 TCP/UDP 代理与面板 API
+make bench         # 数据面与流量计量的微基准
 ```
 
-集成测试覆盖：SS2022 多用户、传统 AEAD、单用户 2022、错误 PSK、配额/到期/禁用、IP 限制、UDP、IPv6 监听、热更新、端口冲突回滚、内网目标拦截、并发连接；面板测试覆盖 CSRF、限流、可信代理、请求体上限与子路径部署。
+集成测试覆盖：SS2022 多用户、传统 AEAD、单用户 2022、错误 PSK、配额/到期/禁用、IP 限制、UDP、IPv6 监听、热更新、并发热更新（配合 `-race`）、端口冲突回滚、内网目标拦截、并发连接；面板测试覆盖 CSRF、限流、可信代理、请求体上限与子路径部署。
+
+流量计量另有单元测试覆盖跨日切换、空闲客户端不落库、落库失败重试、时区热切换与 DST 边界；`make bench` 可用于对比这些热路径的开销。
 
 ## 项目结构
 

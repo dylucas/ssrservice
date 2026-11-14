@@ -27,21 +27,33 @@ type resolveEntry struct {
 type policy struct {
 	allowPrivate  bool
 	blockMetadata bool
-	panelListen   string
 	panelPort     int
+
+	// panelAny is set when the panel listens on a wildcard address, in which
+	// case every address reaches the panel port. panelAddr is the parsed
+	// listen address otherwise. Both are computed once instead of on every
+	// dial and UDP packet.
+	panelAny  bool
+	panelAddr netip.Addr
 
 	mu       sync.Mutex
 	resolved map[string]resolveEntry
 }
 
 func newPolicy(cfg PolicyConfig) *policy {
-	return &policy{
+	p := &policy{
 		allowPrivate:  cfg.AllowPrivateTargets,
 		blockMetadata: cfg.BlockMetadata,
-		panelListen:   cfg.PanelListen,
 		panelPort:     cfg.PanelPort,
 		resolved:      make(map[string]resolveEntry),
 	}
+	listen := cfg.PanelListen
+	if listen == "" || listen == "0.0.0.0" || listen == "::" {
+		p.panelAny = true
+	} else if addr, err := netip.ParseAddr(listen); err == nil {
+		p.panelAddr = addr.Unmap()
+	}
+	return p
 }
 
 // checkAddr validates one destination address.
@@ -95,15 +107,13 @@ func (p *policy) checkAddrPort(ap netip.AddrPort) error {
 }
 
 func (p *policy) isPanelAddress(addr netip.Addr) bool {
-	listen := p.panelListen
-	if listen == "" || listen == "0.0.0.0" || listen == "::" {
+	if p.panelAny {
 		return true
 	}
-	panelAddr, err := netip.ParseAddr(listen)
-	if err != nil {
+	if !p.panelAddr.IsValid() {
 		return false
 	}
-	return panelAddr.Unmap() == addr.Unmap()
+	return p.panelAddr == addr.Unmap()
 }
 
 // resolve converts a requested destination into a dialable address after

@@ -166,20 +166,25 @@ func (h *handler) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 			buffer.Release()
 			continue
 		}
-		payload := append([]byte(nil), buffer.Bytes()...)
-		buffer.Release()
 		target, err := m.currentPolicy().resolve(ctx, dest)
 		if err != nil {
+			buffer.Release()
 			m.logger.Debug("udp destination rejected", "client_id", clientID,
 				"destination", dest.String(), "error", err)
 			continue
 		}
-		if err := s.send(target, payload); err != nil {
+		// WriteToUDPAddrPort copies the payload into the kernel buffer
+		// synchronously, so the pooled buffer can be handed over without an
+		// intermediate copy. Release happens right after the write.
+		n := buffer.Len()
+		err = s.send(target, buffer.Bytes())
+		buffer.Release()
+		if err != nil {
 			m.logger.Debug("udp write failed", "client_id", clientID,
 				"destination", target.String(), "error", err)
 			continue
 		}
-		m.usage.add(clientID, true, int64(len(payload)))
+		m.usage.add(clientID, true, int64(n))
 	}
 }
 
@@ -291,6 +296,11 @@ func (s *udpClientSession) close() {
 	for _, conn := range conns {
 		conn.Close()
 	}
+	// Closing the client side unblocks the pending ReadPacket in
+	// NewPacketConnection immediately; otherwise the NAT session (and its
+	// accounting slot) would linger until the protocol library's UDP timeout
+	// expires even though the client was kicked, disabled or removed.
+	_ = s.client.Close()
 	s.wg.Wait()
 }
 

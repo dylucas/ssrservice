@@ -2,6 +2,7 @@ package ssserver
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ydong/ssrservice/internal/model"
@@ -39,6 +40,11 @@ type account struct {
 	ipLimit   int
 	enabled   bool
 	exceeded  bool
+
+	// dirty is set whenever add updates the counters. flush clears it only
+	// after the exact snapshot it persisted matches the live counters again,
+	// so an idle account costs one atomic load instead of a lock per tick.
+	dirty atomic.Bool
 }
 
 func (a *account) updatePolicy(c ClientSnapshot) {
@@ -58,25 +64,84 @@ type usageManager struct {
 	accounts sync.Map // int64 -> *account
 
 	sink       UsageSink
-	location   *time.Location
 	now        func() time.Time
 	onExceeded func(clientID int64)
 
 	// mu serializes flush and day rollover. It is never taken on the hot
 	// counting path unless the day changed.
 	mu sync.Mutex
+
+	// loc is the accounting time zone. It can be changed at runtime from the
+	// panel settings without restarting the server.
+	loc atomic.Pointer[time.Location]
+
+	// dayStart/dayNext cache the current day boundary so the per-packet path
+	// does not recompute it with time zone conversions. dayMu only guards the
+	// slow path taken when the cached boundary has passed.
+	dayMu    sync.Mutex
+	dayStart atomic.Int64
+	dayNext  atomic.Int64
 }
 
 func newUsageManager(sink UsageSink, location *time.Location, onExceeded func(int64)) *usageManager {
 	if location == nil {
 		location = time.Local
 	}
-	return &usageManager{
+	u := &usageManager{
 		sink:       sink,
-		location:   location,
 		now:        time.Now,
 		onExceeded: onExceeded,
 	}
+	u.loc.Store(location)
+	return u
+}
+
+// location returns the current accounting time zone.
+func (u *usageManager) location() *time.Location {
+	return u.loc.Load()
+}
+
+// setLocation replaces the accounting time zone and invalidates the cached
+// day boundary so the next accounting call recomputes it. It holds dayMu so a
+// slow path that is already recomputing the boundary cannot publish a value
+// derived from the previous time zone after the switch.
+func (u *usageManager) setLocation(location *time.Location) {
+	if location == nil {
+		location = time.Local
+	}
+	u.dayMu.Lock()
+	defer u.dayMu.Unlock()
+	if u.loc.Swap(location) == location {
+		return
+	}
+	u.dayNext.Store(0)
+}
+
+// dayStartAt returns the unix timestamp of the start of the local day that
+// contains now. The result is cached: the expensive time zone conversion runs
+// once per day (and after a time zone change), not once per packet.
+func (u *usageManager) dayStartAt(now time.Time) int64 {
+	if now.Unix() < u.dayNext.Load() {
+		return u.dayStart.Load()
+	}
+	u.dayMu.Lock()
+	defer u.dayMu.Unlock()
+	if next := u.dayNext.Load(); now.Unix() < next {
+		return u.dayStart.Load()
+	}
+	loc := u.loc.Load()
+	start := dayStartUnix(now, loc)
+	local := time.Unix(start, 0).In(loc)
+	next := time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, loc).Unix()
+	if next <= now.Unix() {
+		// A time zone transition that skips a whole calendar day can leave
+		// the computed boundary in the past. Re-check in an hour instead of
+		// recomputing on every packet.
+		next = now.Unix() + 3600
+	}
+	u.dayStart.Store(start)
+	u.dayNext.Store(next)
+	return start
 }
 
 // ensure returns the account for the client, creating it with the given
@@ -87,7 +152,7 @@ func (u *usageManager) ensure(c ClientSnapshot, up, down int64) *account {
 		a.updatePolicy(c)
 		return a
 	}
-	start := dayStartUnix(u.now(), u.location)
+	start := u.dayStartAt(u.now())
 	a := &account{
 		id:        c.ID,
 		up:        up,
@@ -95,7 +160,7 @@ func (u *usageManager) ensure(c ClientSnapshot, up, down int64) *account {
 		flushUp:   up,
 		flushDown: down,
 		dayStart:  start,
-		flushDay:  dayKeyOf(start, u.location),
+		flushDay:  dayKeyOf(start, u.location()),
 		quota:     c.QuotaBytes,
 		expiresAt: c.ExpiresAt,
 		ipLimit:   c.IPLimit,
@@ -155,7 +220,7 @@ func (u *usageManager) add(clientID int64, up bool, n int64) {
 		return
 	}
 	a := v.(*account)
-	start := dayStartUnix(u.now(), u.location)
+	start := u.dayStartAt(u.now())
 
 	a.mu.Lock()
 	if a.dayStart != start {
@@ -170,6 +235,7 @@ func (u *usageManager) add(clientID int64, up bool, n int64) {
 		a.down += n
 		a.dayDown += n
 	}
+	a.dirty.Store(true)
 	justExceeded := false
 	if a.quota > 0 && a.up+a.down > a.quota && !a.exceeded {
 		a.exceeded = true
@@ -187,24 +253,34 @@ func (u *usageManager) rollover(a *account, start int64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
+	loc := u.location()
 	a.mu.Lock()
 	if a.dayStart == start {
 		a.mu.Unlock()
 		return
 	}
-	oldDay := dayKeyOf(a.dayStart, u.location)
-	deltaUp := a.dayUp - a.flushDayU
-	deltaDown := a.dayDown - a.flushDayD
+	oldDay := dayKeyOf(a.dayStart, loc)
+	// A previous flush may have failed, leaving the day delta queued in
+	// pending. Subtract that part so the rollover does not count it twice.
+	var pendingUp, pendingDown int64
+	for _, p := range a.pending {
+		if p.day == oldDay {
+			pendingUp += p.up
+			pendingDown += p.down
+		}
+	}
+	deltaUp := a.dayUp - a.flushDayU - pendingUp
+	deltaDown := a.dayDown - a.flushDayD - pendingDown
 	totalUp, totalDown := a.up, a.down
 	a.dayStart = start
 	a.dayUp = 0
 	a.dayDown = 0
 	a.flushDayU = 0
 	a.flushDayD = 0
-	a.flushDay = dayKeyOf(start, u.location)
+	a.flushDay = dayKeyOf(start, loc)
 	a.mu.Unlock()
 
-	if deltaUp == 0 && deltaDown == 0 {
+	if deltaUp <= 0 && deltaDown <= 0 || u.sink == nil {
 		return
 	}
 	snap := model.UsageSnapshot{
@@ -218,9 +294,20 @@ func (u *usageManager) rollover(a *account, start int64) {
 	if err := u.sink.SaveUsage([]model.UsageSnapshot{snap}); err != nil {
 		// Keep the day delta for the next flush.
 		a.mu.Lock()
-		a.pending = append(a.pending, dayDelta{day: oldDay, up: deltaUp, down: deltaDown})
+		if deltaUp > 0 || deltaDown > 0 {
+			a.pending = append(a.pending, dayDelta{day: oldDay, up: deltaUp, down: deltaDown})
+		}
+		a.dirty.Store(true)
 		a.mu.Unlock()
+		return
 	}
+	// The rollover snapshot also persisted the absolute totals; record them so
+	// the next flush does not rewrite the same values. Concurrent increments
+	// after the snapshot keep the account dirty and are flushed later.
+	a.mu.Lock()
+	a.flushUp = totalUp
+	a.flushDown = totalDown
+	a.mu.Unlock()
 }
 
 // flush persists all pending counters. It is safe to call concurrently with
@@ -232,6 +319,7 @@ func (u *usageManager) flush() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
+	loc := u.location()
 	type commit struct {
 		a            *account
 		totalUp      int64
@@ -247,7 +335,16 @@ func (u *usageManager) flush() error {
 	)
 	u.accounts.Range(func(_, value any) bool {
 		a := value.(*account)
+		// Idle accounts are the common case: skip them with one atomic load
+		// instead of taking the account lock and building a snapshot.
+		if !a.dirty.Load() {
+			return true
+		}
 		a.mu.Lock()
+		if !a.dirty.Load() {
+			a.mu.Unlock()
+			return true
+		}
 		c := commit{
 			a:            a,
 			totalUp:      a.up,
@@ -274,7 +371,7 @@ func (u *usageManager) flush() error {
 				ClientID:     a.id,
 				UpBytes:      a.up,
 				DownBytes:    a.down,
-				Day:          dayKeyOf(a.dayStart, u.location),
+				Day:          dayKeyOf(a.dayStart, loc),
 				DayUpBytes:   deltaUp,
 				DayDownBytes: deltaDown,
 			})
@@ -283,11 +380,15 @@ func (u *usageManager) flush() error {
 		a.mu.Unlock()
 		return true
 	})
-	if len(snaps) == 0 {
+	if len(commits) == 0 {
 		return nil
 	}
-	if err := u.sink.SaveUsage(snaps); err != nil {
-		return err
+	// A dirty account with nothing to persist is possible right after a
+	// successful rollover; it still needs its dirty flag cleared below.
+	if len(snaps) > 0 {
+		if err := u.sink.SaveUsage(snaps); err != nil {
+			return err
+		}
 	}
 	for _, c := range commits {
 		a := c.a
@@ -301,13 +402,19 @@ func (u *usageManager) flush() error {
 		if c.pendingCount > 0 && c.pendingCount <= len(a.pending) {
 			a.pending = append([]dayDelta(nil), a.pending[c.pendingCount:]...)
 		}
+		// Clear dirty only when the live counters still match the persisted
+		// snapshot; traffic that arrived during the write is flushed next tick.
+		if a.up == c.totalUp && a.down == c.totalDown &&
+			a.dayStart == c.dayStart && a.dayUp == c.dayUp && a.dayDown == c.dayDown {
+			a.dirty.Store(false)
+		}
 		a.mu.Unlock()
 	}
 	return nil
 }
 
 // reset zeroes a client's counters.
-func (u *usageManager) reset(clientID int64, location *time.Location) {
+func (u *usageManager) reset(clientID int64) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	v, ok := u.accounts.Load(clientID)
@@ -317,7 +424,8 @@ func (u *usageManager) reset(clientID int64, location *time.Location) {
 	a := v.(*account)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	start := dayStartUnix(u.now(), location)
+	loc := u.location()
+	start := u.dayStartAt(u.now())
 	a.up = 0
 	a.down = 0
 	a.flushUp = 0
@@ -327,9 +435,10 @@ func (u *usageManager) reset(clientID int64, location *time.Location) {
 	a.dayDown = 0
 	a.flushDayU = 0
 	a.flushDayD = 0
-	a.flushDay = dayKeyOf(start, location)
+	a.flushDay = dayKeyOf(start, loc)
 	a.pending = nil
 	a.exceeded = false
+	a.dirty.Store(false)
 }
 
 // totals returns the current counters including unflushed traffic.
@@ -342,6 +451,19 @@ func (u *usageManager) totals(clientID int64) (up, down int64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.up, a.down
+}
+
+// totalsAll returns the sum of the live counters of every known client.
+func (u *usageManager) totalsAll() (up, down int64) {
+	u.accounts.Range(func(_, value any) bool {
+		a := value.(*account)
+		a.mu.Lock()
+		up += a.up
+		down += a.down
+		a.mu.Unlock()
+		return true
+	})
+	return up, down
 }
 
 // expiredClients returns the ids of accounts that may no longer serve

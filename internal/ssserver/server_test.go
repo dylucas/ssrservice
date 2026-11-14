@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -516,4 +517,130 @@ func TestIPv6LoopbackInbound(t *testing.T) {
 	}
 	defer conn.Close()
 	echoRoundTrip(t, conn, "hello over ipv6")
+}
+
+// TestUDPKickClosesSessionImmediately verifies that disconnecting a client
+// tears down its UDP NAT session right away instead of leaving it parked until
+// the protocol library's UDP timeout expires.
+func TestUDPKickClosesSessionImmediately(t *testing.T) {
+	env := newTestEnv(t)
+	serverPSK := newTestKey(t, 16)
+	client := model.Client{Name: "udp-kick", PSK: newTestKey(t, 16), Enabled: true, SubToken: "tok"}
+	in := env.createInbound(model.Method2022AES128GCM, serverPSK, client)
+	clients, _ := env.store.ListClients(in.ID)
+	client = clients[0]
+
+	echoConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("udp echo: %v", err)
+	}
+	defer echoConn.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, addr, err := echoConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = echoConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	m, err := buildClientMethod(in.Method, serverPSK, client.PSK)
+	if err != nil {
+		t.Fatalf("client method: %v", err)
+	}
+	raw, err := net.Dial("udp", env.addr())
+	if err != nil {
+		t.Fatalf("dial udp: %v", err)
+	}
+	defer raw.Close()
+	packetConn := m.DialPacketConn(raw)
+	defer packetConn.Close()
+
+	if _, err := packetConn.WriteTo([]byte("kick"), echoConn.LocalAddr()); err != nil {
+		t.Fatalf("write packet: %v", err)
+	}
+	waitFor(t, 5*time.Second, "udp session registered", func() bool {
+		return env.mgr.SessionCount() > 0
+	})
+
+	env.mgr.CloseClient(client.ID)
+
+	// The test environment uses a 2s UDP timeout, so a session that survives
+	// for under a second can only have been closed explicitly.
+	waitFor(t, 900*time.Millisecond, "udp session closed after kick", func() bool {
+		return env.mgr.SessionCount() == 0
+	})
+}
+
+// TestConcurrentReloadWhileServing hammers the hot reload path while a TCP
+// session keeps relaying traffic. Run under -race it proves the inbound
+// snapshot swap and the protocol service replacement are concurrency safe.
+func TestConcurrentReloadWhileServing(t *testing.T) {
+	env := newTestEnv(t)
+	serverPSK := newTestKey(t, 16)
+	client := model.Client{Name: "live", PSK: newTestKey(t, 16), Enabled: true, SubToken: "tok"}
+	in := env.createInbound(model.Method2022AES128GCM, serverPSK, client)
+	clients, err := env.store.ListClients(in.ID)
+	if err != nil {
+		t.Fatalf("list clients: %v", err)
+	}
+
+	conn, err := dialSSWithPSK(env.addr(), in.Method, serverPSK, clients[0].PSK, env.echoV4.addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	echoRoundTrip(t, conn, "before-reload")
+
+	stop := make(chan struct{})
+	var (
+		wg       sync.WaitGroup
+		reloards sync.WaitGroup
+	)
+
+	// Keep the existing session busy while the configuration is swapped.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		payload := []byte("during-reload")
+		buf := make([]byte, len(payload))
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := conn.Write(payload); err != nil {
+				return
+			}
+			if _, err := readFull(conn, buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Several goroutines reload the same inbound concurrently.
+	const reloaders = 4
+	const reloads = 20
+	for i := 0; i < reloaders; i++ {
+		reloards.Add(1)
+		go func() {
+			defer reloards.Done()
+			for j := 0; j < reloads; j++ {
+				if err := env.mgr.ApplyInbound(in, clients); err != nil {
+					t.Errorf("concurrent reload: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	reloards.Wait()
+	close(stop)
+	wg.Wait()
+
+	// The original connection must have survived every reload.
+	echoRoundTrip(t, conn, "after-reload")
 }

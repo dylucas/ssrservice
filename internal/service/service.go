@@ -162,7 +162,11 @@ func (s *Service) loadSettings() error {
 			s.loc = loc
 		}
 	}
+	loc := s.loc
 	s.mu.Unlock()
+	// Keep the traffic accounting time zone in sync with the panel setting so
+	// daily buckets and monthly resets do not need a restart to follow it.
+	s.mgr.SetLocation(loc)
 	s.applyPolicy()
 	return nil
 }
@@ -294,6 +298,7 @@ func (s *Service) UpdateSettings(in SettingsView) error {
 	s.resetDay = in.ResetDay
 	s.loc = loc
 	s.mu.Unlock()
+	s.mgr.SetLocation(loc)
 	s.applyPolicy()
 	return nil
 }
@@ -365,21 +370,9 @@ func (s *Service) PublicEndpoint(in *model.Inbound) (string, int) {
 }
 
 // TrafficTotalsLive returns aggregate counters including unflushed traffic.
+// It reads the in-memory accounting state instead of scanning the clients
+// table, which keeps dashboard polling cheap as the user count grows.
 func (s *Service) TrafficTotalsLive() (up, down int64, err error) {
-	clients, err := s.store.ListClients(0)
-	if err != nil {
-		return 0, 0, err
-	}
-	for _, c := range clients {
-		liveUp, liveDown := s.mgr.ClientTraffic(c.ID)
-		if liveUp < c.UpBytes {
-			liveUp = c.UpBytes
-		}
-		if liveDown < c.DownBytes {
-			liveDown = c.DownBytes
-		}
-		up += liveUp
-		down += liveDown
-	}
+	up, down = s.mgr.TotalTraffic()
 	return up, down, nil
 }

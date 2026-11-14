@@ -29,11 +29,13 @@ var (
 // inboundRuntime is one running inbound: its listeners, protocol service and
 // UDP socket.
 type inboundRuntime struct {
-	snapshot InboundSnapshot
+	// snapshot is replaced on every configuration change and read by the data
+	// plane (accept loop, connection handlers, UDP loop). It is atomically
+	// swapped so hot reloads never race with in-flight traffic.
+	snapshot atomic.Pointer[InboundSnapshot]
 
 	tcpListener net.Listener
 	udpConn     net.PacketConn
-	udpServer   *udpServerConn
 
 	services atomic.Pointer[ssService]
 
@@ -68,6 +70,19 @@ func (rt *inboundRuntime) close() {
 	rt.closeUDP()
 }
 
+// view returns a copy of the current runtime configuration.
+func (rt *inboundRuntime) view() InboundSnapshot {
+	if snap := rt.snapshot.Load(); snap != nil {
+		return *snap
+	}
+	return InboundSnapshot{}
+}
+
+// setSnapshot atomically publishes a new runtime configuration.
+func (rt *inboundRuntime) setSnapshot(snap InboundSnapshot) {
+	rt.snapshot.Store(&snap)
+}
+
 func (rt *inboundRuntime) isClosed() bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -79,7 +94,6 @@ func (rt *inboundRuntime) closeUDP() {
 	conn := rt.udpConn
 	done := rt.udpDone
 	rt.udpConn = nil
-	rt.udpServer = nil
 	rt.udpDone = nil
 	rt.udpMu.Unlock()
 	if conn != nil {
@@ -106,6 +120,10 @@ type Manager struct {
 
 	mu       sync.Mutex
 	inbounds map[int64]*inboundRuntime
+
+	// applyMu serializes inbound configuration changes so two concurrent
+	// panel requests cannot bind the same port or interleave listener swaps.
+	applyMu sync.Mutex
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -193,14 +211,25 @@ func (m *Manager) SeedUsage(clients []model.Client) {
 // ApplyInbound creates, updates or removes an inbound. Existing sessions are
 // kept alive; new connections use the new configuration.
 func (m *Manager) ApplyInbound(in model.Inbound, clients []model.Client) error {
-	err := m.apply(snapshotOf(in, clients))
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	err := m.applyLocked(snapshotOf(in, clients))
 	if err == nil && !in.Enabled {
-		m.stopInbound(in.ID)
+		m.stopInboundLocked(in.ID)
 	}
 	return err
 }
 
+// apply applies a new inbound configuration. It serializes with every other
+// configuration change.
 func (m *Manager) apply(snap InboundSnapshot) error {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	return m.applyLocked(snap)
+}
+
+// applyLocked is apply; the caller must hold applyMu.
+func (m *Manager) applyLocked(snap InboundSnapshot) error {
 	m.mu.Lock()
 	old := m.inbounds[snap.ID]
 	if old != nil && old.isClosed() {
@@ -209,16 +238,21 @@ func (m *Manager) apply(snap InboundSnapshot) error {
 	}
 	m.mu.Unlock()
 
-	if old != nil && old.snapshot.Listen == snap.Listen && old.snapshot.Port == snap.Port && old.tcpListener != nil {
-		if !snap.Enabled {
-			return nil
+	if old != nil {
+		current := old.view()
+		if current.Listen == snap.Listen && current.Port == snap.Port && old.tcpListener != nil {
+			if !snap.Enabled {
+				return nil
+			}
+			return m.reconfigure(old, snap)
 		}
-		return m.reconfigure(old, snap)
 	}
 
 	if !snap.Enabled {
+		idle := &inboundRuntime{}
+		idle.setSnapshot(snap)
 		m.mu.Lock()
-		m.inbounds[snap.ID] = &inboundRuntime{snapshot: snap}
+		m.inbounds[snap.ID] = idle
 		m.mu.Unlock()
 		if old != nil {
 			old.close()
@@ -246,7 +280,7 @@ func (m *Manager) reconfigure(rt *inboundRuntime, snap InboundSnapshot) error {
 	closed := rt.closed
 	rt.mu.Unlock()
 	if closed {
-		return m.apply(snap)
+		return m.applyLocked(snap)
 	}
 
 	handler := &handler{manager: m, inboundID: snap.ID, method: snap.Method}
@@ -269,12 +303,11 @@ func (m *Manager) reconfigure(rt *inboundRuntime, snap InboundSnapshot) error {
 		rt.closeUDP()
 	}
 
-	rt.services.Store(&ssService{service: service, defaultClientID: defaultID})
-
-	rt.mu.Lock()
-	rt.snapshot = snap
-	rt.mu.Unlock()
+	// Seed the accounting state before publishing the new service so a client
+	// added by this reload cannot be served before it has an account.
 	m.usage.ensureClients(snap.Clients)
+	rt.services.Store(&ssService{service: service, defaultClientID: defaultID})
+	rt.setSnapshot(snap)
 	m.logger.Info("inbound reloaded", "id", snap.ID, "method", snap.Method,
 		"udp", snap.UDPEnabled, "users", len(snap.Clients))
 	return nil
@@ -287,7 +320,7 @@ func (rt *inboundRuntime) currentUDP() net.PacketConn {
 }
 
 func (m *Manager) bindUDP(rt *inboundRuntime) error {
-	udpAddr, err := net.ResolveUDPAddr("udp", rt.snapshot.Addr())
+	udpAddr, err := net.ResolveUDPAddr("udp", rt.view().Addr())
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidAddr, err)
 	}
@@ -295,20 +328,21 @@ func (m *Manager) bindUDP(rt *inboundRuntime) error {
 	if err != nil {
 		return classifyListenError(err)
 	}
+	server := &udpServerConn{conn: conn}
 	rt.udpMu.Lock()
 	rt.udpConn = conn
-	rt.udpServer = &udpServerConn{conn: conn}
 	done := make(chan struct{})
 	rt.udpDone = done
 	ctx := rt.serveCtx
 	rt.udpMu.Unlock()
-	m.startUDPLoop(ctx, rt, conn, done)
+	m.startUDPLoop(ctx, rt, conn, server, done)
 	return nil
 }
 
 func (m *Manager) buildRuntime(snap InboundSnapshot) (*inboundRuntime, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	rt := &inboundRuntime{snapshot: snap, serveCtx: ctx, serveCancel: cancel}
+	rt := &inboundRuntime{serveCtx: ctx, serveCancel: cancel}
+	rt.setSnapshot(snap)
 
 	handler := &handler{manager: m, inboundID: snap.ID, method: snap.Method}
 	service, defaultID, err := buildProtocol(snap, handler, m.opts.UDPTimeout)
@@ -345,7 +379,6 @@ func (m *Manager) buildRuntime(snap InboundSnapshot) (*inboundRuntime, error) {
 			return nil, classifyListenError(err)
 		}
 		rt.udpConn = udpConn
-		rt.udpServer = &udpServerConn{conn: udpConn}
 	}
 
 	m.usage.ensureClients(snap.Clients)
@@ -358,7 +391,7 @@ func (m *Manager) buildRuntime(snap InboundSnapshot) (*inboundRuntime, error) {
 	if rt.udpConn != nil {
 		done := make(chan struct{})
 		rt.udpDone = done
-		m.startUDPLoop(ctx, rt, rt.udpConn, done)
+		m.startUDPLoop(ctx, rt, rt.udpConn, &udpServerConn{conn: rt.udpConn}, done)
 	}
 
 	m.logger.Info("inbound listening", "id", snap.ID, "remark", snap.Remark,
@@ -367,12 +400,12 @@ func (m *Manager) buildRuntime(snap InboundSnapshot) (*inboundRuntime, error) {
 	return rt, nil
 }
 
-func (m *Manager) startUDPLoop(ctx context.Context, rt *inboundRuntime, conn net.PacketConn, done chan struct{}) {
+func (m *Manager) startUDPLoop(ctx context.Context, rt *inboundRuntime, conn net.PacketConn, server *udpServerConn, done chan struct{}) {
 	m.stopWG.Add(1)
 	go func() {
 		defer m.stopWG.Done()
 		defer close(done)
-		m.serveUDP(ctx, rt, conn)
+		m.serveUDP(ctx, rt, conn, server)
 	}()
 }
 
@@ -388,7 +421,7 @@ func (m *Manager) serveTCP(ctx context.Context, rt *inboundRuntime) {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			m.logger.Warn("accept failed", "inbound_id", rt.snapshot.ID, "error", err)
+			m.logger.Warn("accept failed", "inbound_id", rt.view().ID, "error", err)
 			continue
 		}
 		go m.handleTCP(ctx, rt, conn)
@@ -407,13 +440,13 @@ func (m *Manager) handleTCP(ctx context.Context, rt *inboundRuntime, conn net.Co
 	sessionCtx := context.WithValue(ctx, rawConnKey{}, conn)
 	err := svc.service.NewConnection(sessionCtx, conn, metadata)
 	if err != nil {
-		m.logger.Debug("connection failed", "inbound_id", rt.snapshot.ID,
+		m.logger.Debug("connection failed", "inbound_id", rt.view().ID,
 			"source", metadata.Source.String(), "error", err)
 	}
 	conn.Close()
 }
 
-func (m *Manager) serveUDP(ctx context.Context, rt *inboundRuntime, conn net.PacketConn) {
+func (m *Manager) serveUDP(ctx context.Context, rt *inboundRuntime, conn net.PacketConn, server *udpServerConn) {
 	readBuf := make([]byte, maxUDPPacketSize)
 	for {
 		n, addr, err := conn.ReadFrom(readBuf)
@@ -426,7 +459,7 @@ func (m *Manager) serveUDP(ctx context.Context, rt *inboundRuntime, conn net.Pac
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			m.logger.Warn("udp read failed", "inbound_id", rt.snapshot.ID, "error", err)
+			m.logger.Warn("udp read failed", "inbound_id", rt.view().ID, "error", err)
 			continue
 		}
 		if n == 0 {
@@ -438,15 +471,22 @@ func (m *Manager) serveUDP(ctx context.Context, rt *inboundRuntime, conn net.Pac
 		}
 		packet := packetWithHeadroom(readBuf[:n])
 		metadata := M.Metadata{Source: M.SocksaddrFromNet(addr)}
-		if err := svc.service.NewPacket(ctx, rt.udpServer, packet, metadata); err != nil {
+		if err := svc.service.NewPacket(ctx, server, packet, metadata); err != nil {
 			packet.Release()
-			m.logger.Debug("udp packet rejected", "inbound_id", rt.snapshot.ID,
+			m.logger.Debug("udp packet rejected", "inbound_id", rt.view().ID,
 				"source", metadata.Source.String(), "error", err)
 		}
 	}
 }
 
 func (m *Manager) stopInbound(id int64) {
+	m.applyMu.Lock()
+	m.stopInboundLocked(id)
+	m.applyMu.Unlock()
+}
+
+// stopInboundLocked is stopInbound; the caller must hold applyMu.
+func (m *Manager) stopInboundLocked(id int64) {
 	m.mu.Lock()
 	rt := m.inbounds[id]
 	m.mu.Unlock()
@@ -459,6 +499,8 @@ func (m *Manager) stopInbound(id int64) {
 
 // RemoveInbound stops an inbound and forgets it.
 func (m *Manager) RemoveInbound(id int64) {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
 	m.mu.Lock()
 	rt := m.inbounds[id]
 	delete(m.inbounds, id)
@@ -526,12 +568,24 @@ func (m *Manager) RemoveClient(clientID int64) {
 
 // ResetClientTraffic zeroes the live counters of a client.
 func (m *Manager) ResetClientTraffic(clientID int64) {
-	m.usage.reset(clientID, m.opts.Location)
+	m.usage.reset(clientID)
 }
 
 // ClientTraffic returns the live counters of a client.
 func (m *Manager) ClientTraffic(clientID int64) (up, down int64) {
 	return m.usage.totals(clientID)
+}
+
+// TotalTraffic returns the sum of the live counters of every client. It reads
+// memory only, so the dashboard can poll it without scanning the database.
+func (m *Manager) TotalTraffic() (up, down int64) {
+	return m.usage.totalsAll()
+}
+
+// SetLocation changes the accounting time zone used for daily buckets and
+// monthly resets. It takes effect on the next accounting call.
+func (m *Manager) SetLocation(location *time.Location) {
+	m.usage.setLocation(location)
 }
 
 // OnlineIPs returns the distinct source IPs currently connected per client.

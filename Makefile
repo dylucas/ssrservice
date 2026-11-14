@@ -18,7 +18,7 @@ NPM_FLAGS += --cache $(NPM_CACHE)
 endif
 BIN     := bin/sspanel
 
-.PHONY: all build build-go web test test-web race vet check clean run smoke dist
+.PHONY: all build build-go web test test-web race vet check bench clean run smoke dist
 
 all: build
 
@@ -46,6 +46,10 @@ vet:
 
 check: vet race
 	cd web && $(NPM) test && $(NPM) run typecheck
+
+# Micro-benchmarks for the data plane and accounting hot paths.
+bench:
+	$(GO) test -run '^$$' -bench . -benchmem ./internal/ssserver
 
 run: build
 	./$(BIN) run --config ./config.yaml
