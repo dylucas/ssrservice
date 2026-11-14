@@ -166,3 +166,79 @@ func (s *Store) UpdateClientToken(id int64, token string) error {
 		return nil
 	})
 }
+
+// clientRowColumns is the narrow projection the client list renders. It skips
+// the credential and audit columns (psk, sub_token, last_reset_at, created_at,
+// updated_at) that the list API no longer returns, so a list request does not
+// pay to read and decode them.
+const clientRowColumns = `id, inbound_id, name, enabled, quota_bytes, up_bytes, down_bytes,
+	expires_at, ip_limit, reset_policy, reset_day, note`
+
+// ClientRow is the lean list projection of a client.
+type ClientRow struct {
+	ID          int64
+	InboundID   int64
+	Name        string
+	Enabled     bool
+	QuotaBytes  int64
+	UpBytes     int64
+	DownBytes   int64
+	ExpiresAt   int64
+	IPLimit     int
+	ResetPolicy string
+	ResetDay    int
+	Note        string
+}
+
+// Model projects the row back onto the domain type. Only the fields the
+// projection carries are set; callers must not rely on psk, sub_token or the
+// audit timestamps being populated.
+func (c ClientRow) Model() model.Client {
+	return model.Client{
+		ID:          c.ID,
+		InboundID:   c.InboundID,
+		Name:        c.Name,
+		Enabled:     c.Enabled,
+		QuotaBytes:  c.QuotaBytes,
+		UpBytes:     c.UpBytes,
+		DownBytes:   c.DownBytes,
+		ExpiresAt:   c.ExpiresAt,
+		IPLimit:     c.IPLimit,
+		ResetPolicy: c.ResetPolicy,
+		ResetDay:    c.ResetDay,
+		Note:        c.Note,
+	}
+}
+
+// ListClientRows returns the list projection, optionally filtered by inbound id
+// (0 = all), ordered by id.
+func (s *Store) ListClientRows(inboundID int64) ([]ClientRow, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if inboundID > 0 {
+		rows, err = s.db.Query(`SELECT `+clientRowColumns+` FROM clients WHERE inbound_id = ? ORDER BY id`, inboundID)
+	} else {
+		rows, err = s.db.Query(`SELECT ` + clientRowColumns + ` FROM clients ORDER BY id`)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	clients := make([]ClientRow, 0)
+	for rows.Next() {
+		var (
+			c       ClientRow
+			enabled int64
+		)
+		if err := rows.Scan(&c.ID, &c.InboundID, &c.Name, &enabled, &c.QuotaBytes,
+			&c.UpBytes, &c.DownBytes, &c.ExpiresAt, &c.IPLimit, &c.ResetPolicy,
+			&c.ResetDay, &c.Note); err != nil {
+			return nil, err
+		}
+		c.Enabled = enabled != 0
+		clients = append(clients, c)
+	}
+	return clients, rows.Err()
+}

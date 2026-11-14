@@ -72,3 +72,27 @@ func BenchmarkInboundAggregates(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkListClientRows measures the lean list projection.
+func BenchmarkListClientRows(b *testing.B) {
+	st := benchStore(b, 5000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := st.ListClientRows(0); err != nil {
+			b.Fatalf("rows: %v", err)
+		}
+	}
+}
+
+// BenchmarkListClientsFull measures the full-row scan, kept for comparison.
+func BenchmarkListClientsFull(b *testing.B) {
+	st := benchStore(b, 5000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := st.ListClients(0); err != nil {
+			b.Fatalf("clients: %v", err)
+		}
+	}
+}

@@ -368,3 +368,94 @@ func TestInboundAggregates(t *testing.T) {
 		t.Fatalf("filtered aggregate returned %+v", one)
 	}
 }
+
+// TestListClientRows verifies the lean list projection matches the full rows
+// field by field, for both the filtered and the unfiltered query.
+func TestListClientRows(t *testing.T) {
+	st := newTestStore(t)
+	in := model.Inbound{Listen: "127.0.0.1", Port: 9100, Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+	other := model.Inbound{Listen: "127.0.0.1", Port: 9101, Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&other); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+	full := []model.Client{
+		{InboundID: in.ID, Name: "b", PSK: "psk-b", Enabled: false, QuotaBytes: 100, UpBytes: 10,
+			DownBytes: 20, ExpiresAt: 1700000000, IPLimit: 3, ResetPolicy: model.ResetMonthly,
+			ResetDay: 5, Note: "note-b", SubToken: "t-b"},
+		{InboundID: in.ID, Name: "a", PSK: "psk-a", Enabled: true, UpBytes: 1, DownBytes: 2, SubToken: "t-a"},
+		{InboundID: other.ID, Name: "c", PSK: "psk-c", Enabled: true, UpBytes: 3, DownBytes: 4, SubToken: "t-c"},
+	}
+	for i := range full {
+		if err := st.CreateClient(&full[i]); err != nil {
+			t.Fatalf("client %d: %v", i, err)
+		}
+	}
+
+	want, err := st.ListClients(0)
+	if err != nil {
+		t.Fatalf("full rows: %v", err)
+	}
+	got, err := st.ListClientRows(0)
+	if err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("row count %d != full %d", len(got), len(want))
+	}
+	for i := range want {
+		w, g := want[i], got[i]
+		if w.ID != g.ID || w.InboundID != g.InboundID || w.Name != g.Name || w.Enabled != g.Enabled ||
+			w.QuotaBytes != g.QuotaBytes || w.UpBytes != g.UpBytes || w.DownBytes != g.DownBytes ||
+			w.ExpiresAt != g.ExpiresAt || w.IPLimit != g.IPLimit || w.ResetPolicy != g.ResetPolicy ||
+			w.ResetDay != g.ResetDay || w.Note != g.Note {
+			t.Fatalf("row %d mismatch:\nfull %+v\nlean %+v", i, w, g)
+		}
+	}
+	// Rows stay ordered by id, matching the full query.
+	for i := 1; i < len(got); i++ {
+		if got[i-1].ID >= got[i].ID {
+			t.Fatalf("rows are not ordered by id: %+v", got)
+		}
+	}
+
+	filtered, err := st.ListClientRows(in.ID)
+	if err != nil {
+		t.Fatalf("filtered rows: %v", err)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 rows for the inbound, got %d", len(filtered))
+	}
+	for _, row := range filtered {
+		if row.InboundID != in.ID {
+			t.Fatalf("filter leaked row from another inbound: %+v", row)
+		}
+	}
+}
+
+// TestClientRowModelRoundTrip verifies Model() carries every field of the lean
+// projection, so the service can reuse the domain status/quota rules safely.
+func TestClientRowModelRoundTrip(t *testing.T) {
+	row := ClientRow{
+		ID: 7, InboundID: 3, Name: "alice", Enabled: true, QuotaBytes: 1024,
+		UpBytes: 100, DownBytes: 200, ExpiresAt: 1700000000, IPLimit: 2,
+		ResetPolicy: model.ResetMonthly, ResetDay: 9, Note: "laptop",
+	}
+	c := row.Model()
+	if c.ID != row.ID || c.InboundID != row.InboundID || c.Name != row.Name ||
+		c.Enabled != row.Enabled || c.QuotaBytes != row.QuotaBytes ||
+		c.UpBytes != row.UpBytes || c.DownBytes != row.DownBytes ||
+		c.ExpiresAt != row.ExpiresAt || c.IPLimit != row.IPLimit ||
+		c.ResetPolicy != row.ResetPolicy || c.ResetDay != row.ResetDay || c.Note != row.Note {
+		t.Fatalf("round trip lost a field:\nrow %+v\nmodel %+v", row, c)
+	}
+	// Credentials are intentionally absent from the projection.
+	if c.PSK != "" || c.SubToken != "" {
+		t.Fatalf("projection must not invent credentials: %+v", c)
+	}
+	if c.UsedBytes() != 300 || c.RemainingBytes() != 724 {
+		t.Fatalf("unexpected derived values: used=%d remaining=%d", c.UsedBytes(), c.RemainingBytes())
+	}
+}

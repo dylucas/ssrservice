@@ -73,7 +73,7 @@ type ClientSummary struct {
 // inbound. Share links are not built here: the list is the hot path for large
 // deployments (one row per user), and the view never renders them.
 func (s *Service) ListClients(inboundID int64) ([]ClientSummary, error) {
-	clients, err := s.store.ListClients(inboundID)
+	clients, err := s.store.ListClientRows(inboundID)
 	if err != nil {
 		return nil, err
 	}
@@ -100,9 +100,11 @@ func (s *Service) ListClients(inboundID int64) ([]ClientSummary, error) {
 	return summaries, nil
 }
 
-// clientSummary projects one client into its list representation.
-func (s *Service) clientSummary(c model.Client, in *model.Inbound, online map[int64][]string, now int64) ClientSummary {
-	c, status := s.withLiveStatus(c, now)
+// clientSummary projects one client row into its list representation. The row is
+// projected back onto the domain type first so the status and remaining-quota
+// rules stay in a single place instead of being reimplemented for the lean row.
+func (s *Service) clientSummary(row store.ClientRow, in *model.Inbound, online map[int64][]string, now int64) ClientSummary {
+	c, status := s.withLiveStatus(row.Model(), now)
 	ips := online[c.ID]
 	if ips == nil {
 		ips = []string{}
