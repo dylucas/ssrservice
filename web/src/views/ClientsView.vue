@@ -63,9 +63,10 @@
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="330" fixed="right">
+        <el-table-column label="操作" width="390" fixed="right">
           <template #default="{ row }">
             <el-button size="small" text type="primary" @click="openLink(row)">链接</el-button>
+            <el-button size="small" text @click="openUsage(row)">趋势</el-button>
             <el-button size="small" text @click="openEdit(row)">编辑</el-button>
             <el-button size="small" text @click="toggle(row)">{{ row.enabled ? '禁用' : '启用' }}</el-button>
             <el-button size="small" text @click="resetTraffic(row)">重置流量</el-button>
@@ -94,6 +95,11 @@
       @saved="load"
     />
     <ClientLinkDialog v-model="linkVisible" :client-id="linkClientId" />
+    <ClientUsageDialog
+      v-model="usageVisible"
+      :client-id="usageClientId"
+      :client-name="usageClientName"
+    />
   </div>
 </template>
 
@@ -108,6 +114,7 @@ import { formatBytes, formatDate, percent, quotaLabel, statusMeta } from '@/util
 import { filterClients, lastPage, paginate, toSummary } from '@/utils/clients'
 import ClientForm from '@/components/ClientForm.vue'
 import ClientLinkDialog from '@/components/ClientLinkDialog.vue'
+import ClientUsageDialog from '@/components/ClientUsageDialog.vue'
 
 const route = useRoute()
 const loading = ref(false)
@@ -143,6 +150,10 @@ const editingMethod = ref('')
 
 const linkVisible = ref(false)
 const linkClientId = ref<number | null>(null)
+
+const usageVisible = ref(false)
+const usageClientId = ref<number | null>(null)
+const usageClientName = ref('')
 
 const editingMethodComputed = computed(() => {
   if (!editing.value) return ''
@@ -186,6 +197,12 @@ function openEdit(row: ClientSummary) {
 function openLink(row: ClientSummary) {
   linkClientId.value = row.id
   linkVisible.value = true
+}
+
+function openUsage(row: ClientSummary) {
+  usageClientId.value = row.id
+  usageClientName.value = row.name
+  usageVisible.value = true
 }
 
 async function toggle(row: ClientSummary) {

@@ -1,5 +1,5 @@
 import { readRuntimeConfig } from './runtime-config'
-import type { AuditResponse } from './types'
+import type { AuditResponse, DailyUsage } from './types'
 import type { Client, ClientSummary } from './types'
 
 const config = readRuntimeConfig()
@@ -98,7 +98,8 @@ export const api = {
   kickClient: (id: number) => request<{ ok: boolean }>('POST', `/clients/${id}/kick`),
   clientLink: (id: number, host?: string) =>
     request<any>('GET', `/clients/${id}/link${host ? `?host=${encodeURIComponent(host)}` : ''}`),
-  clientUsage: (id: number, days = 30) => request<any>('GET', `/clients/${id}/usage?days=${days}`),
+  clientUsage: (id: number, days = 30) =>
+    request<{ items: DailyUsage[] }>('GET', `/clients/${id}/usage?days=${days}`),
   settings: () => request<any>('GET', '/settings'),
   updateSettings: (input: unknown) => request<any>('PUT', '/settings', input),
   backupURL: () => apiURL('/backup'),

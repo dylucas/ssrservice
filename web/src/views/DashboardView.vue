@@ -61,18 +61,10 @@
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import * as echarts from 'echarts/core'
-import { LineChart } from 'echarts/charts'
-import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
-import type { ECharts } from 'echarts/core'
+import { echarts, type ECharts } from '@/utils/charts'
 import { api } from '@/api'
 import type { Dashboard } from '@/types'
 import { formatBytes, formatDuration } from '@/utils/format'
-
-// Only the parts of ECharts this view uses are registered, which keeps the
-// dashboard route chunk far smaller than the full echarts bundle.
-echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
 const loading = ref(false)
 const chartEl = ref<HTMLDivElement>()

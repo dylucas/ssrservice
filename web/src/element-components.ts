@@ -33,6 +33,8 @@ export const elementComponents = [
   'ElOption',
   'ElPagination',
   'ElProgress',
+  'ElRadioButton',
+  'ElRadioGroup',
   'ElSelect',
   'ElSwitch',
   'ElTable',
