@@ -78,9 +78,17 @@ func isConstraintErr(err error) bool {
 }
 
 // BackupTo writes a consistent snapshot of the database to path.
+//
+// VACUUM INTO reads the database inside one read transaction, so the snapshot is
+// consistent on its own and does not need to hold the write lock: with WAL a
+// reader never blocks a writer. Holding writeMu here used to stall every traffic
+// flush and every panel write for the whole copy -- 95ms on an 11.5MB database,
+// growing linearly with its size.
+//
+// The only thing this gives up is the guarantee that the snapshot contains the
+// writes that were queued at request time; a backup is allowed to describe a
+// consistent instant rather than the latest one.
 func (s *Store) BackupTo(path string) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	escaped := strings.ReplaceAll(path, "'", "''")
 	_, err := s.db.Exec(fmt.Sprintf("VACUUM INTO '%s'", escaped))
 	if err != nil {

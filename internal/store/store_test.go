@@ -3,7 +3,9 @@ package store
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ydong/ssrservice/internal/model"
 )
@@ -190,6 +192,122 @@ func TestBackup(t *testing.T) {
 	if err != nil || count != 1 {
 		t.Fatalf("backup content missing: count=%d err=%v", count, err)
 	}
+}
+
+// TestBackupWhileWriting verifies that a backup is a consistent snapshot even
+// while writes are in flight, and that taking it does not stop those writes.
+//
+// BackupTo used to hold the store write lock for the whole copy, which stalled
+// every traffic flush and every panel write (95ms on an 11.5MB database, growing
+// with its size). The snapshot is consistent on its own because VACUUM INTO
+// reads inside one read transaction, so the lock was never needed.
+func TestBackupWhileWriting(t *testing.T) {
+	st := newTestStore(t)
+	in := model.Inbound{Listen: "127.0.0.1", Port: 8388, Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+	const seeded = 200
+	for i := 0; i < seeded; i++ {
+		c := model.Client{InboundID: in.ID, Name: "seed-" + itoaStore(i), PSK: "psk",
+			Enabled: true, SubToken: "seed-tok-" + itoaStore(i)}
+		if err := st.CreateClient(&c); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	// A writer that keeps inserting for as long as the backups run. Each row is
+	// its own transaction, so the backups interleave with real commits.
+	var (
+		mu      sync.Mutex
+		written int
+	)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			mu.Lock()
+			next := written + 1
+			mu.Unlock()
+			c := model.Client{InboundID: in.ID, Name: "write-" + itoaStore(next), PSK: "psk",
+				Enabled: true, SubToken: "write-tok-" + itoaStore(next)}
+			if err := st.CreateClient(&c); err != nil {
+				return
+			}
+			mu.Lock()
+			written++
+			mu.Unlock()
+		}
+	}()
+
+	previous := seeded
+	for i := 0; i < 8; i++ {
+		path := filepath.Join(t.TempDir(), "snapshot.db")
+		start := time.Now()
+		if err := st.BackupTo(path); err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("backup %d: %v", i, err)
+		}
+		elapsed := time.Since(start)
+
+		snapshot, err := Open(path)
+		if err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("open snapshot %d: %v", i, err)
+		}
+		var integrity string
+		if err := snapshot.db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil {
+			snapshot.Close()
+			close(stop)
+			wg.Wait()
+			t.Fatalf("integrity check %d: %v", i, err)
+		}
+		if integrity != "ok" {
+			snapshot.Close()
+			close(stop)
+			wg.Wait()
+			t.Fatalf("snapshot %d integrity_check = %q", i, integrity)
+		}
+		// The snapshot must carry the schema and a coherent row set: the writer
+		// only ever adds rows, so the count can never go backwards.
+		var inbounds, clients int
+		_ = snapshot.db.QueryRow(`SELECT COUNT(*) FROM inbounds`).Scan(&inbounds)
+		_ = snapshot.db.QueryRow(`SELECT COUNT(*) FROM clients`).Scan(&clients)
+		snapshot.Close()
+		if inbounds != 1 {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("snapshot %d has %d inbounds, want 1", i, inbounds)
+		}
+		if clients < previous {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("snapshot %d went backwards: %d < %d", i, clients, previous)
+		}
+		previous = clients
+		t.Logf("backup %d: %s, snapshot has %d clients", i, elapsed.Round(time.Millisecond), clients)
+	}
+	close(stop)
+	wg.Wait()
+
+	mu.Lock()
+	total := written
+	mu.Unlock()
+	// Without this the test would pass on a machine where the writer never got
+	// scheduled, which is exactly the case it exists to cover.
+	if total == 0 {
+		t.Fatal("no writes completed during the backups; the test did not exercise concurrency")
+	}
+	t.Logf("writer completed %d inserts while 8 backups ran", total)
 }
 
 func TestClientsForReset(t *testing.T) {
