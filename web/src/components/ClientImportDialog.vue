@@ -63,11 +63,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 // Page-specific Element Plus components; see src/element-parts.ts.
 import { ElAlert, ElOption, ElRadioButton, ElRadioGroup, ElSelect, ElTable, ElTableColumn } from '@/element-parts'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api'
+import { resolveImportInbound } from '@/utils/import-target'
 import type { ImportResult, Inbound } from '@/types'
 
 const props = defineProps<{
@@ -85,6 +86,15 @@ const format = ref<'auto' | 'csv' | 'ss'>('auto')
 const content = ref('')
 const submitting = ref(false)
 const result = ref<ImportResult | null>(null)
+
+// Re-read the parent's current inbound on every open. The setup-time value is
+// stale as soon as the operator switches the list filter between two imports.
+watch(
+  () => props.modelValue,
+  (visible) => {
+    if (visible) inboundId.value = resolveImportInbound(props.defaultInboundId, props.inbounds)
+  },
+)
 
 const placeholder = `name,psk,enabled,quota_bytes,expires_at,ip_limit,reset_policy,reset_day,note
 alice,,true,0,0,0,none,0,laptop
@@ -121,7 +131,7 @@ function reset() {
   content.value = ''
   result.value = null
   format.value = 'auto'
-  inboundId.value = props.defaultInboundId
+  inboundId.value = resolveImportInbound(props.defaultInboundId, props.inbounds)
 }
 </script>
 

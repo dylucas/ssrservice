@@ -14,7 +14,7 @@
         <el-form-item label="订阅地址">
           <el-input :model-value="absoluteSub" readonly>
             <template #append>
-              <el-button :disabled="!subURL" @click="copy(subURL)">复制</el-button>
+              <el-button :disabled="!absoluteSub" @click="copy(absoluteSub)">复制</el-button>
             </template>
           </el-input>
         </el-form-item>
@@ -27,6 +27,9 @@
       </el-form>
     </div>
     <template #footer>
+      <el-button type="danger" plain :loading="resetting" :disabled="!clientId" @click="resetToken">
+        重置订阅
+      </el-button>
       <el-button @click="emit('update:modelValue', false)">关闭</el-button>
       <el-button type="primary" :disabled="!link" @click="copy(link)">复制链接</el-button>
     </template>
@@ -35,19 +38,26 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { api } from '@/api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { api, basePath } from '@/api'
 import { copyText } from '@/utils/format'
+import { absoluteURL } from '@/utils/subscription'
 
 const props = defineProps<{ modelValue: boolean; clientId: number | null }>()
 const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void }>()
 
 const loading = ref(false)
+const resetting = ref(false)
 const link = ref('')
 const subURL = ref('')
 const qr = ref('')
 
-const absoluteSub = computed(() => (subURL.value ? new URL(api.subURL(subURL.value), window.location.origin).toString() : ''))
+// The server hands back a root-relative path; the box and the clipboard both
+// need the absolute URL the operator can paste into a client, including the
+// deployment base path a sub-path install is served under.
+const absoluteSub = computed(() =>
+  subURL.value ? absoluteURL(basePath, subURL.value, window.location.origin) : '',
+)
 
 // The QR encoder is ~26 kB that only this dialog needs, so it is loaded on
 // demand instead of riding along in the clients route chunk.
@@ -69,37 +79,79 @@ function resolveEncoder(mod: typeof import('qrcode')): QREncoder | null {
   return interop?.toDataURL ?? null
 }
 
-/** renderQR fills the image, leaving it empty if the encoder cannot be loaded. */
-async function renderQR(value: string) {
+/**
+ * encodeQR renders the share link as a data URL.
+ *
+ * A failure returns an empty string: the link and the subscription URL are the
+ * content, and a missing QR image must not turn the whole dialog into an error.
+ */
+async function encodeQR(value: string): Promise<string> {
   try {
     if (!loadQRCode) loadQRCode = () => import('qrcode')
     const encode = resolveEncoder(await loadQRCode())
     if (!encode) throw new Error('qrcode encoder unavailable')
-    qr.value = await encode(value, { margin: 1, width: 220 })
+    return await encode(value, { margin: 1, width: 220 })
   } catch {
-    // The link and the subscription URL are the content; a missing QR image must
-    // not turn the whole dialog into an error.
-    qr.value = ''
+    return ''
   }
 }
 
+// loadSeq makes the last request win: clicking "链接" on one row and then on
+// another must not leave the first (slower) response on screen with the second
+// client's title.
+let loadSeq = 0
+
 async function load() {
   if (!props.clientId) return
+  const seq = ++loadSeq
+  const clientId = props.clientId
   loading.value = true
   link.value = ''
   subURL.value = ''
   qr.value = ''
   try {
-    const result = await api.clientLink(props.clientId)
+    const result = await api.clientLink(clientId)
+    if (seq !== loadSeq || clientId !== props.clientId) return
     link.value = result.link || ''
     subURL.value = result.subscription_url || ''
     if (link.value) {
-      await renderQR(link.value)
+      // The encoder is loaded lazily, so this await can outlive a newer load;
+      // only the request that still owns the dialog may write the image.
+      const image = await encodeQR(link.value)
+      if (seq !== loadSeq) return
+      qr.value = image
     }
   } catch (error: any) {
+    if (seq !== loadSeq) return
     ElMessage.error(error?.message || '获取链接失败')
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
+  }
+}
+
+/** resetToken rotates the subscription token, then reloads link and QR code. */
+async function resetToken() {
+  if (!props.clientId) return
+  try {
+    await ElMessageBox.confirm(
+      '重置后旧订阅地址立即失效，客户端需要重新导入新地址。确定继续吗？',
+      '重置订阅',
+      { type: 'warning', confirmButtonText: '重置', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  resetting.value = true
+  try {
+    await api.resetClientToken(props.clientId)
+    // The link endpoint re-renders the QR code from the new token, so reloading
+    // it is what refreshes both the URL and the image.
+    await load()
+    ElMessage.success('订阅地址已重置')
+  } catch (error: any) {
+    ElMessage.error(error?.message || '重置订阅失败')
+  } finally {
+    resetting.value = false
   }
 }
 

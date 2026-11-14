@@ -2,10 +2,20 @@ import { readRuntimeConfig } from './runtime-config'
 import type {
   AuditResponse,
   Client,
+  ClientInput,
+  ClientLinkResponse,
   ClientListParams,
   ClientListResponse,
-  DailyUsage,
+  Dashboard,
   ImportResult,
+  Inbound,
+  InboundInput,
+  InboundsResponse,
+  LoginResponse,
+  MeResponse,
+  ResetTokenResponse,
+  Settings,
+  UsageResponse,
 } from './types'
 
 const config = readRuntimeConfig()
@@ -27,6 +37,28 @@ export class ApiError extends Error {
     this.code = code
     this.fields = fields
   }
+}
+
+// Session-level failures are handled centrally instead of in every view: a
+// view only knows how to show a toast, but an expired session has to leave the
+// page. api.ts must not import the router (router imports basePath from here),
+// so main.ts registers the navigation callbacks after creating the router.
+type SessionHandler = () => void
+
+let unauthorizedHandler: SessionHandler | null = null
+let passwordRequiredHandler: SessionHandler | null = null
+
+export function setUnauthorizedHandler(handler: SessionHandler | null): void {
+  unauthorizedHandler = handler
+}
+
+export function setPasswordRequiredHandler(handler: SessionHandler | null): void {
+  passwordRequiredHandler = handler
+}
+
+/** The login endpoint's own 401 means bad credentials, not an expired session. */
+function isLoginRequest(path: string): boolean {
+  return path === '/auth/login'
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -54,20 +86,24 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
   if (!response.ok) {
     const error = payload?.error
-    throw new ApiError(
+    const apiError = new ApiError(
       response.status,
       error?.code || 'request_failed',
       error?.message || response.statusText || 'request failed',
       error?.fields,
     )
+    // Notify before throwing so the view still sees the error (its spinner has
+    // to stop) while the redirect runs in the background.
+    if (apiError.status === 401 && !isLoginRequest(path)) {
+      unauthorizedHandler?.()
+    } else if (apiError.status === 403 && apiError.code === 'password_change_required') {
+      passwordRequiredHandler?.()
+    }
+    throw apiError
   }
   return payload as T
 }
 
-export interface ListResponse<T> {
-  items: T[]
-  total: number
-}
 
 /**
  * clientListQuery renders the paged client list query. Empty filters are left
@@ -85,16 +121,15 @@ function clientListQuery(params: ClientListParams): string {
 
 export const api = {
   login: (username: string, password: string) =>
-    request<{ admin: any; expires_at: number }>('POST', '/auth/login', { username, password }),
+    request<LoginResponse>('POST', '/auth/login', { username, password }),
   logout: () => request<{ ok: boolean }>('POST', '/auth/logout'),
-  me: () => request<any>('GET', '/auth/me'),
+  me: () => request<MeResponse>('GET', '/auth/me'),
   changePassword: (current_password: string, new_password: string) =>
     request<{ ok: boolean }>('PUT', '/auth/password', { current_password, new_password }),
-  dashboard: () => request<any>('GET', '/dashboard'),
-  system: () => request<any>('GET', '/system'),
-  inbounds: () => request<any>('GET', '/inbounds'),
-  createInbound: (input: unknown) => request<any>('POST', '/inbounds', input),
-  updateInbound: (id: number, input: unknown) => request<any>('PUT', `/inbounds/${id}`, input),
+  dashboard: () => request<Dashboard>('GET', '/dashboard'),
+  inbounds: () => request<InboundsResponse>('GET', '/inbounds'),
+  createInbound: (input: InboundInput) => request<Inbound>('POST', '/inbounds', input),
+  updateInbound: (id: number, input: InboundInput) => request<Inbound>('PUT', `/inbounds/${id}`, input),
   deleteInbound: (id: number) => request<{ ok: boolean }>('DELETE', `/inbounds/${id}`),
   toggleInbound: (id: number, enabled: boolean) =>
     request<{ ok: boolean }>('POST', `/inbounds/${id}/toggle`, { enabled }),
@@ -102,26 +137,21 @@ export const api = {
   clients: (params: ClientListParams) =>
     request<ClientListResponse>('GET', `/clients?${clientListQuery(params)}`),
   client: (id: number) => request<Client>('GET', `/clients/${id}`),
-  clientsOf: (inboundId: number, params: ClientListParams) =>
-    request<ClientListResponse>(
-      'GET',
-      `/inbounds/${inboundId}/clients?${clientListQuery(params)}`,
-    ),
-  createClient: (inboundId: number, input: unknown) =>
-    request<any>('POST', `/inbounds/${inboundId}/clients`, input),
-  updateClient: (id: number, input: unknown) => request<any>('PUT', `/clients/${id}`, input),
+  createClient: (inboundId: number, input: ClientInput) =>
+    request<Client>('POST', `/inbounds/${inboundId}/clients`, input),
+  updateClient: (id: number, input: ClientInput) => request<Client>('PUT', `/clients/${id}`, input),
   deleteClient: (id: number) => request<{ ok: boolean }>('DELETE', `/clients/${id}`),
   toggleClient: (id: number, enabled: boolean) =>
     request<{ ok: boolean }>('POST', `/clients/${id}/toggle`, { enabled }),
   resetClient: (id: number) => request<{ ok: boolean }>('POST', `/clients/${id}/reset`),
-  resetClientToken: (id: number) => request<any>('POST', `/clients/${id}/token`),
+  resetClientToken: (id: number) => request<ResetTokenResponse>('POST', `/clients/${id}/token`),
   kickClient: (id: number) => request<{ ok: boolean }>('POST', `/clients/${id}/kick`),
   clientLink: (id: number, host?: string) =>
-    request<any>('GET', `/clients/${id}/link${host ? `?host=${encodeURIComponent(host)}` : ''}`),
+    request<ClientLinkResponse>('GET', `/clients/${id}/link${host ? `?host=${encodeURIComponent(host)}` : ''}`),
   clientUsage: (id: number, days = 30) =>
-    request<{ items: DailyUsage[] }>('GET', `/clients/${id}/usage?days=${days}`),
-  settings: () => request<any>('GET', '/settings'),
-  updateSettings: (input: unknown) => request<any>('PUT', '/settings', input),
+    request<UsageResponse>('GET', `/clients/${id}/usage?days=${days}`),
+  settings: () => request<Settings>('GET', '/settings'),
+  updateSettings: (input: Settings) => request<Settings>('PUT', '/settings', input),
   backupURL: () => apiURL('/backup'),
   exportClientsURL: (inboundId?: number) =>
     apiURL(inboundId ? `/export/clients?inbound_id=${inboundId}` : '/export/clients'),
@@ -132,5 +162,4 @@ export const api = {
     for (const [key, value] of Object.entries(params)) query.set(key, String(value))
     return request<AuditResponse>('GET', `/audit?${query.toString()}`)
   },
-  subURL: (path: string) => `${basePath}${path}`,
 }

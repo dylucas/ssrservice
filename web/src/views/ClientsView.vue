@@ -21,7 +21,7 @@
           <el-option label="全部入站" :value="0" />
           <el-option v-for="item in inbounds" :key="item.id" :label="`${item.remark || '入站'} (:${item.port})`" :value="item.id" />
         </el-select>
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="reload">刷新</el-button>
         <el-button :icon="Download" @click="exportClients">导出</el-button>
         <el-button :icon="Upload" :disabled="!inbounds.length" @click="openImport">导入</el-button>
         <el-button type="primary" :icon="Plus" :disabled="!inbounds.length" @click="openCreate">新建用户</el-button>
@@ -207,31 +207,54 @@ function currentParams(): ClientListParams {
   })
 }
 
-/** loadInbounds refreshes the inbound filter and the form's method lookup. */
-async function loadInbounds() {
-  const result = await api.inbounds()
-  inbounds.value = result.items || []
+/**
+ * loadInbounds refreshes the inbound filter and the form's method lookup.
+ *
+ * It reports failure instead of throwing: it runs inside reload(), which is
+ * called fire-and-forget from the save/import handlers, and an unhandled
+ * rejection there would leave the operator with no feedback at all.
+ */
+async function loadInbounds(): Promise<boolean> {
+  try {
+    const result = await api.inbounds()
+    inbounds.value = result.items || []
+    return true
+  } catch (error: any) {
+    ElMessage.error(error?.message || '加载入站列表失败')
+    return false
+  }
 }
 
-async function load() {
+/** load fetches one page; it resolves false (and reports) instead of throwing. */
+async function load(): Promise<boolean> {
   const seq = ++loadSeq
   loading.value = true
   try {
     const result = await api.clients(currentParams())
-    if (seq !== loadSeq) return
+    if (seq !== loadSeq) return true
     clients.value = result.items || []
     total.value = result.total || 0
+    return true
   } catch (error: any) {
-    if (seq !== loadSeq) return
+    if (seq !== loadSeq) return false
     ElMessage.error(error?.message || '加载失败')
+    return false
   } finally {
     if (seq === loadSeq) loading.value = false
   }
 }
 
-/** reload refreshes both the pager contents and the inbound aggregates. */
-async function reload() {
-  await Promise.all([loadInbounds(), load()])
+/**
+ * reload refreshes both the pager contents and the inbound aggregates.
+ *
+ * It never rejects: callers treat it as a notification ("something changed,
+ * refresh") and an unhandled rejection there would hide the failure. Each leg
+ * reports its own error, and the return value lets a caller tell the operator
+ * that a completed action could not be followed by a refresh.
+ */
+async function reload(): Promise<boolean> {
+  const [inboundsOK, clientsOK] = await Promise.all([loadInbounds(), load()])
+  return inboundsOK && clientsOK
 }
 
 /** onFilterChange returns to the first page, which is where a new filter starts. */
@@ -309,12 +332,17 @@ function openUsage(row: ClientSummary) {
 async function toggle(row: ClientSummary) {
   try {
     await api.toggleClient(row.id, !row.enabled)
-    // Flipping enabled can move the row in or out of a status filter, so the
-    // page is refetched instead of patched in place.
-    await load()
-    ElMessage.success(row.enabled ? '已禁用' : '已启用')
   } catch (error: any) {
     ElMessage.error(error?.message || '操作失败')
+    return
+  }
+  // Flipping enabled can move the row in or out of a status filter, so the page
+  // is refetched instead of patched in place. The toggle already succeeded, so a
+  // failed refresh is reported as such instead of as a failed operation.
+  if (await load()) {
+    ElMessage.success(row.enabled ? '已禁用' : '已启用')
+  } else {
+    ElMessage.warning('操作已生效，但刷新列表失败')
   }
 }
 
@@ -330,16 +358,33 @@ async function resetTraffic(row: ClientSummary) {
   }
   try {
     await api.resetClient(row.id)
-    // The reset clears the counters and can flip quota_exceeded back to active,
-    // so refresh just this row: the server recomputes the status.
-    const refreshed = toSummary(await api.client(row.id))
-    const index = clients.value.findIndex((item) => item.id === row.id)
-    if (index >= 0) {
-      clients.value[index] = refreshed
-    }
-    ElMessage.success('流量已重置')
   } catch (error: any) {
     ElMessage.error(error?.message || '重置失败')
+    return
+  }
+  // A reset can move the row out of an active status filter or change the
+  // matching total, so a single-row patch would leave the rows and the total
+  // disagreeing. Refetch the page in that case, patch in place otherwise.
+  if (statusFilter.value === 'all') {
+    try {
+      // The reset clears the counters and can flip quota_exceeded back to
+      // active, so refresh just this row: the server recomputes the status.
+      const refreshed = toSummary(await api.client(row.id))
+      const index = clients.value.findIndex((item) => item.id === row.id)
+      if (index >= 0) {
+        clients.value[index] = refreshed
+      }
+      ElMessage.success('流量已重置')
+    } catch (error: any) {
+      // The reset itself succeeded; only the row refresh failed.
+      ElMessage.warning(`流量已重置，但刷新该行失败：${error?.message || '未知错误'}`)
+    }
+    return
+  }
+  if (await load()) {
+    ElMessage.success('流量已重置')
+  } else {
+    ElMessage.warning('流量已重置，但刷新列表失败')
   }
 }
 
@@ -367,15 +412,21 @@ async function remove(row: ClientSummary) {
   }
   try {
     await api.deleteClient(row.id)
-    // The row is gone from the server's count; step back a page when the last
-    // row of the last page was just deleted.
-    if (clients.value.length === 1 && page.value > 1) {
-      page.value -= 1
-    }
-    await reload()
-    ElMessage.success('已删除')
   } catch (error: any) {
     ElMessage.error(error?.message || '删除失败')
+    return
+  }
+  // The row is gone from the server's count; step back a page when the last row
+  // of the last page was just deleted.
+  if (clients.value.length === 1 && page.value > 1) {
+    page.value -= 1
+  }
+  // The delete already succeeded, so a failed refresh is reported as its own
+  // problem instead of masquerading as a failed delete.
+  if (await reload()) {
+    ElMessage.success('已删除')
+  } else {
+    ElMessage.warning('已删除，但刷新列表失败')
   }
 }
 

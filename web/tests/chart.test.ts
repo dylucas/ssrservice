@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   areaPath,
   axisTicks,
+  clampActive,
   labelIndices,
   linePath,
   nearestIndex,
@@ -202,5 +203,43 @@ describe('peakOf', () => {
     expect(peakOf([])).toBe(0)
     expect(peakOf([{ name: 'a', variant: 'up', values: [] }])).toBe(0)
     expect(peakOf([{ name: 'a', variant: 'up', values: [Number.NaN, -5] }])).toBe(0)
+  })
+})
+
+describe('clampActive', () => {
+  // The hover index survives a data change. Switching 30 -> 7 days used to leave
+  // active=20 and the marker read points[20].y from a seven-point array, which
+  // threw while rendering.
+  const cases: Array<{ active: number; length: number; expected: number; why: string }> = [
+    { active: 20, length: 7, expected: 6, why: 'shrunk window clamps to the last point' },
+    { active: 6, length: 7, expected: 6, why: 'last valid index is kept' },
+    { active: 0, length: 7, expected: 0, why: 'first index is kept' },
+    { active: -1, length: 7, expected: -1, why: 'no hover stays no hover' },
+    { active: -5, length: 7, expected: -1, why: 'negative indices never render' },
+    { active: 0, length: 0, expected: -1, why: 'empty series has no point' },
+    { active: 3, length: 0, expected: -1, why: 'empty series has no point' },
+    { active: 2.7, length: 5, expected: 2, why: 'fractional index truncates' },
+    { active: Number.NaN, length: 5, expected: -1, why: 'NaN would index nothing' },
+    { active: Number.POSITIVE_INFINITY, length: 5, expected: -1, why: 'infinite index is invalid' },
+  ]
+
+  for (const testCase of cases) {
+    it(`maps active=${testCase.active} over length=${testCase.length} to ${testCase.expected} (${testCase.why})`, () => {
+      expect(clampActive(testCase.active, testCase.length)).toBe(testCase.expected)
+    })
+  }
+
+  it('always returns an index that can address a point', () => {
+    for (let active = -2; active <= 40; active++) {
+      for (const length of [1, 2, 7, 30, 90]) {
+        const clamped = clampActive(active, length)
+        if (active < 0) {
+          expect(clamped).toBe(-1)
+          continue
+        }
+        expect(clamped).toBeGreaterThanOrEqual(0)
+        expect(clamped).toBeLessThan(length)
+      }
+    }
   })
 })

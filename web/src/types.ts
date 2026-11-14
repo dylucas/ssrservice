@@ -82,10 +82,27 @@ export interface Client extends ClientSummary {
   subscription_url: string
 }
 
+/** The share link and subscription path returned by GET /clients/:id/link. */
+export interface ClientLinkResponse {
+  link: string
+  subscription_url: string
+}
+
+/** The new token returned after rotating a client's subscription token. */
+export interface ResetTokenResponse {
+  sub_token: string
+  subscription_url: string
+}
+
 export interface DailyUsage {
   day: string
   up_bytes: number
   down_bytes: number
+}
+
+/** One usage window returned by GET /clients/:id/usage. */
+export interface UsageResponse {
+  items: DailyUsage[]
 }
 
 export interface Dashboard {
@@ -115,6 +132,14 @@ export interface SystemInfo {
   host_metrics: boolean
 }
 
+/** The host/runtime snapshot returned by GET /system. */
+export interface SystemResponse {
+  version: string
+  uptime_seconds: number
+  system: SystemInfo
+  sessions: number
+}
+
 export interface Settings {
   public_host: string
   public_port: number
@@ -130,6 +155,22 @@ export interface Admin {
   must_change_password: boolean
   created_at?: number
   last_login_at?: number
+}
+
+/** The login response carries the session expiry as unix seconds. */
+export interface LoginResponse {
+  admin: Admin
+  expires_at: number
+}
+
+/** GET /auth/me returns the same admin shape as the login response. */
+export type MeResponse = Admin
+
+/** GET /inbounds: the rows plus the encryption methods the form offers. */
+export interface InboundsResponse {
+  items: Inbound[]
+  total: number
+  methods: string[]
 }
 
 export interface InboundInput {
@@ -185,6 +226,5 @@ export interface ImportFailure {
 
 export interface ImportResult {
   created: number
-  skipped: number
   failed: ImportFailure[]
 }

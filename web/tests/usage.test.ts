@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DailyUsage } from '../src/types'
-import { summarizeUsage, usageRangeLabel } from '../src/utils/usage'
+import { summarizeUsage } from '../src/utils/usage'
 import { formatDateTime } from '../src/utils/format'
 
 function day(overrides: Partial<DailyUsage>): DailyUsage {
@@ -26,15 +26,6 @@ describe('summarizeUsage', () => {
       day({ up_bytes: 5, down_bytes: 6 }),
     ])
     expect(totals).toEqual({ up: 5, down: 6 })
-  })
-})
-
-describe('usageRangeLabel', () => {
-  it('describes the supported ranges', () => {
-    expect(usageRangeLabel(7)).toBe('最近 7 天')
-    expect(usageRangeLabel(30)).toBe('最近 30 天')
-    expect(usageRangeLabel(90)).toBe('最近 90 天')
-    expect(usageRangeLabel(365)).toBe('最近 30 天')
   })
 })
 

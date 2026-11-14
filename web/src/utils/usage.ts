@@ -21,13 +21,3 @@ export function summarizeUsage(days: DailyUsage[]): UsageTotals {
   }
   return { up, down }
 }
-
-/**
- * formatTrafficDelta renders a byte count for the range selector summary. Kept
- * separate from summarizeUsage so the numbers are testable without formatting.
- */
-export function usageRangeLabel(days: number): string {
-  if (days === 7) return '最近 7 天'
-  if (days === 90) return '最近 90 天'
-  return '最近 30 天'
-}

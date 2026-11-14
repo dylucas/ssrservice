@@ -124,7 +124,13 @@ function actionTagType(action: string): 'success' | 'warning' | 'danger' | 'info
   return 'info'
 }
 
+// loadSeq makes the last request win: paging and filtering can start a second
+// request before the first returns, and a late response must not overwrite the
+// newer page.
+let loadSeq = 0
+
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
   try {
     const params: Record<string, string | number> = {
@@ -139,13 +145,15 @@ async function load() {
       params.until = Math.floor(Number(range.value[1]) / 1000) + 86400
     }
     const result = await api.audit(params)
+    if (seq !== loadSeq) return
     logs.value = result.items || []
     total.value = result.total || 0
     actions.value = result.actions || []
   } catch (error: any) {
+    if (seq !== loadSeq) return
     ElMessage.error(error?.message || '加载审计日志失败')
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 

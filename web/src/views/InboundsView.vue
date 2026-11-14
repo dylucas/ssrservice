@@ -99,16 +99,27 @@ const methods = ref<string[]>([])
 const formVisible = ref(false)
 const editing = ref<Inbound | null>(null)
 
-async function load() {
+// loadSeq makes the last request win: the refresh button and a form save can
+// start overlapping requests, and a late response must not overwrite the newer
+// list.
+let loadSeq = 0
+
+/** load refreshes the table; it resolves false (and reports) instead of throwing. */
+async function load(): Promise<boolean> {
+  const seq = ++loadSeq
   loading.value = true
   try {
     const result = await api.inbounds()
+    if (seq !== loadSeq) return true
     inbounds.value = result.items || []
     methods.value = result.methods || []
+    return true
   } catch (error: any) {
+    if (seq !== loadSeq) return false
     ElMessage.error(error?.message || '加载失败')
+    return false
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
@@ -158,10 +169,16 @@ async function remove(row: Inbound) {
   }
   try {
     await api.deleteInbound(row.id)
-    ElMessage.success('已删除')
-    await load()
   } catch (error: any) {
     ElMessage.error(error?.message || '删除失败')
+    return
+  }
+  // The delete already succeeded; a failed refresh afterwards is a different
+  // problem and must not be reported as "删除失败".
+  if (await load()) {
+    ElMessage.success('已删除')
+  } else {
+    ElMessage.warning('已删除，但刷新列表失败')
   }
 }
 

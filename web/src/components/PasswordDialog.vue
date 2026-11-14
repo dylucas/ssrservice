@@ -24,7 +24,10 @@ import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps<{ modelValue: boolean }>()
-const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void }>()
+const emit = defineEmits<{
+  (e: 'update:modelValue', value: boolean): void
+  (e: 'saved'): void
+}>()
 
 const auth = useAuthStore()
 const visible = ref(props.modelValue)
@@ -71,6 +74,9 @@ async function submit() {
     await auth.changePassword(form.current, form.next)
     ElMessage.success('密码已更新')
     visible.value = false
+    // The caller may need to clear ?force=password and load the page it could
+    // not read before the change; the dialog only knows how to close itself.
+    emit('saved')
   } catch (error: any) {
     ElMessage.error(error?.message || '修改失败')
   } finally {

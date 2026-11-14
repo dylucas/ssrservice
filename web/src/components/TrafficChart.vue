@@ -77,13 +77,13 @@
             class="chart-marker"
           />
           <circle
-            v-for="entry in geometry"
-            :key="`dot-${entry.series.variant}`"
+            v-for="entry in hoverDots"
+            :key="`dot-${entry.variant}`"
             :cx="hoverX"
-            :cy="entry.points[active].y"
+            :cy="entry.y"
             r="3"
             class="chart-dot"
-            :data-variant="entry.series.variant"
+            :data-variant="entry.variant"
           />
         </g>
       </svg>
@@ -103,11 +103,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatBytes } from '@/utils/format'
 import {
   areaPath,
   axisTicks,
+  clampActive,
   labelIndices,
   linePath,
   nearestIndex,
@@ -163,7 +164,29 @@ const geometry = computed(() => {
 
 const xLabels = computed(() => labelIndices(props.labels.length))
 
+// hoverDots is the marker positions for the active index. A series shorter than
+// labels (or a hover index from before a data change) yields no dot instead of
+// an undefined point: the marker is decoration and must never throw.
+const hoverDots = computed(() => {
+  const index = active.value
+  if (index < 0) return []
+  return geometry.value
+    .filter((entry) => entry.points[index] !== undefined)
+    .map((entry) => ({ variant: entry.series.variant, y: entry.points[index].y }))
+})
+
 const hoverX = computed(() => xAt(active.value, props.labels.length, area.value))
+
+// The hover index is a stale coordinate once the series shrinks (30 -> 7 days,
+// a poll returning a shorter window): entry.points[active] would be undefined
+// and reading .y from it throws during render. Reset or clamp it whenever the
+// data changes, so the marker can never point outside the new points array.
+watch(
+  () => [props.labels.length, props.series] as const,
+  () => {
+    active.value = clampActive(active.value, props.labels.length)
+  },
+)
 
 /** measure reads the rendered size; the SVG uses it as its viewBox. */
 function measure() {

@@ -63,21 +63,33 @@ const title = computed(() =>
   props.clientName ? `流量趋势 · ${props.clientName}` : '流量趋势',
 )
 
+// loadSeq makes the last request win. Switching 7/30/90 days quickly can have
+// the slower earlier request return last, which used to leave the chart showing
+// a window the buttons no longer selected.
+let loadSeq = 0
+
 async function load() {
   if (!props.clientId) return
+  const seq = ++loadSeq
+  const clientId = props.clientId
+  const requestedDays = days.value
   loading.value = true
   try {
-    const result = await api.clientUsage(props.clientId, days.value)
+    const result = await api.clientUsage(clientId, requestedDays)
+    if (seq !== loadSeq || clientId !== props.clientId || requestedDays !== days.value) return
     usage.value = result.items || []
   } catch (error: any) {
+    if (seq !== loadSeq) return
     ElMessage.error(error?.message || '加载流量趋势失败')
     usage.value = []
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
 function reset() {
+  // Invalidate any in-flight request so it cannot refill the cleared chart.
+  loadSeq++
   usage.value = []
 }
 </script>

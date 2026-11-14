@@ -7,10 +7,6 @@ export function formatBytes(value: number | null | undefined): string {
   return `${size >= 100 ? size.toFixed(0) : size.toFixed(2)} ${units[index]}`
 }
 
-export function formatNumber(value: number | null | undefined): string {
-  return Number(value || 0).toLocaleString('zh-CN')
-}
-
 export function formatDate(unix: number | null | undefined): string {
   if (!unix) return '永不过期'
   const date = new Date(unix * 1000)

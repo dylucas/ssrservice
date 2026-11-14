@@ -6,7 +6,7 @@
         <div class="page-subtitle">分享链接、订阅与安全策略</div>
       </div>
       <div class="page-actions">
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading" :disabled="forced" @click="load">刷新</el-button>
       </div>
     </div>
 
@@ -19,9 +19,9 @@
       class="mb-4"
     />
 
-    <div class="card">
+    <div v-if="!forced" class="card">
       <h3 class="card-title">分享与订阅</h3>
-      <el-form ref="formRef" :model="form" label-width="150px" class="form-narrow">
+      <el-form :model="form" label-width="150px" class="form-narrow">
         <el-form-item label="公共主机名">
           <el-input v-model="form.public_host" placeholder="例如 node.example.com，留空使用入站监听地址" />
           <div class="hint">全局默认值。单个入站可在「入站管理 → 编辑 → 关联域名」中覆盖它。</div>
@@ -47,12 +47,12 @@
           </el-select>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" :loading="saving" @click="save">保存设置</el-button>
+          <el-button type="primary" :loading="saving" :disabled="!loaded" @click="save">保存设置</el-button>
         </el-form-item>
       </el-form>
     </div>
 
-    <div class="card">
+    <div v-if="!forced" class="card">
       <h3 class="card-title">数据备份</h3>
       <p class="muted">下载 SQLite 数据库快照。恢复时请停止服务，替换数据库文件后重新启动。</p>
       <el-button :icon="Download" @click="downloadBackup">下载备份</el-button>
@@ -60,15 +60,17 @@
 
     <div class="card">
       <h3 class="card-title">安全</h3>
+      <p v-if="forced" class="muted">首次登录必须先修改初始密码，之后才能读取或修改其他设置。</p>
       <el-button @click="passwordVisible = true">修改管理员密码</el-button>
     </div>
 
-    <PasswordDialog v-model="passwordVisible" />
+    <PasswordDialog v-model="passwordVisible" @saved="onPasswordSaved" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 // Page-specific Element Plus components; see src/element-parts.ts.
 import { ElAlert, ElInputNumber, ElOption, ElSelect, ElSwitch } from '@/element-parts'
 import { ElMessage } from 'element-plus'
@@ -79,10 +81,25 @@ import type { Settings } from '@/types'
 import PasswordDialog from '@/components/PasswordDialog.vue'
 
 const auth = useAuthStore()
-const formRef = ref()
+const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
+// loaded guards the save button: the reactive defaults below look like a valid
+// settings object, so saving before a successful GET would overwrite the real
+// configuration with public_host='' and friends.
+const loaded = ref(false)
 const saving = ref(false)
 const passwordVisible = ref(false)
+
+// must_change_password is the authoritative state. The query flag only covers
+// the moment right after login, before the admin object is filled; once the
+// flag is false a leftover ?force=password must not lock the page forever (for
+// example after changing the password from the header menu).
+const forced = computed(
+  () =>
+    auth.admin?.must_change_password === true ||
+    (route.query.force === 'password' && auth.admin?.must_change_password !== false),
+)
 const form = reactive<Settings>({
   public_host: '',
   public_port: 0,
@@ -105,18 +122,31 @@ const zones = [
   'America/Los_Angeles',
 ]
 
+// A forced change and the watch below can both start a load right after the
+// password was saved; the sequence keeps the last request's values.
+let loadSeq = 0
+
 async function load() {
+  // The backend rejects everything but /auth/me, /auth/password and
+  // /auth/logout in this state, so asking would only produce a 403 toast.
+  if (forced.value) return
+  const seq = ++loadSeq
   loading.value = true
   try {
-    Object.assign(form, await api.settings())
+    const settings = await api.settings()
+    if (seq !== loadSeq) return
+    Object.assign(form, settings)
+    loaded.value = true
   } catch (error: any) {
+    if (seq !== loadSeq) return
     ElMessage.error(error?.message || '加载失败')
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
 async function save() {
+  if (!loaded.value || forced.value) return
   saving.value = true
   try {
     Object.assign(form, await api.updateSettings({ ...form }))
@@ -128,10 +158,32 @@ async function save() {
   }
 }
 
+/** onPasswordSaved returns to the normal settings page after a forced change. */
+async function onPasswordSaved() {
+  passwordVisible.value = false
+  if (route.query.force === 'password') {
+    await router.replace({ query: {} })
+  }
+  await load()
+}
+
 function downloadBackup() {
   window.location.href = api.backupURL()
 }
 
-onMounted(load)
+// The password can also be changed from the header menu while this page is
+// open. Once the flag clears the form becomes reachable, so fetch the real
+// values instead of leaving the defaults behind a disabled button.
+watch(forced, (value) => {
+  if (!value && !loaded.value) load()
+})
+
+onMounted(() => {
+  if (forced.value) {
+    passwordVisible.value = true
+    return
+  }
+  load()
+})
 </script>
 

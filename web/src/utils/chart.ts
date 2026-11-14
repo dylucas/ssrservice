@@ -171,6 +171,19 @@ export function peakOf(series: ChartSeries[]): number {
   return peak
 }
 
+/**
+ * clampActive keeps the hover index valid for a series length.
+ *
+ * The hover index is captured from pointer coordinates and lives across data
+ * changes: shortening the window (30 -> 7 days) or a poll returning fewer days
+ * would otherwise index past the end of the new points array and throw while
+ * rendering the marker. -1 (no hover) stays -1.
+ */
+export function clampActive(active: number, length: number): number {
+  if (!Number.isFinite(active) || active < 0 || length <= 0) return -1
+  return Math.min(Math.trunc(active), length - 1)
+}
+
 /** round trims float noise from SVG attributes so the markup stays small. */
 function round(value: number): number {
   return Math.round(value * 100) / 100
