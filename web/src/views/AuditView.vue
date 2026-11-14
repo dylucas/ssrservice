@@ -11,7 +11,7 @@
     </div>
 
     <div class="card">
-      <div class="filters">
+      <div class="toolbar card-toolbar">
         <el-select v-model="filters.action" placeholder="全部动作" clearable style="width: 220px">
           <el-option v-for="action in actions" :key="action" :label="actionLabel(action)" :value="action" />
         </el-select>

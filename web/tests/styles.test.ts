@@ -159,6 +159,38 @@ describe('design tokens', () => {
   })
 })
 
+describe('template classes', () => {
+  const vueFiles = walk(srcDir).filter((path) => path.endsWith('.vue'))
+  const globalClasses = new Set(
+    [...css.matchAll(/^\.([a-zA-Z][\w-]*)\s*\{/gm)].map((match) => match[1]),
+  )
+
+  it('defines every class a template uses', () => {
+    // A renamed or mistyped class is invisible: the element simply loses its
+    // styling. This is how the audit filter bar lost its flex layout: the
+    // .filters rule was deleted while the template still referenced it.
+    const offenders: string[] = []
+    for (const file of vueFiles) {
+      const source = readFileSync(file, 'utf8')
+      const styleStart = source.indexOf('<style')
+      const style =
+        styleStart < 0 ? '' : source.slice(styleStart, source.indexOf('</style>', styleStart))
+      const local = new Set(
+        [...style.matchAll(/\.([a-zA-Z][\w-]*)\s*(?:,|\{)/g)].map((match) => match[1]),
+      )
+      for (const match of source.matchAll(/class="([^"]+)"/g)) {
+        for (const token of match[1].split(/\s+/).filter(Boolean)) {
+          // Element Plus owns el-* classes; dynamic bindings are not parsed here.
+          if (token.startsWith('el-')) continue
+          if (globalClasses.has(token) || local.has(token)) continue
+          offenders.push(`${relative(srcDir, file)}: .${token}`)
+        }
+      }
+    }
+    expect(offenders, `class used but never styled: ${offenders.join('; ')}`).toEqual([])
+  })
+})
+
 describe('text contrast (WCAG AA)', () => {
   const cases: Array<{ name: string; token: string; background: string; min: number }> = [
     // Body and normal sized text on the page surfaces must reach 4.5:1.

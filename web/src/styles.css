@@ -163,6 +163,18 @@ body {
   font-size: 12px;
 }
 
+/* Brand wordmark next to the logo mark. Kept on one line so it does not wrap
+ * while the sidebar width animates during collapse. */
+.brand-name {
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+}
+
+/* Toolbar/filter row inside a card, where the bottom margin is the card's job. */
+.card-toolbar {
+  margin-bottom: 12px;
+}
+
 /* Form field hint text, used under inputs across settings and dialogs. */
 .hint {
   margin-top: 6px;
