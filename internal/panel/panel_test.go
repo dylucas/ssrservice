@@ -1524,3 +1524,138 @@ func TestClientUsageEndpoint(t *testing.T) {
 		t.Fatalf("unexpected usage payload: %+v", payload.Items)
 	}
 }
+
+// TestInboundDomainDrivesLinks verifies the per-inbound domain ends up in share
+// links and in both subscription formats.
+func TestInboundDomainDrivesLinks(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	port := freeTestPort(t)
+
+	rec := tp.do(http.MethodPost, "/api/v1/inbounds", map[string]any{
+		"remark": "hk", "listen": "127.0.0.1", "port": port,
+		"method": model.Method2022AES128GCM, "enabled": true,
+		"domain": "HK.Example.com.", "domain_port": 8443,
+	}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create inbound: %d %s", rec.Code, rec.Body.String())
+	}
+	in := decode[model.Inbound](t, rec)
+	if in.Domain != "hk.example.com" || in.DomainPort != 8443 {
+		t.Fatalf("domain not normalized: %+v", in)
+	}
+
+	rec = tp.do(http.MethodPost, "/api/v1/inbounds/"+itoa(in.ID)+"/clients",
+		map[string]any{"name": "alice", "enabled": true}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create client: %d %s", rec.Code, rec.Body.String())
+	}
+	client := decode[model.Client](t, rec)
+
+	// Detail view and the link endpoint both use the inbound domain.
+	rec = tp.do(http.MethodGet, "/api/v1/clients/"+itoa(client.ID)+"/link", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("link: %d %s", rec.Code, rec.Body.String())
+	}
+	link := decode[struct {
+		Link string `json:"link"`
+		Sub  string `json:"subscription_url"`
+	}](t, rec)
+	if !strings.Contains(link.Link, "hk.example.com:8443") {
+		t.Fatalf("share link does not use the inbound domain: %s", link.Link)
+	}
+
+	rec = tp.do(http.MethodGet, "/api/v1/clients/"+itoa(client.ID), nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail: %d", rec.Code)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if got, _ := detail["link"].(string); !strings.Contains(got, "hk.example.com:8443") {
+		t.Fatalf("detail link does not use the inbound domain: %s", got)
+	}
+
+	// The subscription endpoints (base64 and Clash) resolve the same way.
+	subRec := tp.doRaw(http.MethodGet, link.Sub, http.Header{})
+	if subRec.Code != http.StatusOK {
+		t.Fatalf("subscription: %d %s", subRec.Code, subRec.Body.String())
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(subRec.Body.String()))
+	if err != nil {
+		t.Fatalf("decode subscription: %v", err)
+	}
+	if !strings.Contains(string(decoded), "hk.example.com:8443") {
+		t.Fatalf("subscription does not use the inbound domain: %s", decoded)
+	}
+
+	clashRes := tp.doRaw(http.MethodGet, link.Sub+"?format=clash", http.Header{})
+	if clashRes.Code != http.StatusOK {
+		t.Fatalf("clash subscription: %d", clashRes.Code)
+	}
+	if !strings.Contains(clashRes.Body.String(), "hk.example.com") {
+		t.Fatalf("clash subscription does not use the inbound domain: %s", clashRes.Body.String())
+	}
+	if !strings.Contains(clashRes.Body.String(), "8443") {
+		t.Fatalf("clash subscription does not use the domain port: %s", clashRes.Body.String())
+	}
+}
+
+// TestInboundDomainValidation verifies the API rejects bad domain input.
+func TestInboundDomainValidation(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{"scheme in domain", map[string]any{"domain": "http://example.com"}},
+		{"port without domain", map[string]any{"domain_port": 8443}},
+		{"bracketed ipv6", map[string]any{"domain": "[::1]"}},
+		{"empty label", map[string]any{"domain": "a..b"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{
+				"remark": "bad", "listen": "127.0.0.1", "port": freeTestPort(t),
+				"method": model.Method2022AES128GCM, "enabled": true,
+			}
+			for key, value := range tc.body {
+				body[key] = value
+			}
+			rec := tp.do(http.MethodPost, "/api/v1/inbounds", body, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestInboundWithoutDomainKeepsLegacyLinks guards backward compatibility: an
+// inbound with no domain must produce exactly the link the global setting gives.
+func TestInboundWithoutDomainKeepsLegacyLinks(t *testing.T) {
+	tp := newTestPanel(t)
+	tp.login()
+	if rec := tp.do(http.MethodPut, "/api/v1/settings", map[string]any{
+		"public_host": "global.example.com", "public_port": 9000,
+		"subscription_enabled": true, "allow_private_targets": false,
+		"reset_day": 1, "timezone": "UTC",
+	}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("settings: %d %s", rec.Code, rec.Body.String())
+	}
+
+	inboundID := tp.seedClients(1)
+	clients := mustClientsOf(t, tp, inboundID)
+	rec := tp.do(http.MethodGet, "/api/v1/clients/"+itoa(clients[0].ID)+"/link", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("link: %d", rec.Code)
+	}
+	link := decode[struct {
+		Link string `json:"link"`
+	}](t, rec)
+	if !strings.Contains(link.Link, "global.example.com:9000") {
+		t.Fatalf("link should fall back to the global settings: %s", link.Link)
+	}
+}

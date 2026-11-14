@@ -5,6 +5,10 @@ export interface Inbound {
   port: number
   method: string
   server_psk?: string
+  /** Optional hostname for this inbound's share links (empty = use global). */
+  domain: string
+  /** Port for the domain, 0 = fall back to public_port then the inbound port. */
+  domain_port: number
   udp_enabled: boolean
   enabled: boolean
   created_at: number
@@ -112,6 +116,8 @@ export interface InboundInput {
   port: number
   method: string
   server_psk: string
+  domain: string
+  domain_port: number
   udp_enabled: boolean
   enabled: boolean
 }

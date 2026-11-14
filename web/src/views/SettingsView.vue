@@ -24,6 +24,7 @@
       <el-form ref="formRef" :model="form" label-width="150px" class="form-narrow">
         <el-form-item label="公共主机名">
           <el-input v-model="form.public_host" placeholder="例如 node.example.com，留空使用入站监听地址" />
+          <div class="hint">全局默认值。单个入站可在「入站管理 → 编辑 → 关联域名」中覆盖它。</div>
         </el-form-item>
         <el-form-item label="公共端口">
           <el-input-number v-model="form.public_port" :min="0" :max="65535" controls-position="right" />

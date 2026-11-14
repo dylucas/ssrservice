@@ -16,6 +16,14 @@
       <el-form-item label="端口" prop="port">
         <el-input-number v-model="form.port" :min="1" :max="65535" controls-position="right" />
       </el-form-item>
+      <el-form-item label="关联域名" prop="domain">
+        <el-input v-model="form.domain" maxlength="253" placeholder="例如 hk.example.com，留空则用全局设置" />
+        <div class="hint">分享链接与订阅会使用该域名；留空时回退到系统设置里的公共主机名或监听地址。</div>
+      </el-form-item>
+      <el-form-item label="域名端口">
+        <el-input-number v-model="form.domain_port" :min="0" :max="65535" controls-position="right" />
+        <span class="unit">0 表示跟随全局端口，再回退到入站端口</span>
+      </el-form-item>
       <el-form-item label="加密方法" prop="method">
         <el-select v-model="form.method" style="width: 100%" @change="onMethodChange">
           <el-option v-for="item in methods" :key="item" :label="item" :value="item" />
@@ -68,6 +76,8 @@ const form = reactive({
   port: 8388,
   method: '2022-blake3-aes-128-gcm',
   server_psk: '',
+  domain: '',
+  domain_port: 0,
   udp_enabled: true,
   enabled: true,
 })
@@ -77,6 +87,31 @@ const rules: FormRules = {
   listen: [{ required: true, message: '请输入监听地址', trigger: 'blur' }],
   port: [{ required: true, message: '请输入端口', trigger: 'change' }],
   method: [{ required: true, message: '请选择加密方法', trigger: 'change' }],
+  domain: [
+    {
+      // Mirrors validateHostValue on the server: hostname or bare IP, no scheme,
+      // port or brackets. The server still validates; this is for fast feedback.
+      validator: (_rule: unknown, value: string, callback: (error?: Error) => void) => {
+        const host = (value || '').trim().replace(/\.$/, '').toLowerCase()
+        if (!host) {
+          callback()
+          return
+        }
+        if (host.length > 253) {
+          callback(new Error('域名最多 253 个字符'))
+          return
+        }
+        const labelled = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
+        const ipv6 = /^[0-9a-f:]+$/
+        if (!labelled.test(host) && !ipv6.test(host)) {
+          callback(new Error('请输入域名或 IP（不含协议、端口与方括号）'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
 }
 
 const needsServerPSK = computed(
@@ -100,6 +135,8 @@ watch(
         port: props.inbound.port,
         method: props.inbound.method,
         server_psk: props.inbound.server_psk || '',
+        domain: props.inbound.domain || '',
+        domain_port: props.inbound.domain_port || 0,
         udp_enabled: props.inbound.udp_enabled,
         enabled: props.inbound.enabled,
       })
@@ -110,6 +147,8 @@ watch(
         port: randomPort(),
         method: '2022-blake3-aes-128-gcm',
         server_psk: '',
+        domain: '',
+        domain_port: 0,
         udp_enabled: true,
         enabled: true,
       })
@@ -140,6 +179,12 @@ async function submit() {
   if (!formRef.value) return
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
+  // A port without a host would be ignored when links are built, so say so here
+  // rather than letting the server reject it after a round trip.
+  if (form.domain_port > 0 && !form.domain.trim()) {
+    ElMessage.warning('填写域名端口前请先填写关联域名')
+    return
+  }
   saving.value = true
   try {
     if (props.inbound) {

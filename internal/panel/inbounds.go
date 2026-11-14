@@ -41,7 +41,8 @@ func (s *Server) handleCreateInbound(c *gin.Context) {
 	s.audit(c, auditEntry{
 		Action: model.AuditInboundCreate, TargetType: "inbound", TargetID: in.ID,
 		Detail: auditFields("remark", in.Remark, "listen", in.Listen, "port", in.Port,
-			"method", in.Method, "udp", in.UDPEnabled, "enabled", in.Enabled),
+			"method", in.Method, "domain", in.Domain, "domain_port", in.DomainPort,
+			"udp", in.UDPEnabled, "enabled", in.Enabled),
 	})
 	c.JSON(http.StatusCreated, in)
 }
@@ -76,7 +77,8 @@ func (s *Server) handleUpdateInbound(c *gin.Context) {
 	s.audit(c, auditEntry{
 		Action: model.AuditInboundUpdate, TargetType: "inbound", TargetID: in.ID,
 		Detail: auditFields("remark", in.Remark, "listen", in.Listen, "port", in.Port,
-			"method", in.Method, "udp", in.UDPEnabled, "enabled", in.Enabled),
+			"method", in.Method, "domain", in.Domain, "domain_port", in.DomainPort,
+			"udp", in.UDPEnabled, "enabled", in.Enabled),
 	})
 	c.JSON(http.StatusOK, in)
 }

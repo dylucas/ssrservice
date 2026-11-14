@@ -106,6 +106,8 @@
   "port": 8388,
   "method": "2022-blake3-aes-128-gcm",
   "server_psk": "",
+  "domain": "hk.example.com",
+  "domain_port": 0,
   "udp_enabled": true,
   "enabled": true
 }
@@ -114,6 +116,37 @@
 - `server_psk` 留空时自动生成；SS2022 多用户方法必须为对应长度的 base64。
 - 单用户方法（`2022-blake3-chacha20-poly1305`）的 `server_psk` 必须为空，且入站只能有一个启用用户。
 - 端口冲突返回 `409 conflict`；权限不足/地址非法返回 `400`。
+- `domain` 与 `domain_port` 可选，用于让该入站使用独立的分享域名（见下节）。
+
+### 关联域名
+
+多入站部署过去只能通过全局 `public_host` 指定一个主机名，所有入站的分享链接都用它。现在每个入站可以单独关联域名：
+
+| 字段 | 说明 |
+|---|---|
+| `domain` | 主机名或裸 IP，**不含**协议、端口与方括号。保存时统一为小写并去掉末尾的点，非法值返回 `400` |
+| `domain_port` | 该域名的端口，`0` 表示跟随全局端口再回退到入站端口。填写端口时必须同时填写域名 |
+
+分享链接与订阅的主机/端口解析顺序（越靠前越优先）：
+
+| | 主机 | 端口 |
+|---|---|---|
+| 1 | 入站 `domain` | 入站 `domain_port` |
+| 2 | 全局 `public_host` | 全局 `public_port` |
+| 3 | 请求级 `?host=`（仅 `/clients/:id/link`） | 入站 `port` |
+| 4 | 监听地址推导（`0.0.0.0` → `127.0.0.1`，`::` → `::1`） | |
+
+- 入站域名优先于全局设置：它是唯一能描述单个入站的配置。
+- **未设置 `domain` 的入站行为与之前完全一致**，链接输出不变。
+- 该功能只影响链接渲染，不涉及监听地址、协议或 TLS；数据面不会因此重载。
+- 域名不要求唯一：不同入站可以在不同端口使用同一域名。
+
+```bash
+# 给入站绑定域名后，链接立即变成 ss://…@hk.example.com:8443
+curl -b cookies.txt -X PUT http://127.0.0.1:2096/api/v1/inbounds/1 \
+  -H 'Content-Type: application/json' \
+  -d '{"remark":"香港","listen":"0.0.0.0","port":8388,"method":"2022-blake3-aes-128-gcm","domain":"hk.example.com","domain_port":8443,"udp_enabled":true,"enabled":true}'
+```
 
 入站响应额外字段：`client_count`、`enabled_client_count`、`up_bytes`、`down_bytes`、`online_ips`。
 

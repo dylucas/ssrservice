@@ -19,10 +19,13 @@
             <div class="muted mono">#{{ row.id }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="监听" min-width="150">
+        <el-table-column label="监听" min-width="170">
           <template #default="{ row }">
             <div class="mono">{{ row.listen }}:{{ row.port }}</div>
             <div class="muted">{{ row.udp_enabled ? 'TCP + UDP' : '仅 TCP' }}</div>
+            <!-- Only the configured value is shown: the resolution order lives in
+                 the service, so the UI does not re-implement it. -->
+            <div v-if="row.domain" class="muted mono">域名 {{ row.domain }}<template v-if="row.domain_port">:{{ row.domain_port }}</template></div>
           </template>
         </el-table-column>
         <el-table-column prop="method" label="加密方法" min-width="190" show-overflow-tooltip />

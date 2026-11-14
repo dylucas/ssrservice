@@ -79,6 +79,36 @@ CLIENT=$(api POST "/api/v1/inbounds/$INBOUND_ID/clients" '{"name":"smoke-user","
 CLIENT_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$CLIENT")
 CLIENT_PSK=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["psk"])' <<<"$CLIENT")
 
+log "checking inbound domain in share links"
+# The inbound created above now carries a domain, so every link the panel renders
+# must use that host and port instead of the listen address.
+DOMAIN_INBOUND=$(api POST /api/v1/inbounds "{\"remark\":\"smoke-domain\",\"listen\":\"127.0.0.1\",\"port\":$((SS_PORT + 2)),\"method\":\"2022-blake3-aes-128-gcm\",\"domain\":\"Smoke.Example.COM.\",\"domain_port\":8443,\"udp_enabled\":false,\"enabled\":true}")
+DOMAIN_INBOUND_ID=$(python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["domain"]=="smoke.example.com", d; print(d["id"])' <<<"$DOMAIN_INBOUND")
+DOMAIN_CLIENT=$(api POST "/api/v1/inbounds/$DOMAIN_INBOUND_ID/clients" '{"name":"domain-user","enabled":true}')
+DOMAIN_CLIENT_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$DOMAIN_CLIENT")
+DOMAIN_LINK=$(api GET "/api/v1/clients/$DOMAIN_CLIENT_ID/link")
+DOMAIN_LINK="$DOMAIN_LINK" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["DOMAIN_LINK"])
+assert "smoke.example.com:8443" in payload["link"], payload["link"]
+assert payload["subscription_url"].startswith("/sub/"), payload
+PY
+DOMAIN_SUB_PATH=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["subscription_url"])' <<<"$DOMAIN_LINK")
+DOMAIN_SUB=$(curl -fsS "http://127.0.0.1:$PANEL_PORT$DOMAIN_SUB_PATH" | base64 -d)
+[[ "$DOMAIN_SUB" == *"smoke.example.com:8443"* ]] || fail "subscription does not use the inbound domain"
+DOMAIN_CLASH=$(curl -fsS "http://127.0.0.1:$PANEL_PORT$DOMAIN_SUB_PATH?format=clash")
+[[ "$DOMAIN_CLASH" == *"smoke.example.com"* ]] || fail "clash subscription does not use the inbound domain"
+
+# Remove the domain fixtures again: later checks assert on the exact client set.
+api DELETE "/api/v1/inbounds/$DOMAIN_INBOUND_ID" >/dev/null
+
+log "checking invalid domains are rejected"
+BAD_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -X POST \
+  -H 'Content-Type: application/json' \
+  -d "{\"remark\":\"bad\",\"listen\":\"127.0.0.1\",\"port\":$((SS_PORT + 3)),\"method\":\"2022-blake3-aes-128-gcm\",\"domain\":\"http://bad.example.com\",\"enabled\":true}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/inbounds")
+[[ "$BAD_STATUS" == "400" ]] || fail "invalid domain accepted (status $BAD_STATUS)"
+
 log "checking share link and subscription"
 LINK_JSON=$(api GET "/api/v1/clients/$CLIENT_ID/link")
 python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["link"].startswith("ss://"), d; assert d["subscription_url"].startswith("/sub/"), d' <<<"$LINK_JSON"
