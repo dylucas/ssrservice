@@ -1,17 +1,21 @@
 package ssserver
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sagernet/sing-shadowsocks"
 	"github.com/sagernet/sing-shadowsocks/shadowaead"
 	"github.com/sagernet/sing-shadowsocks/shadowaead_2022"
+	"github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
 
 	"github.com/ydong/ssrservice/internal/auth"
@@ -643,4 +647,182 @@ func TestConcurrentReloadWhileServing(t *testing.T) {
 
 	// The original connection must have survived every reload.
 	echoRoundTrip(t, conn, "after-reload")
+}
+
+// inboundRuntimeOf returns the running runtime of an inbound.
+func inboundRuntimeOf(t *testing.T, env *testEnv, id int64) *inboundRuntime {
+	t.Helper()
+	env.mgr.mu.Lock()
+	defer env.mgr.mu.Unlock()
+	rt := env.mgr.inbounds[id]
+	if rt == nil {
+		t.Fatalf("inbound %d is not running", id)
+	}
+	return rt
+}
+
+// TestHotReloadSkipsUnchangedProtocol verifies that a reload which only changes
+// non-protocol fields (quota, name, note) keeps the running protocol service,
+// while a PSK or enable change rebuilds it.
+func TestHotReloadSkipsUnchangedProtocol(t *testing.T) {
+	env := newTestEnv(t)
+	serverPSK := newTestKey(t, 16)
+	client := model.Client{Name: "live", PSK: newTestKey(t, 16), Enabled: true, SubToken: "tok"}
+	in := env.createInbound(model.Method2022AES128GCM, serverPSK, client)
+	clients, err := env.store.ListClients(in.ID)
+	if err != nil {
+		t.Fatalf("list clients: %v", err)
+	}
+	stored := clients[0]
+
+	rt := inboundRuntimeOf(t, env, in.ID)
+	before := rt.services.Load()
+	if before == nil {
+		t.Fatal("protocol service not published")
+	}
+
+	// Keep a session open across the reload: it must survive and keep serving.
+	conn, err := dialSSWithPSK(env.addr(), in.Method, serverPSK, stored.PSK, env.echoV4.addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	echoRoundTrip(t, conn, "before")
+
+	// Only non-protocol fields change.
+	updated := stored
+	updated.QuotaBytes = 1 << 30
+	updated.IPLimit = 5
+	updated.Name = "renamed"
+	updated.Note = "note"
+	if err := env.store.UpdateClient(&updated); err != nil {
+		t.Fatalf("update client: %v", err)
+	}
+	reloaded, err := env.store.ListClients(in.ID)
+	if err != nil {
+		t.Fatalf("list clients: %v", err)
+	}
+	if err := env.mgr.ApplyInbound(in, reloaded); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if after := rt.services.Load(); after != before {
+		t.Fatal("non-protocol change rebuilt the protocol service")
+	}
+	echoRoundTrip(t, conn, "after-quota-change")
+
+	// A PSK change must rebuild the service.
+	rotated := updated
+	rotated.PSK = newTestKey(t, 16)
+	if err := env.store.UpdateClient(&rotated); err != nil {
+		t.Fatalf("rotate psk: %v", err)
+	}
+	reloaded, _ = env.store.ListClients(in.ID)
+	if err := env.mgr.ApplyInbound(in, reloaded); err != nil {
+		t.Fatalf("reload after psk change: %v", err)
+	}
+	after := rt.services.Load()
+	if after == before {
+		t.Fatal("psk change did not rebuild the protocol service")
+	}
+	echoRoundTrip(t, conn, "after-psk-change")
+
+	// Disabling the client also changes the protocol user table.
+	disabled := rotated
+	disabled.Enabled = false
+	if err := env.store.UpdateClient(&disabled); err != nil {
+		t.Fatalf("disable client: %v", err)
+	}
+	reloaded, _ = env.store.ListClients(in.ID)
+	if err := env.mgr.ApplyInbound(in, reloaded); err != nil {
+		t.Fatalf("reload after disable: %v", err)
+	}
+	if third := rt.services.Load(); third == after {
+		t.Fatal("disabling the client did not rebuild the protocol service")
+	}
+}
+
+// TestUDPWritePacketAddrPort exercises the AddressPort write fast path of the
+// server packet writer against a real UDP socket.
+func TestUDPWritePacketAddrPort(t *testing.T) {
+	server, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen server: %v", err)
+	}
+	defer server.Close()
+	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen peer: %v", err)
+	}
+	defer peer.Close()
+
+	writer := &udpServerConn{conn: server}
+	payload := []byte("addrport-fast-path")
+	destination := M.SocksaddrFromNetIP(peer.LocalAddr().(*net.UDPAddr).AddrPort())
+	if err := writer.WritePacket(buf.As(payload), destination); err != nil {
+		t.Fatalf("write packet: %v", err)
+	}
+
+	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buffer := make([]byte, 64)
+	n, _, err := peer.ReadFromUDPAddrPort(buffer)
+	if err != nil {
+		t.Fatalf("read packet: %v", err)
+	}
+	if got := string(buffer[:n]); got != string(payload) {
+		t.Fatalf("payload = %q, want %q", got, payload)
+	}
+	// The buffer must have been released by WritePacket.
+	if cap(payload) != len(payload) {
+		// buf.As wraps the caller slice without pooling; this is just a guard
+		// against the helper accidentally switching to a pooled buffer.
+		t.Fatal("unexpected buffer ownership")
+	}
+}
+
+// stubPacketConn is an inert N.PacketConn for session lifecycle tests.
+type stubPacketConn struct{ closed int32 }
+
+func (c *stubPacketConn) ReadPacket(*buf.Buffer) (M.Socksaddr, error) {
+	return M.Socksaddr{}, io.EOF
+}
+
+func (c *stubPacketConn) WritePacket(*buf.Buffer, M.Socksaddr) error { return nil }
+func (c *stubPacketConn) Close() error                               { atomic.StoreInt32(&c.closed, 1); return nil }
+func (c *stubPacketConn) LocalAddr() net.Addr                        { return nil }
+func (c *stubPacketConn) SetDeadline(time.Time) error                { return nil }
+func (c *stubPacketConn) SetReadDeadline(time.Time) error            { return nil }
+func (c *stubPacketConn) SetWriteDeadline(time.Time) error           { return nil }
+
+// TestUDPSessionSocketReuse verifies that repeated sends to the same address
+// family use one socket and that closing the session releases it.
+func TestUDPSessionSocketReuse(t *testing.T) {
+	env := newTestEnv(t)
+	client := &stubPacketConn{}
+	s := newUDPClientSession(context.Background(), env.mgr, client, 1)
+	defer s.close()
+
+	first, err := s.socket(true)
+	if err != nil {
+		t.Fatalf("socket: %v", err)
+	}
+	second, err := s.socket(true)
+	if err != nil {
+		t.Fatalf("socket again: %v", err)
+	}
+	if first != second {
+		t.Fatal("expected the IPv4 socket to be reused")
+	}
+	if s.sockets[socketIndex(true)].Load() != first {
+		t.Fatal("socket not stored in the atomic slot")
+	}
+	s.close()
+	if s.sockets[socketIndex(true)].Load() != nil {
+		t.Fatal("close did not clear the socket slot")
+	}
+	if _, err := s.socket(true); err == nil {
+		t.Fatal("expected socket creation to fail after close")
+	}
+	if atomic.LoadInt32(&client.closed) != 1 {
+		t.Fatal("close did not close the protocol side of the NAT session")
+	}
 }

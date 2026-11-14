@@ -1,8 +1,11 @@
 package ssserver
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/sagernet/sing-shadowsocks"
@@ -98,9 +101,10 @@ func buildProtocol(in InboundSnapshot, handler shadowsocks.Handler, udpTimeout t
 			if err != nil {
 				return nil, 0, fmt.Errorf("create SS2022 service: %w", err)
 			}
-			users := make([]uint64, 0, len(in.Clients))
-			keys := make([][]byte, 0, len(in.Clients))
-			for _, c := range in.Clients {
+			enabled := enabledClients(in.Clients)
+			users := make([]uint64, 0, len(enabled))
+			keys := make([][]byte, 0, len(enabled))
+			for _, c := range enabled {
 				key, err := base64.StdEncoding.DecodeString(c.PSK)
 				if err != nil {
 					return nil, 0, fmt.Errorf("client %q: invalid PSK: %w", c.Name, err)
@@ -116,9 +120,9 @@ func buildProtocol(in InboundSnapshot, handler shadowsocks.Handler, udpTimeout t
 		// Single user (2022-blake3-chacha20-poly1305).
 		var password string
 		var defaultID int64
-		if len(in.Clients) > 0 {
-			password = in.Clients[0].PSK
-			defaultID = in.Clients[0].ID
+		if enabled := enabledClients(in.Clients); len(enabled) > 0 {
+			password = enabled[0].PSK
+			defaultID = enabled[0].ID
 		} else {
 			// No users configured: create a service with an unusable random
 			// key so the listener still starts and rejects everything.
@@ -141,9 +145,10 @@ func buildProtocol(in InboundSnapshot, handler shadowsocks.Handler, udpTimeout t
 	if err != nil {
 		return nil, 0, fmt.Errorf("create %s service: %w", method, err)
 	}
-	users := make([]uint64, 0, len(in.Clients))
-	passwords := make([]string, 0, len(in.Clients))
-	for _, c := range in.Clients {
+	enabled := enabledClients(in.Clients)
+	users := make([]uint64, 0, len(enabled))
+	passwords := make([]string, 0, len(enabled))
+	for _, c := range enabled {
 		users = append(users, uint64(c.ID))
 		passwords = append(passwords, c.PSK)
 	}
@@ -151,4 +156,54 @@ func buildProtocol(in InboundSnapshot, handler shadowsocks.Handler, udpTimeout t
 		return nil, 0, fmt.Errorf("load users: %w", err)
 	}
 	return service, 0, nil
+}
+
+// enabledClients returns the clients that may serve traffic, sorted by id.
+// Disabled clients are excluded from the protocol user table so a disabled
+// identity is rejected during the handshake instead of after it.
+func enabledClients(clients []ClientSnapshot) []ClientSnapshot {
+	enabled := make([]ClientSnapshot, 0, len(clients))
+	for _, c := range clients {
+		if c.Enabled {
+			enabled = append(enabled, c)
+		}
+	}
+	sort.Slice(enabled, func(i, j int) bool { return enabled[i].ID < enabled[j].ID })
+	return enabled
+}
+
+// enabledClientCount returns how many clients may serve traffic.
+func enabledClientCount(clients []ClientSnapshot) int {
+	n := 0
+	for _, c := range clients {
+		if c.Enabled {
+			n++
+		}
+	}
+	return n
+}
+
+// protocolSignature fingerprints every input of buildProtocol: the method, the
+// server PSK and the enabled users with their PSKs. A reload whose signature is
+// unchanged reuses the running service, so changing a quota, expiry, note or IP
+// limit no longer rebuilds the user table and its ciphers.
+func protocolSignature(in InboundSnapshot) [32]byte {
+	h := sha256.New()
+	writeField := func(value string) {
+		var length [4]byte
+		binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+		_, _ = h.Write(length[:])
+		_, _ = h.Write([]byte(value))
+	}
+	writeField(in.Method)
+	writeField(in.ServerPSK)
+	for _, c := range enabledClients(in.Clients) {
+		var id [8]byte
+		binary.BigEndian.PutUint64(id[:], uint64(c.ID))
+		_, _ = h.Write(id[:])
+		writeField(c.PSK)
+	}
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	return sum
 }

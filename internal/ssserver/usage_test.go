@@ -402,3 +402,34 @@ func TestUsageRolloverAfterFailedFlushDoesNotDoubleCount(t *testing.T) {
 		t.Fatalf("unexpected live totals: up=%d down=%d", up, down)
 	}
 }
+
+// TestUsageAuthorize covers the single-lock gate used by new connections.
+func TestUsageAuthorize(t *testing.T) {
+	start := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	u, _, _ := newTestUsageManager(t, time.UTC, start)
+
+	if _, err := u.authorize(404, start); !errors.Is(err, ErrUnknownClient) {
+		t.Fatalf("unknown client: %v", err)
+	}
+
+	u.ensure(ClientSnapshot{ID: 1, Enabled: true, IPLimit: 7}, 0, 0)
+	if limit, err := u.authorize(1, start); err != nil || limit != 7 {
+		t.Fatalf("active client: limit=%d err=%v", limit, err)
+	}
+
+	u.ensure(ClientSnapshot{ID: 2, Enabled: false, IPLimit: 3}, 0, 0)
+	if _, err := u.authorize(2, start); !errors.Is(err, ErrClientDisabled) {
+		t.Fatalf("disabled client: %v", err)
+	}
+
+	u.ensure(ClientSnapshot{ID: 3, Enabled: true, ExpiresAt: start.Unix()}, 0, 0)
+	if _, err := u.authorize(3, start); !errors.Is(err, ErrClientExpired) {
+		t.Fatalf("expired client: %v", err)
+	}
+
+	u.ensure(ClientSnapshot{ID: 4, Enabled: true, QuotaBytes: 10}, 0, 0)
+	u.add(4, true, 10)
+	if _, err := u.authorize(4, start); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("quota exceeded client: %v", err)
+	}
+}

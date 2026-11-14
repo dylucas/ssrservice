@@ -35,7 +35,10 @@ type inboundRuntime struct {
 	snapshot atomic.Pointer[InboundSnapshot]
 
 	tcpListener net.Listener
-	udpConn     net.PacketConn
+	// udpConn is always a *net.UDPConn so the data plane can use the
+	// netip.AddrPort read/write methods and avoid a net.Addr allocation per
+	// packet.
+	udpConn *net.UDPConn
 
 	services atomic.Pointer[ssService]
 
@@ -51,6 +54,11 @@ type inboundRuntime struct {
 type ssService struct {
 	service         protocolService
 	defaultClientID int64
+	// sig fingerprints everything buildProtocol consumes (method, server PSK
+	// and the enabled users and their PSKs). A reload that only changes
+	// non-protocol fields (quota, expiry, note, IP limit) keeps the existing
+	// service instead of rebuilding the user table and ciphers.
+	sig [32]byte
 }
 
 func (rt *inboundRuntime) close() {
@@ -274,7 +282,8 @@ func (m *Manager) applyLocked(snap InboundSnapshot) error {
 }
 
 // reconfigure keeps the listeners and swaps the protocol service. It also
-// adds or removes the UDP socket when that flag changed.
+// adds or removes the UDP socket when that flag changed. A reload that does not
+// touch anything buildProtocol consumes keeps the current service.
 func (m *Manager) reconfigure(rt *inboundRuntime, snap InboundSnapshot) error {
 	rt.mu.Lock()
 	closed := rt.closed
@@ -283,12 +292,29 @@ func (m *Manager) reconfigure(rt *inboundRuntime, snap InboundSnapshot) error {
 		return m.applyLocked(snap)
 	}
 
-	handler := &handler{manager: m, inboundID: snap.ID, method: snap.Method}
-	service, defaultID, err := buildProtocol(snap, handler, m.opts.UDPTimeout)
-	if err != nil {
-		return err
+	sig := protocolSignature(snap)
+
+	var (
+		service   protocolService
+		defaultID int64
+	)
+	// The existing service is reused when the protocol inputs did not change.
+	// The snapshot is still published below, so quota, expiry and enabled
+	// flags reach the accounting gates immediately.
+	rebuild := true
+	if current := rt.services.Load(); current != nil && current.sig == sig {
+		rebuild = false
 	}
-	handler.defaultClientID = defaultID
+
+	if rebuild {
+		handler := &handler{manager: m, inboundID: snap.ID, method: snap.Method}
+		var err error
+		service, defaultID, err = buildProtocol(snap, handler, m.opts.UDPTimeout)
+		if err != nil {
+			return err
+		}
+		handler.defaultClientID = defaultID
+	}
 
 	if rt.serveCtx == nil {
 		rt.serveCtx, rt.serveCancel = context.WithCancel(context.Background())
@@ -306,14 +332,17 @@ func (m *Manager) reconfigure(rt *inboundRuntime, snap InboundSnapshot) error {
 	// Seed the accounting state before publishing the new service so a client
 	// added by this reload cannot be served before it has an account.
 	m.usage.ensureClients(snap.Clients)
-	rt.services.Store(&ssService{service: service, defaultClientID: defaultID})
+	if rebuild {
+		rt.services.Store(&ssService{service: service, defaultClientID: defaultID, sig: sig})
+	}
 	rt.setSnapshot(snap)
 	m.logger.Info("inbound reloaded", "id", snap.ID, "method", snap.Method,
-		"udp", snap.UDPEnabled, "users", len(snap.Clients))
+		"udp", snap.UDPEnabled, "users", enabledClientCount(snap.Clients),
+		"protocol_rebuilt", rebuild)
 	return nil
 }
 
-func (rt *inboundRuntime) currentUDP() net.PacketConn {
+func (rt *inboundRuntime) currentUDP() *net.UDPConn {
 	rt.udpMu.Lock()
 	defer rt.udpMu.Unlock()
 	return rt.udpConn
@@ -363,7 +392,7 @@ func (m *Manager) buildRuntime(snap InboundSnapshot) (*inboundRuntime, error) {
 		return nil, classifyListenError(err)
 	}
 	rt.tcpListener = ln
-	rt.services.Store(&ssService{service: service, defaultClientID: defaultID})
+	rt.services.Store(&ssService{service: service, defaultClientID: defaultID, sig: protocolSignature(snap)})
 
 	if snap.UDPEnabled {
 		udpAddr, err := net.ResolveUDPAddr("udp", snap.Addr())
@@ -396,11 +425,11 @@ func (m *Manager) buildRuntime(snap InboundSnapshot) (*inboundRuntime, error) {
 
 	m.logger.Info("inbound listening", "id", snap.ID, "remark", snap.Remark,
 		"address", snap.Addr(), "method", snap.Method, "udp", snap.UDPEnabled,
-		"users", len(snap.Clients))
+		"users", enabledClientCount(snap.Clients))
 	return rt, nil
 }
 
-func (m *Manager) startUDPLoop(ctx context.Context, rt *inboundRuntime, conn net.PacketConn, server *udpServerConn, done chan struct{}) {
+func (m *Manager) startUDPLoop(ctx context.Context, rt *inboundRuntime, conn *net.UDPConn, server *udpServerConn, done chan struct{}) {
 	m.stopWG.Add(1)
 	go func() {
 		defer m.stopWG.Done()
@@ -446,10 +475,10 @@ func (m *Manager) handleTCP(ctx context.Context, rt *inboundRuntime, conn net.Co
 	conn.Close()
 }
 
-func (m *Manager) serveUDP(ctx context.Context, rt *inboundRuntime, conn net.PacketConn, server *udpServerConn) {
+func (m *Manager) serveUDP(ctx context.Context, rt *inboundRuntime, conn *net.UDPConn, server *udpServerConn) {
 	readBuf := make([]byte, maxUDPPacketSize)
 	for {
-		n, addr, err := conn.ReadFrom(readBuf)
+		n, addr, err := conn.ReadFromUDPAddrPort(readBuf)
 		if err != nil {
 			select {
 			case <-ctx.Done():
@@ -470,7 +499,7 @@ func (m *Manager) serveUDP(ctx context.Context, rt *inboundRuntime, conn net.Pac
 			continue
 		}
 		packet := packetWithHeadroom(readBuf[:n])
-		metadata := M.Metadata{Source: M.SocksaddrFromNet(addr)}
+		metadata := M.Metadata{Source: M.SocksaddrFromNetIP(addr)}
 		if err := svc.service.NewPacket(ctx, server, packet, metadata); err != nil {
 			packet.Release()
 			m.logger.Debug("udp packet rejected", "inbound_id", rt.view().ID,
@@ -621,7 +650,7 @@ func (m *Manager) Stop() {
 // expected by the Shadowsocks library. Writes are directed back to the client
 // address supplied by the library.
 type udpServerConn struct {
-	conn net.PacketConn
+	conn *net.UDPConn
 }
 
 var _ N.PacketConn = (*udpServerConn)(nil)
@@ -632,11 +661,15 @@ func (c *udpServerConn) ReadPacket(buffer *buf.Buffer) (M.Socksaddr, error) {
 
 func (c *udpServerConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
 	defer buffer.Release()
-	addr := destination.UDPAddr()
-	if _, err := c.conn.WriteTo(buffer.Bytes(), addr); err != nil {
+	// The common case is an IP destination: write through netip.AddrPort so no
+	// *net.UDPAddr is allocated per packet. Domain names (never produced by the
+	// server packet writer, but kept for safety) fall back to WriteTo.
+	if ap, ok := udpDestination(destination); ok {
+		_, err := c.conn.WriteToUDPAddrPort(buffer.Bytes(), ap)
 		return err
 	}
-	return nil
+	_, err := c.conn.WriteTo(buffer.Bytes(), destination.UDPAddr())
+	return err
 }
 
 func (c *udpServerConn) Close() error                       { return nil }

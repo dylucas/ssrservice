@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-shadowsocks"
@@ -66,10 +67,11 @@ func (h *handler) NewConnection(ctx context.Context, conn net.Conn, metadata M.M
 		return ErrNoUser
 	}
 	m := h.manager
-	if err := m.usage.checkActive(clientID, time.Now()); err != nil {
+	ipLimit, err := m.usage.authorize(clientID, time.Now())
+	if err != nil {
 		return err
 	}
-	sess, err := m.registry.acquire(clientID, h.inboundID, sourceIP(metadata.Source), m.usage.ipLimit(clientID), maxSessionsPerClient)
+	sess, err := m.registry.acquire(clientID, h.inboundID, sourceIP(metadata.Source), ipLimit, maxSessionsPerClient)
 	if err != nil {
 		return err
 	}
@@ -142,10 +144,11 @@ func (h *handler) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 		return ErrNoUser
 	}
 	m := h.manager
-	if err := m.usage.checkActive(clientID, time.Now()); err != nil {
+	ipLimit, err := m.usage.authorize(clientID, time.Now())
+	if err != nil {
 		return err
 	}
-	sess, err := m.registry.acquire(clientID, h.inboundID, sourceIP(metadata.Source), m.usage.ipLimit(clientID), maxSessionsPerClient)
+	sess, err := m.registry.acquire(clientID, h.inboundID, sourceIP(metadata.Source), ipLimit, maxSessionsPerClient)
 	if err != nil {
 		return err
 	}
@@ -200,8 +203,11 @@ type udpClientSession struct {
 	client   N.PacketConn
 	clientID int64
 
+	// mu serializes socket creation against close. The sockets themselves are
+	// kept in an atomic array so the hot send path reads them without taking
+	// the mutex (index 0 = IPv4, 1 = IPv6).
 	mu      sync.Mutex
-	sockets map[bool]*net.UDPConn // keyed by isIPv4
+	sockets [2]atomic.Pointer[net.UDPConn]
 	allowed *destinationSet
 	closed  bool
 	wg      sync.WaitGroup
@@ -213,7 +219,6 @@ func newUDPClientSession(ctx context.Context, m *Manager, client N.PacketConn, c
 		m:        m,
 		client:   client,
 		clientID: clientID,
-		sockets:  make(map[bool]*net.UDPConn),
 		allowed:  newDestinationSet(maxDestinations),
 	}
 }
@@ -228,13 +233,25 @@ func (s *udpClientSession) send(target netip.AddrPort, payload []byte) error {
 	return err
 }
 
+// socketIndex maps the address family to the atomic socket slot.
+func socketIndex(ipv4 bool) int {
+	if ipv4 {
+		return 0
+	}
+	return 1
+}
+
 func (s *udpClientSession) socket(ipv4 bool) (*net.UDPConn, error) {
+	index := socketIndex(ipv4)
+	if conn := s.sockets[index].Load(); conn != nil {
+		return conn, nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return nil, net.ErrClosed
 	}
-	if conn := s.sockets[ipv4]; conn != nil {
+	if conn := s.sockets[index].Load(); conn != nil {
 		return conn, nil
 	}
 	network := "udp6"
@@ -247,7 +264,7 @@ func (s *udpClientSession) socket(ipv4 bool) (*net.UDPConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.sockets[ipv4] = conn
+	s.sockets[index].Store(conn)
 	s.wg.Add(1)
 	go s.readLoop(conn)
 	return conn, nil
@@ -288,10 +305,11 @@ func (s *udpClientSession) close() {
 	}
 	s.closed = true
 	conns := make([]*net.UDPConn, 0, len(s.sockets))
-	for _, conn := range s.sockets {
-		conns = append(conns, conn)
+	for i := range s.sockets {
+		if conn := s.sockets[i].Swap(nil); conn != nil {
+			conns = append(conns, conn)
+		}
 	}
-	s.sockets = make(map[bool]*net.UDPConn)
 	s.mu.Unlock()
 	for _, conn := range conns {
 		conn.Close()
@@ -330,6 +348,16 @@ func packetWithHeadroom(payload []byte) *buf.Buffer {
 	return buffer
 }
 
+// udpDestination converts a Socksaddr into a dialable netip.AddrPort. Domain
+// names and invalid addresses report false and take the slow path.
+func udpDestination(destination M.Socksaddr) (netip.AddrPort, bool) {
+	destination = destination.Unwrap()
+	if !destination.Addr.IsValid() || destination.Port == 0 {
+		return netip.AddrPort{}, false
+	}
+	return netip.AddrPortFrom(destination.Addr, destination.Port), true
+}
+
 // destinationSet remembers remote endpoints.
 type destinationSet struct {
 	mu   sync.RWMutex
@@ -342,6 +370,14 @@ func newDestinationSet(max int) *destinationSet {
 }
 
 func (d *destinationSet) add(ap netip.AddrPort) {
+	// Already-seen destinations are the common case; answer them with a read
+	// lock instead of taking the write lock for every packet.
+	d.mu.RLock()
+	_, seen := d.seen[ap]
+	d.mu.RUnlock()
+	if seen {
+		return
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if _, ok := d.seen[ap]; ok {

@@ -179,34 +179,33 @@ func (u *usageManager) remove(clientID int64) {
 	u.accounts.Delete(clientID)
 }
 
-func (u *usageManager) ipLimit(clientID int64) int {
-	if v, ok := u.accounts.Load(clientID); ok {
-		a := v.(*account)
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		return a.ipLimit
-	}
-	return 0
-}
-
-func (u *usageManager) checkActive(clientID int64, now time.Time) error {
+// authorize checks whether a client may serve traffic and returns its IP limit.
+// It reads the policy under one account lock, so a new connection no longer
+// pays for a separate checkActive and ipLimit call.
+func (u *usageManager) authorize(clientID int64, now time.Time) (ipLimit int, err error) {
 	v, ok := u.accounts.Load(clientID)
 	if !ok {
-		return ErrUnknownClient
+		return 0, ErrUnknownClient
 	}
 	a := v.(*account)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !a.enabled {
-		return ErrClientDisabled
+		return 0, ErrClientDisabled
 	}
 	if a.expiresAt > 0 && now.Unix() >= a.expiresAt {
-		return ErrClientExpired
+		return 0, ErrClientExpired
 	}
 	if a.quota > 0 && a.up+a.down >= a.quota {
-		return ErrQuotaExceeded
+		return 0, ErrQuotaExceeded
 	}
-	return nil
+	return a.ipLimit, nil
+}
+
+// checkActive reports whether a client may serve traffic.
+func (u *usageManager) checkActive(clientID int64, now time.Time) error {
+	_, err := u.authorize(clientID, now)
+	return err
 }
 
 // add records traffic. It reports the client id when a quota was just

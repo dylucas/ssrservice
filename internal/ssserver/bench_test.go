@@ -1,8 +1,11 @@
 package ssserver
 
 import (
+	"net/netip"
 	"testing"
 	"time"
+
+	M "github.com/sagernet/sing/common/metadata"
 
 	"github.com/ydong/ssrservice/internal/model"
 )
@@ -93,5 +96,59 @@ func BenchmarkUsageAddNonUTC(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		u.add(1, true, 64)
+	}
+}
+
+// BenchmarkUsageAuthorize measures the per-connection access gate.
+func BenchmarkUsageAuthorize(b *testing.B) {
+	u, _ := newBenchUsageManager(1)
+	now := benchNow()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := u.authorize(1, now); err != nil {
+			b.Fatalf("authorize: %v", err)
+		}
+	}
+}
+
+// BenchmarkDestinationSetAdd measures the UDP destination whitelist fast path
+// for an address that was already seen.
+func BenchmarkDestinationSetAdd(b *testing.B) {
+	set := newDestinationSet(256)
+	target := netip.MustParseAddrPort("203.0.113.5:443")
+	set.add(target)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		set.add(target)
+	}
+}
+
+// BenchmarkUDPDestination measures the Socksaddr to netip.AddrPort fast path
+// used when writing a reply packet back to a client.
+func BenchmarkUDPDestination(b *testing.B) {
+	destination := M.SocksaddrFromNetIP(netip.MustParseAddrPort("[2001:db8::1]:8388"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok := udpDestination(destination); !ok {
+			b.Fatal("expected a dialable address")
+		}
+	}
+}
+
+// BenchmarkProtocolSignature measures the reload fingerprint. Comparing two
+// signatures is what lets a quota or note change skip the protocol rebuild.
+func BenchmarkProtocolSignature(b *testing.B) {
+	clients := make([]ClientSnapshot, 0, 100)
+	for i := 0; i < 100; i++ {
+		clients = append(clients, ClientSnapshot{ID: int64(i + 1), PSK: "psk", Enabled: true})
+	}
+	snap := testSnapshot(model.Method2022AES128GCM, "server-psk", clients...)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = protocolSignature(snap)
 	}
 }
