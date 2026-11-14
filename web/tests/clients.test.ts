@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { ClientSummary } from '../src/types'
-import { filterClients, lastPage, paginate } from '../src/utils/clients'
+import type { Client, ClientSummary } from '../src/types'
+import { filterClients, lastPage, paginate, toSummary } from '../src/utils/clients'
 
 function client(overrides: Partial<ClientSummary>): ClientSummary {
   return {
@@ -83,5 +83,30 @@ describe('lastPage', () => {
     expect(lastPage(20, 20)).toBe(1)
     expect(lastPage(21, 20)).toBe(2)
     expect(lastPage(40, 20)).toBe(2)
+  })
+})
+
+describe('toSummary', () => {
+  it('drops credentials and keeps the list fields', () => {
+    const full: Client = {
+      ...client({ id: 7, name: 'alice' }),
+      psk: 'secret-psk',
+      sub_token: 'secret-token',
+      last_reset_at: 123,
+      created_at: 456,
+      updated_at: 789,
+      link: 'ss://secret-link',
+      subscription_url: '/sub/secret-token',
+    }
+    const summary = toSummary(full)
+    expect(summary.id).toBe(7)
+    expect(summary.name).toBe('alice')
+    expect(summary.status).toBe('active')
+    for (const secret of ['psk', 'sub_token', 'link', 'subscription_url']) {
+      expect(summary).not.toHaveProperty(secret)
+    }
+    expect(summary).not.toHaveProperty('created_at')
+    expect(summary).not.toHaveProperty('updated_at')
+    expect(summary).not.toHaveProperty('last_reset_at')
   })
 })

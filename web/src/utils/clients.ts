@@ -1,4 +1,4 @@
-import type { ClientSummary } from '@/types'
+import type { Client, ClientSummary } from '@/types'
 
 export type ClientStatusFilter = 'all' | ClientSummary['status']
 
@@ -40,4 +40,35 @@ export function paginate<T>(items: T[], page: number, pageSize: number): T[] {
 export function lastPage(total: number, pageSize: number): number {
   if (pageSize <= 0) return 1
   return Math.max(1, Math.ceil(total / pageSize))
+}
+
+/**
+ * toSummary projects a single-client response onto the list shape.
+ *
+ * The list state must never hold credentials: the detail endpoint returns psk,
+ * sub_token and the share links, and spreading it into a row would keep those
+ * secrets in memory for no reason. Fields are copied explicitly so a new secret
+ * added to the detail type cannot leak into the list by accident.
+ */
+export function toSummary(client: Client): ClientSummary {
+  return {
+    id: client.id,
+    inbound_id: client.inbound_id,
+    name: client.name,
+    enabled: client.enabled,
+    quota_bytes: client.quota_bytes,
+    up_bytes: client.up_bytes,
+    down_bytes: client.down_bytes,
+    expires_at: client.expires_at,
+    ip_limit: client.ip_limit,
+    reset_policy: client.reset_policy,
+    reset_day: client.reset_day,
+    note: client.note,
+    status: client.status,
+    used_bytes: client.used_bytes,
+    remaining_bytes: client.remaining_bytes,
+    online_ips: client.online_ips,
+    inbound_remark: client.inbound_remark,
+    method: client.method,
+  }
 }

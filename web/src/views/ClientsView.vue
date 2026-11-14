@@ -105,7 +105,7 @@ import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { ClientSummary, Inbound } from '@/types'
 import { formatBytes, formatDate, percent, quotaLabel, statusMeta } from '@/utils/format'
-import { filterClients, lastPage, paginate } from '@/utils/clients'
+import { filterClients, lastPage, paginate, toSummary } from '@/utils/clients'
 import ClientForm from '@/components/ClientForm.vue'
 import ClientLinkDialog from '@/components/ClientLinkDialog.vue'
 
@@ -211,8 +211,14 @@ async function resetTraffic(row: ClientSummary) {
   }
   try {
     await api.resetClient(row.id)
+    // The reset clears the counters and can flip quota_exceeded back to active,
+    // so refresh just this row: the server recomputes the status.
+    const refreshed = toSummary(await api.client(row.id))
+    const index = clients.value.findIndex((item) => item.id === row.id)
+    if (index >= 0) {
+      clients.value[index] = refreshed
+    }
     ElMessage.success('流量已重置')
-    await load()
   } catch (error: any) {
     ElMessage.error(error?.message || '重置失败')
   }
@@ -221,8 +227,10 @@ async function resetTraffic(row: ClientSummary) {
 async function kick(row: ClientSummary) {
   try {
     await api.kickClient(row.id)
+    // Every session of the client is gone, so its online IP list is empty; no
+    // need to refetch the whole (potentially large) client list for that.
+    row.online_ips = []
     ElMessage.success('已断开该用户的连接')
-    await load()
   } catch (error: any) {
     ElMessage.error(error?.message || '操作失败')
   }
@@ -240,8 +248,9 @@ async function remove(row: ClientSummary) {
   }
   try {
     await api.deleteClient(row.id)
+    // Drop the row in place; totals and pagination derive from the array.
+    clients.value = clients.value.filter((item) => item.id !== row.id)
     ElMessage.success('已删除')
-    await load()
   } catch (error: any) {
     ElMessage.error(error?.message || '删除失败')
   }

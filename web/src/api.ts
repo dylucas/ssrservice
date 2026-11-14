@@ -1,5 +1,5 @@
 import { readRuntimeConfig } from './runtime-config'
-import type { ClientSummary } from './types'
+import type { Client, ClientSummary } from './types'
 
 const config = readRuntimeConfig()
 export const basePath = config.basePath && config.basePath !== '/' ? config.basePath.replace(/\/$/, '') : ''
@@ -83,6 +83,7 @@ export const api = {
       'GET',
       inboundId ? `/clients?inbound_id=${inboundId}` : '/clients',
     ),
+  client: (id: number) => request<Client>('GET', `/clients/${id}`),
   clientsOf: (inboundId: number) =>
     request<ListResponse<ClientSummary>>('GET', `/inbounds/${inboundId}/clients`),
   createClient: (inboundId: number, input: unknown) =>
