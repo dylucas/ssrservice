@@ -8,8 +8,14 @@ import (
 	"strings"
 )
 
-// New creates a slog logger. The returned LevelVar can be used to change the
-// level at runtime.
+// New creates a slog logger and installs it as the process default.
+//
+// Installing it matters because a few packages (the database opener, which has
+// no logger of its own) report through slog.Default(). Without this, those lines
+// ignore the configured level and format and reach stderr as text even in a
+// JSON-logging deployment.
+//
+// The returned LevelVar can be used to change the level at runtime.
 func New(level, format string) (*slog.Logger, *slog.LevelVar, error) {
 	levelVar := &slog.LevelVar{}
 	parsed, err := parseLevel(level)
@@ -30,7 +36,9 @@ func New(level, format string) (*slog.Logger, *slog.LevelVar, error) {
 	default:
 		return nil, nil, fmt.Errorf("unsupported log format %q", format)
 	}
-	return slog.New(handler), levelVar, nil
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+	return logger, levelVar, nil
 }
 
 func parseLevel(level string) (slog.Level, error) {

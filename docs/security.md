@@ -95,7 +95,7 @@ timedatectl status          # 确认 System clock synchronized: yes
 - 数据库包含：管理员密码哈希、会话签名密钥、入站服务器 PSK、用户 PSK、订阅 token、流量记录。
 - `traffic_daily` 保存每用户每日明细，`traffic_daily_totals` 保存按天汇总（仅两个字节计数，不含任何标识或凭据），两者在同一事务内更新；`RebuildDailyTotals` 可从明细重建汇总。
 - `audit_logs` 保存面板操作审计：时间、操作人、动作、对象、摘要与来源 IP，不含任何凭据。
-- 数据库文件权限为 `0600`，目录 `0700`。程序在打开数据库时会把文件、`-wal` 与 `-shm` 收紧到 `0600`，并在创建任何文件前把 umask 设为 `0077`；`deploy/sspanel.service` 同样带 `UMask=0077`，`install.sh` 创建的目录为 `0700`。`chmod` 失败（只读挂载、属主不符）只记录警告，不会阻止启动。
+- 数据库文件权限为 `0600`，数据目录 `0700`。程序在打开数据库时会把文件、`-wal` 与 `-shm` 收紧到 `0600`，创建数据目录时使用 `0700`（已存在的目录保持原样），并在创建任何文件前把 umask 设为 `0077`；`deploy/sspanel.service` 同样带 `UMask=0077`，`install.sh` 创建的目录为 `0700`。若目录是手工创建的且更宽松，请自行 `chmod 700`。`chmod` 失败（只读挂载、属主不符）只记录警告，不会阻止启动。
 - 备份文件等同敏感数据，请加密存储并限制访问。
 - 订阅 token 泄露后，在用户列表点「链接」→「重置订阅」即可作废旧链接（对应 `POST /clients/:id/token`，审计动作 `client.token`）。
 
