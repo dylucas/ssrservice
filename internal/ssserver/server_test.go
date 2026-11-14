@@ -893,3 +893,50 @@ func TestUDPSessionManyPackets(t *testing.T) {
 		return up >= expectedBytes
 	})
 }
+
+// TestApplyDisabledStopsListener verifies that applying a disabled snapshot
+// through the internal apply path (used by Load) closes the listener and the
+// live sessions, even when the listen address did not change.
+func TestApplyDisabledStopsListener(t *testing.T) {
+	env := newTestEnv(t)
+	serverPSK := newTestKey(t, 16)
+	client := model.Client{Name: "off", PSK: newTestKey(t, 16), Enabled: true, SubToken: "tok"}
+	in := env.createInbound(model.Method2022AES128GCM, serverPSK, client)
+	clients, _ := env.store.ListClients(in.ID)
+
+	conn, err := dialSSWithPSK(env.addr(), in.Method, serverPSK, clients[0].PSK, env.echoV4.addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	echoRoundTrip(t, conn, "before-disable")
+
+	// Same address, now disabled: applyLocked must tear the listener down.
+	disabled := in
+	disabled.Enabled = false
+	if err := env.mgr.apply(snapshotOf(disabled, clients)); err != nil {
+		t.Fatalf("apply disabled: %v", err)
+	}
+
+	// The port must be free again right away.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: in.Port})
+		if err == nil {
+			ln.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("port %d still bound after disabling: %v", in.Port, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The existing session must have been closed, so a new dial must fail.
+	if newConn, err := dialSSWithPSK(env.addr(), in.Method, serverPSK, clients[0].PSK, env.echoV4.addr); err == nil {
+		newConn.Close()
+		if _, rerr := newConn.Read(make([]byte, 1)); rerr == nil {
+			t.Fatal("disabled inbound still served a new connection")
+		}
+	}
+}

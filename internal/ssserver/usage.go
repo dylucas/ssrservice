@@ -180,8 +180,8 @@ func (u *usageManager) remove(clientID int64) {
 }
 
 // authorize checks whether a client may serve traffic and returns its IP limit.
-// It reads the policy under one account lock, so a new connection no longer
-// pays for a separate checkActive and ipLimit call.
+// It reads the policy under one account lock, so a new connection resolves its
+// access decision and IP limit together instead of taking the lock twice.
 func (u *usageManager) authorize(clientID int64, now time.Time) (ipLimit int, err error) {
 	v, ok := u.accounts.Load(clientID)
 	if !ok {
@@ -200,12 +200,6 @@ func (u *usageManager) authorize(clientID int64, now time.Time) (ipLimit int, er
 		return 0, ErrQuotaExceeded
 	}
 	return a.ipLimit, nil
-}
-
-// checkActive reports whether a client may serve traffic.
-func (u *usageManager) checkActive(clientID int64, now time.Time) error {
-	_, err := u.authorize(clientID, now)
-	return err
 }
 
 // add records traffic. It reports the client id when a quota was just
@@ -236,7 +230,10 @@ func (u *usageManager) add(clientID int64, up bool, n int64) {
 	}
 	a.dirty.Store(true)
 	justExceeded := false
-	if a.quota > 0 && a.up+a.down > a.quota && !a.exceeded {
+	// >= matches the gate in authorize and in expiredClients: once the quota is
+	// fully used the client is no longer allowed to serve traffic, so the kick
+	// must fire without waiting for the next byte or the enforce tick.
+	if a.quota > 0 && a.up+a.down >= a.quota && !a.exceeded {
 		a.exceeded = true
 		justExceeded = true
 	}

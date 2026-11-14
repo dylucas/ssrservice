@@ -317,7 +317,7 @@ func TestUsageQuotaCallbackFiresOnce(t *testing.T) {
 	if len(ids) != 1 || ids[0] != 9 {
 		t.Fatalf("expected a single quota callback for client 9, got %v", ids)
 	}
-	if err := u.checkActive(9, start); !errors.Is(err, ErrQuotaExceeded) {
+	if _, err := u.authorize(9, start); !errors.Is(err, ErrQuotaExceeded) {
 		t.Fatalf("expected quota error, got %v", err)
 	}
 }
@@ -431,5 +431,41 @@ func TestUsageAuthorize(t *testing.T) {
 	u.add(4, true, 10)
 	if _, err := u.authorize(4, start); !errors.Is(err, ErrQuotaExceeded) {
 		t.Fatalf("quota exceeded client: %v", err)
+	}
+}
+
+// TestUsageQuotaKickAtExactQuota verifies the quota boundary is consistent: a
+// client whose traffic reaches the quota exactly is kicked immediately instead
+// of after the next byte or the next enforce tick.
+func TestUsageQuotaKickAtExactQuota(t *testing.T) {
+	var (
+		mu  sync.Mutex
+		ids []int64
+	)
+	start := time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC)
+	u := newUsageManager(nil, time.UTC, func(id int64) {
+		mu.Lock()
+		ids = append(ids, id)
+		mu.Unlock()
+	})
+	u.now = func() time.Time { return start }
+	u.ensure(ClientSnapshot{ID: 5, Enabled: true, QuotaBytes: 100}, 0, 0)
+
+	u.add(5, true, 100) // exactly the quota
+	mu.Lock()
+	kicks := len(ids)
+	mu.Unlock()
+	if kicks != 1 {
+		t.Fatalf("expected one kick when the quota is exactly used, got %d", kicks)
+	}
+	if _, err := u.authorize(5, start); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("expected quota error at exact quota, got %v", err)
+	}
+	// The kick must not fire twice.
+	u.add(5, true, 1)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ids) != 1 {
+		t.Fatalf("kick fired again: %v", ids)
 	}
 }

@@ -217,15 +217,12 @@ func (m *Manager) SeedUsage(clients []model.Client) {
 }
 
 // ApplyInbound creates, updates or removes an inbound. Existing sessions are
-// kept alive; new connections use the new configuration.
+// kept alive; new connections use the new configuration. A disabled inbound is
+// stopped by applyLocked itself, including its listener and live sessions.
 func (m *Manager) ApplyInbound(in model.Inbound, clients []model.Client) error {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
-	err := m.applyLocked(snapshotOf(in, clients))
-	if err == nil && !in.Enabled {
-		m.stopInboundLocked(in.ID)
-	}
-	return err
+	return m.applyLocked(snapshotOf(in, clients))
 }
 
 // apply applies a new inbound configuration. It serializes with every other
@@ -246,16 +243,9 @@ func (m *Manager) applyLocked(snap InboundSnapshot) error {
 	}
 	m.mu.Unlock()
 
-	if old != nil {
-		current := old.view()
-		if current.Listen == snap.Listen && current.Port == snap.Port && old.tcpListener != nil {
-			if !snap.Enabled {
-				return nil
-			}
-			return m.reconfigure(old, snap)
-		}
-	}
-
+	// A disabled inbound is handled first: it must stop listening and drop its
+	// sessions even when the listen address did not change, so no caller can
+	// leave a disabled inbound serving traffic.
 	if !snap.Enabled {
 		idle := &inboundRuntime{}
 		idle.setSnapshot(snap)
@@ -265,7 +255,15 @@ func (m *Manager) applyLocked(snap InboundSnapshot) error {
 		if old != nil {
 			old.close()
 		}
+		m.registry.closeInbound(snap.ID)
 		return nil
+	}
+
+	if old != nil {
+		current := old.view()
+		if current.Listen == snap.Listen && current.Port == snap.Port && old.tcpListener != nil {
+			return m.reconfigure(old, snap)
+		}
 	}
 
 	newRT, err := m.buildRuntime(snap)
@@ -506,24 +504,6 @@ func (m *Manager) serveUDP(ctx context.Context, rt *inboundRuntime, conn *net.UD
 				"source", metadata.Source.String(), "error", err)
 		}
 	}
-}
-
-func (m *Manager) stopInbound(id int64) {
-	m.applyMu.Lock()
-	m.stopInboundLocked(id)
-	m.applyMu.Unlock()
-}
-
-// stopInboundLocked is stopInbound; the caller must hold applyMu.
-func (m *Manager) stopInboundLocked(id int64) {
-	m.mu.Lock()
-	rt := m.inbounds[id]
-	m.mu.Unlock()
-	if rt == nil {
-		return
-	}
-	rt.close()
-	m.registry.closeInbound(id)
 }
 
 // RemoveInbound stops an inbound and forgets it.
