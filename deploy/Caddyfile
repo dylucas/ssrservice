@@ -1,0 +1,37 @@
+# Caddy reverse proxy for sspanel.
+# Set a real domain, then run: caddy run --config deploy/Caddyfile
+#
+# The panel trusts X-Forwarded-For only for proxies listed in
+# panel.trusted_proxies; add 127.0.0.1 there when fronting with Caddy on the
+# same host.
+
+panel.example.com {
+	encode gzip
+
+	# Security headers are also set by the app; these add HSTS at the edge.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:2096 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	log {
+		output file /var/log/caddy/sspanel.log
+		level INFO
+	}
+}
+
+# 子路径部署示例（同时把 panel.base_path 设为 /panel）：
+# 注意用 handle 而不是 handle_path：handle_path 会剥掉 /panel 前缀，
+# 而后端需要看到完整路径才能区分 /panel/api/v1 与静态资源。
+# panel.example.com {
+# 	handle /panel/* {
+# 		reverse_proxy 127.0.0.1:2096
+# 	}
+# }

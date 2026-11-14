@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# End-to-end smoke test for sspanel: boots a throwaway instance, drives the
+# panel API, and verifies a real Shadowsocks round trip with scripts/ssprobe.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="$ROOT/bin/sspanel"
+PROBE="$ROOT/bin/ssprobe"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sspanel-smoke.XXXXXX")"
+PANEL_PORT="${PANEL_PORT:-12096}"
+SS_PORT="${SS_PORT:-18388}"
+ADMIN_PASSWORD="smoke-password-123"
+COOKIE_JAR="$WORK/cookies.txt"
+
+cleanup() {
+  if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+log() { printf '\033[1;34m[smoke]\033[0m %s\n' "$*"; }
+fail() { printf '\033[1;31m[smoke] FAIL:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[[ -x "$BIN" ]] || fail "missing $BIN (run make build)"
+
+cat >"$WORK/config.yaml" <<EOF
+panel:
+  listen: 127.0.0.1
+  port: $PANEL_PORT
+  session_ttl: 1h
+database:
+  path: $WORK/sspanel.db
+security:
+  allow_private_targets: true
+log:
+  level: warn
+  format: text
+EOF
+
+log "building probe"
+(cd "$ROOT" && CGO_ENABLED=0 go build -o "$PROBE" ./scripts/ssprobe)
+
+log "starting server on panel :$PANEL_PORT"
+SSPANEL_ADMIN_PASSWORD="$ADMIN_PASSWORD" "$BIN" run --config "$WORK/config.yaml" >"$WORK/server.log" 2>&1 &
+SERVER_PID=$!
+for _ in $(seq 1 100); do
+  if curl -fsS "http://127.0.0.1:$PANEL_PORT/healthz" >/dev/null 2>&1; then break; fi
+  sleep 0.1
+done
+curl -fsS "http://127.0.0.1:$PANEL_PORT/healthz" >/dev/null || { cat "$WORK/server.log"; fail "panel did not become healthy"; }
+
+api() {
+  local method="$1" path="$2" body="${3:-}"
+  if [[ -n "$body" ]]; then
+    curl -fsS -b "$COOKIE_JAR" -c "$COOKIE_JAR" -X "$method" \
+      -H 'Content-Type: application/json' -d "$body" "http://127.0.0.1:$PANEL_PORT$path"
+  else
+    curl -fsS -b "$COOKIE_JAR" -c "$COOKIE_JAR" -X "$method" "http://127.0.0.1:$PANEL_PORT$path"
+  fi
+}
+
+log "logging in"
+api POST /api/v1/auth/login "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" >/dev/null
+
+log "creating inbound on :$SS_PORT"
+INBOUND=$(api POST /api/v1/inbounds "{\"remark\":\"smoke\",\"listen\":\"127.0.0.1\",\"port\":$SS_PORT,\"method\":\"2022-blake3-aes-128-gcm\",\"udp_enabled\":true,\"enabled\":true}")
+INBOUND_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$INBOUND")
+SERVER_PSK=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["server_psk"])' <<<"$INBOUND")
+
+log "creating client"
+CLIENT=$(api POST "/api/v1/inbounds/$INBOUND_ID/clients" '{"name":"smoke-user","enabled":true,"quota_bytes":0,"ip_limit":0}')
+CLIENT_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$CLIENT")
+CLIENT_PSK=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["psk"])' <<<"$CLIENT")
+
+log "checking share link and subscription"
+LINK_JSON=$(api GET "/api/v1/clients/$CLIENT_ID/link")
+python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["link"].startswith("ss://"), d; assert d["subscription_url"].startswith("/sub/"), d' <<<"$LINK_JSON"
+SUB_PATH=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["subscription_url"])' <<<"$LINK_JSON")
+curl -fsS "http://127.0.0.1:$PANEL_PORT$SUB_PATH" >/dev/null
+
+log "verifying TCP round trip through the proxy"
+"$PROBE" -server "127.0.0.1:$SS_PORT" -method 2022-blake3-aes-128-gcm \
+  -server-psk "$SERVER_PSK" -client-psk "$CLIENT_PSK" -target echo >/dev/null
+
+log "verifying UDP round trip through the proxy"
+"$PROBE" -server "127.0.0.1:$SS_PORT" -method 2022-blake3-aes-128-gcm \
+  -server-psk "$SERVER_PSK" -client-psk "$CLIENT_PSK" -target udp-echo >/dev/null
+
+log "checking traffic accounting"
+sleep 1
+CLIENTS_JSON=$(api GET "/api/v1/clients")
+CLIENTS_JSON="$CLIENTS_JSON" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["CLIENTS_JSON"])
+client = payload["items"][0]
+assert client["used_bytes"] > 0, client
+assert client["online_ips"] is not None
+print(f"counted {client['used_bytes']} bytes for {client['name']}")
+PY
+
+log "checking dashboard"
+api GET /api/v1/dashboard >/dev/null
+
+log "checking frontend"
+curl -fsS "http://127.0.0.1:$PANEL_PORT/" | grep -q 'id="sspanel-config"' || fail "frontend config not injected"
+curl -fsS "http://127.0.0.1:$PANEL_PORT/settings" | grep -q '<div id="app">' || fail "SPA fallback broken"
+
+log "stopping server"
+kill "$SERVER_PID"
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+grep -q 'stopped' "$WORK/server.log" || true
+
+log "PASS"

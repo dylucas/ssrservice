@@ -1,0 +1,25 @@
+services:
+  sspanel:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: sspanel:latest
+    container_name: sspanel
+    restart: unless-stopped
+    # 面板端口默认只绑定回环；远程访问请用 SSH 隧道或反代。
+    ports:
+      - "127.0.0.1:2096:2096"
+    volumes:
+      - sspanel-data:/var/lib/sspanel
+    environment:
+      # 首次启动的管理员密码；不设置则随机生成并打印到容器日志。
+      # SSPANEL_ADMIN_PASSWORD: "change-me-please"
+      TZ: Asia/Shanghai
+    # Shadowsocks 入站在面板中创建，端口需要在此追加映射，例如：
+    # - "8388:8388/tcp"
+    # - "8388:8388/udp"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  sspanel-data:

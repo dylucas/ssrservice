@@ -1,0 +1,24 @@
+panel:
+  listen: 0.0.0.0
+  port: 2096
+  base_path: /
+  session_ttl: 24h
+
+database:
+  path: /var/lib/sspanel/sspanel.db
+
+security:
+  allow_private_targets: false
+  block_metadata: true
+  login_rate_limit: 5
+
+traffic:
+  flush_interval: 10s
+  enforce_interval: 30s
+  reset_day: 1
+  timezone: Local
+  udp_timeout: 60s
+
+log:
+  level: info
+  format: text

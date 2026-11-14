@@ -1,0 +1,37 @@
+panel:
+  # 默认只监听回环地址。远程管理请使用 SSH 隧道或反向代理。
+  listen: 127.0.0.1
+  port: 2096
+  # 反向代理到子路径时设置为 /panel 之类；根路径保持 /
+  base_path: /
+  # 启用 HTTPS 时同时填写证书与私钥；留空则使用 HTTP
+  tls_cert: ""
+  tls_key: ""
+  session_ttl: 24h
+  # 反向代理地址（IP 或 CIDR）。留空表示不信任任何 X-Forwarded-* 头；
+  # 只有来自这些地址的请求才会被用于真实客户端 IP、登录限流与 Secure Cookie 判定。
+  trusted_proxies: []
+
+database:
+  path: ./data/sspanel.db
+
+security:
+  # 是否允许代理访问内网/回环地址（云元数据地址始终拒绝）
+  allow_private_targets: false
+  block_metadata: true
+  # 每个 IP 每分钟允许的登录失败次数
+  login_rate_limit: 5
+
+traffic:
+  # 内存计数落库间隔；崩溃时最多丢失该时长的流量
+  flush_interval: 10s
+  # 到期/超配额会话检查间隔
+  enforce_interval: 30s
+  # 全局月度重置日，0 表示不自动重置
+  reset_day: 1
+  timezone: Local
+  udp_timeout: 60s
+
+log:
+  level: info
+  format: text

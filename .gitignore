@@ -1,0 +1,23 @@
+# Build output
+bin/
+dist/
+*.test
+
+# Local runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+config.yaml
+
+# Frontend
+web/node_modules/
+web/dist/
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+
+# Local caches and editor files
+.cache/
+.DS_Store
+.idea/
+.vscode/

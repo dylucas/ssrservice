@@ -1,0 +1,36 @@
+[Unit]
+Description=sspanel - Shadowsocks server with web panel
+Documentation=https://github.com/ydong/ssrservice
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sspanel
+Group=sspanel
+ExecStart=/usr/local/bin/sspanel run --config /etc/sspanel/config.yaml
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=1048576
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/sspanel
+StateDirectory=sspanel
+RuntimeDirectory=sspanel
+
+[Install]
+WantedBy=multi-user.target
