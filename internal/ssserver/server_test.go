@@ -940,3 +940,43 @@ func TestApplyDisabledStopsListener(t *testing.T) {
 		}
 	}
 }
+
+// TestQuotaExceededFlushesImmediately verifies that crossing the quota persists
+// the counters right away instead of waiting for the next flush tick. The test
+// environment sets FlushInterval to an hour, so only the on-demand flush can
+// write the numbers.
+func TestQuotaExceededFlushesImmediately(t *testing.T) {
+	env := newTestEnv(t)
+	env.mgr.Start()
+	serverPSK := newTestKey(t, 16)
+	client := model.Client{Name: "quota", PSK: newTestKey(t, 16), Enabled: true, SubToken: "tok",
+		QuotaBytes: 8}
+	in := env.createInbound(model.Method2022AES128GCM, serverPSK, client)
+	clients, _ := env.store.ListClients(in.ID)
+	client = clients[0]
+
+	conn, err := dialSSWithPSK(env.addr(), in.Method, serverPSK, client.PSK, env.echoV4.addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// Push past the 8 byte quota; the write side counts every byte sent.
+	if _, err := conn.Write([]byte("overflowing-quota")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, _ = conn.Read(make([]byte, 32))
+
+	// No explicit Flush here: the quota violation must have queued one.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		persisted, err := env.store.ClientByID(client.ID)
+		if err == nil && persisted.UpBytes >= 8 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("counters were not flushed on quota violation: %+v (err=%v)", persisted, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

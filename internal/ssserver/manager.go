@@ -133,6 +133,11 @@ type Manager struct {
 	// panel requests cannot bind the same port or interleave listener swaps.
 	applyMu sync.Mutex
 
+	// flushReq asks the flush loop to persist the counters now instead of on the
+	// next tick. It is buffered with capacity one: a burst of quota violations
+	// coalesces into a single immediate flush.
+	flushReq chan struct{}
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	stopWG   sync.WaitGroup
@@ -162,10 +167,11 @@ func New(opts Options) *Manager {
 		opts:      opts,
 		registry:  newRegistry(),
 		inbounds:  make(map[int64]*inboundRuntime),
+		flushReq:  make(chan struct{}, 1),
 		stop:      make(chan struct{}),
 		startedAt: time.Now(),
 	}
-	m.usage = newUsageManager(opts.Sink, opts.Location, m.closeClient)
+	m.usage = newUsageManager(opts.Sink, opts.Location, m.onClientExceeded)
 	m.SetPolicy(opts.Policy)
 	return m
 }
@@ -520,19 +526,25 @@ func (m *Manager) RemoveInbound(id int64) {
 	m.registry.closeInbound(id)
 }
 
-// flushLoop periodically persists traffic counters.
+// flushLoop periodically persists traffic counters and also serves the
+// on-demand flush requests queued by onClientExceeded.
 func (m *Manager) flushLoop() {
 	defer m.stopWG.Done()
 	ticker := time.NewTicker(m.opts.FlushInterval)
 	defer ticker.Stop()
+	flush := func() {
+		if err := m.usage.flush(); err != nil {
+			m.logger.Warn("flush usage failed", "error", err)
+		}
+	}
 	for {
 		select {
 		case <-m.stop:
 			return
 		case <-ticker.C:
-			if err := m.usage.flush(); err != nil {
-				m.logger.Warn("flush usage failed", "error", err)
-			}
+			flush()
+		case <-m.flushReq:
+			flush()
 		}
 	}
 }
@@ -557,6 +569,19 @@ func (m *Manager) enforceLoop() {
 
 func (m *Manager) closeClient(clientID int64) {
 	m.registry.closeClient(clientID)
+}
+
+// onClientExceeded runs when a client crosses its quota: it disconnects every
+// session of that client and asks the flush loop to persist the counters now,
+// so the panel and the database see the final numbers immediately instead of
+// waiting for the next flush tick. The request is dropped while a flush is
+// already pending, and it never blocks the data plane.
+func (m *Manager) onClientExceeded(clientID int64) {
+	m.registry.closeClient(clientID)
+	select {
+	case m.flushReq <- struct{}{}:
+	default:
+	}
 }
 
 // CloseClient disconnects all sessions of a client.
