@@ -43,6 +43,15 @@ describe('api session handlers', () => {
     expect(text).toMatch(/!isLoginRequest\(path\)/)
   })
 
+  it('exempts the second login step from the session-expiry redirect too', () => {
+    // POST /auth/login/totp answers 401 for a wrong code or an expired
+    // challenge. Redirecting would unmount the login view and drop the
+    // challenge, so the operator could not simply retype the code.
+    const text = read('api.ts')
+    expect(text).toMatch(/path === '\/auth\/login'/)
+    expect(text).toMatch(/path === '\/auth\/login\/totp'/)
+  })
+
   it('registers both handlers in main.ts and dedupes the redirects', () => {
     const text = read('main.ts')
     expect(text).toMatch(/setUnauthorizedHandler\(/)
@@ -69,6 +78,71 @@ describe('auth store session handling', () => {
     expect(text).toMatch(/error instanceof ApiError && error\.status === 401/)
     expect(text).toMatch(/this\.admin = null/)
     expect(text).toMatch(/this\.checked = true/)
+  })
+})
+
+describe('TOTP login flow', () => {
+  it('keeps the challenge instead of writing an admin on the password step', () => {
+    // A 2FA login answers with {totp_required, challenge}; writing this.admin
+    // from that response would leave the guard believing the session exists
+    // before the second factor was verified.
+    const text = read('stores/auth.ts')
+    expect(text).toMatch(/totp_required/)
+    expect(text).toMatch(/async loginTOTP\(challenge: string, code: string\)/)
+    expect(text).toMatch(/async login\(username: string, password: string\): Promise<LoginResult>/)
+    expect(text).toMatch(/if \(isTOTPChallenge\(result\)\) return result/)
+    expect(text).toMatch(/setTOTPEnabled\(enabled: boolean\)/)
+  })
+
+  it('offers a second step with a way back to the password form', () => {
+    const text = read('views/LoginView.vue')
+    expect(text).toMatch(/totp_required/)
+    expect(text).toMatch(/step === 'password'/)
+    expect(text).toMatch(/返回上一步/)
+    expect(text).toMatch(/totp_challenge_expired/)
+    expect(text).toMatch(/totp_challenge_invalid/)
+    expect(text).toMatch(/invalid_totp/)
+  })
+
+  it('keeps the landing redirect unchanged for both login steps', () => {
+    // must_change_password and ?redirect= live in one helper so finishing the
+    // 2FA step cannot land somewhere different from the password step.
+    const text = read('views/LoginView.vue')
+    expect(text).toMatch(/async function finishLogin\(admin: Admin\)/)
+    expect(text).toMatch(/must_change_password/)
+    expect(text).toMatch(/query\.redirect/)
+  })
+
+  it('wires the settings security card to the store and both dialogs', () => {
+    const text = read('views/SettingsView.vue')
+    expect(text).toMatch(/setTOTPEnabled\(true\)/)
+    // The verify dialog reports the resulting state (false after disable), so
+    // the card mirrors it without a second GET /auth/me.
+    expect(text).toMatch(/setTOTPEnabled\(enabled\)/)
+    expect(text).toMatch(/TOTPSetupDialog/)
+    expect(text).toMatch(/TOTPVerifyDialog/)
+    expect(text).toMatch(/两步验证/)
+    expect(text).toMatch(/totp_enabled/)
+  })
+
+  it('lets the setup dialog emit enabled on close, after the codes were shown', () => {
+    const text = read('components/TOTPSetupDialog.vue')
+    expect(text).toMatch(/\(e: 'enabled'\): void/)
+    expect(text).toMatch(/@closed="onClosed"/)
+    expect(text).toMatch(/emit\('enabled'\)/)
+    expect(text).toMatch(/仅显示这一次|仅显示一次/)
+    // The recovery codes are downloaded through a Blob, not copied from the DOM.
+    expect(text).toMatch(/new Blob\(/)
+    expect(text).toMatch(/download = 'sspanel-recovery-codes\.txt'/)
+  })
+
+  it('confirms before disabling two-factor auth', () => {
+    const text = read('components/TOTPVerifyDialog.vue')
+    expect(text).toMatch(/ElMessageBox\.confirm/)
+    expect(text).toMatch(/关闭后登录不再需要验证码/)
+    expect(text).toMatch(/\(e: 'done', enabled: boolean\): void/)
+    expect(text).toMatch(/api\.totpDisable/)
+    expect(text).toMatch(/api\.totpRecoveryCodes/)
   })
 })
 

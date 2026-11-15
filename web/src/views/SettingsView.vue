@@ -125,6 +125,23 @@
         <el-button @click="passwordVisible = true">修改管理员密码</el-button>
       </div>
 
+      <!-- Two-factor auth. Kept visible in the forced-change state as well: the
+           forced flag only gates the settings form, not the security cards. -->
+      <div class="card">
+        <div class="card-head">
+          <h3 class="card-title">两步验证（TOTP）</h3>
+          <el-tag :type="totpEnabled ? 'success' : 'info'" size="small">
+            {{ totpEnabled ? '已启用' : '未启用' }}
+          </el-tag>
+        </div>
+        <p class="muted">登录时额外输入一次性验证码；恢复码仅显示一次，请离线保存。</p>
+        <div v-if="totpEnabled" class="settings-actions">
+          <el-button @click="openTOTPVerify('recovery')">重新生成恢复码</el-button>
+          <el-button type="danger" plain @click="openTOTPVerify('disable')">关闭两步验证</el-button>
+        </div>
+        <el-button v-else @click="totpSetupVisible = true">启用</el-button>
+      </div>
+
       <div v-if="!forced" class="card">
         <div class="card-head">
           <h3 class="card-title">数据备份</h3>
@@ -140,6 +157,12 @@
     </div>
 
     <PasswordDialog v-model="passwordVisible" @saved="onPasswordSaved" />
+    <TOTPSetupDialog v-model="totpSetupVisible" @enabled="onTOTPEnabled" />
+    <TOTPVerifyDialog
+      v-model="totpVerifyVisible"
+      :action="totpVerifyAction"
+      @done="onTOTPDone"
+    />
   </div>
 </template>
 
@@ -156,6 +179,8 @@ import type { Settings } from '@/types'
 import { describeEndpoint, endpointSource, isSettingsDirty } from '@/utils/settings'
 import PageHeader from '@/components/PageHeader.vue'
 import PasswordDialog from '@/components/PasswordDialog.vue'
+import TOTPSetupDialog from '@/components/TOTPSetupDialog.vue'
+import TOTPVerifyDialog from '@/components/TOTPVerifyDialog.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -167,6 +192,10 @@ const loading = ref(false)
 const loaded = ref(false)
 const saving = ref(false)
 const passwordVisible = ref(false)
+const totpSetupVisible = ref(false)
+const totpVerifyVisible = ref(false)
+const totpVerifyAction = ref<'disable' | 'recovery'>('disable')
+const totpEnabled = computed(() => auth.admin?.totp_enabled === true)
 
 // must_change_password is the authoritative state. The query flag only covers
 // the moment right after login, before the admin object is filled; once the
@@ -269,6 +298,22 @@ async function onPasswordSaved() {
 
 function downloadBackup() {
   window.location.href = api.backupURL()
+}
+
+/** openTOTPVerify picks the re-auth action before the dialog opens. */
+function openTOTPVerify(action: 'disable' | 'recovery') {
+  totpVerifyAction.value = action
+  totpVerifyVisible.value = true
+}
+
+/** onTOTPEnabled mirrors the setup dialog's success into the auth store. */
+function onTOTPEnabled() {
+  auth.setTOTPEnabled(true)
+}
+
+/** onTOTPDone mirrors a disable/recovery result into the auth store. */
+function onTOTPDone(enabled: boolean) {
+  auth.setTOTPEnabled(enabled)
 }
 
 // The password can also be changed from the header menu while this page is

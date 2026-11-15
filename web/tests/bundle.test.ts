@@ -69,10 +69,18 @@ describe('chart dependency', () => {
 
 describe('heavyweight optional modules', () => {
   it('loads the QR encoder on demand', () => {
-    // 26 kB of encoder for one dialog should not ride along in the route chunk
-    // that the client list page downloads.
-    const text = readFileSync(join(srcDir, 'components', 'ClientLinkDialog.vue'), 'utf8')
-    expect(text, 'qrcode must be a dynamic import').toMatch(/import\(['"]qrcode['"]\)/)
-    expect(text, 'qrcode must not be a static import').not.toMatch(/^import\s+\w+\s+from\s+['"]qrcode['"]/m)
+    // 26 kB of encoder for two dialogs should not ride along in the route chunk
+    // that the client list or settings page downloads. The encoder lives in one
+    // shared module so both dialogs hit the same lazily loaded import, and no
+    // source may pull it in statically.
+    const shared = readFileSync(join(srcDir, 'utils', 'qr.ts'), 'utf8')
+    expect(shared, 'qrcode must be a dynamic import').toMatch(/import\(['"]qrcode['"]\)/)
+
+    const offenders = sources()
+      .filter((source) =>
+        /(?:^|\n)\s*import\s+(?:(?:type\s+)?[^;\n]*from\s+)?['"]qrcode['"]/.test(source.text),
+      )
+      .map((source) => relative(srcDir, source.path))
+    expect(offenders, `qrcode must be loaded on demand: ${offenders.join(', ')}`).toEqual([])
   })
 })

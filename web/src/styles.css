@@ -873,6 +873,42 @@ html .el-date-editor.w-control-lg {
   font-size: var(--sspanel-fs-xs);
 }
 
+/* QR codes are square and framed the same way wherever one is shown: the client
+ * share-link dialog and the TOTP enrollment wizard share these. */
+.qr-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qr-image {
+  width: var(--sspanel-qr-size);
+  height: var(--sspanel-qr-size);
+  border: 1px solid var(--sspanel-border);
+  border-radius: var(--sspanel-radius-sm);
+  padding: var(--sspanel-space-2);
+  background: var(--sspanel-surface);
+}
+
+/* Recovery codes are read out character by character, so they get a sunken
+ * block of their own; ten lines under normal dialog spacing read as body copy.
+ * Shared by the enrollment wizard and the rotate dialog. */
+.totp-codes {
+  padding: var(--sspanel-space-5);
+  border-radius: var(--sspanel-radius-sm);
+  background: var(--sspanel-surface-sunken);
+  line-height: 1.8;
+  white-space: pre-line;
+}
+
+.totp-codes-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sspanel-space-4);
+  margin-top: var(--sspanel-space-4);
+}
+
 .progress-row {
   min-width: 170px;
 }

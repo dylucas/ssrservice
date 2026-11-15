@@ -1,6 +1,11 @@
 import { defineStore } from 'pinia'
 import { ApiError, api } from '@/api'
-import type { Admin } from '@/types'
+import type { Admin, LoginResult, TOTPChallengeResponse } from '@/types'
+
+/** isTOTPChallenge narrows the two shapes POST /auth/login can answer with. */
+export function isTOTPChallenge(result: LoginResult): result is TOTPChallengeResponse {
+  return result.totp_required === true
+}
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -27,11 +32,30 @@ export const useAuthStore = defineStore('auth', {
       this.admin = null
       this.checked = true
     },
-    async login(username: string, password: string) {
+    /**
+     * login runs the password step. When the account has 2FA enabled the server
+     * answers with a challenge instead of a session, so no admin may be written
+     * here: the caller has to finish the flow through loginTOTP first.
+     */
+    async login(username: string, password: string): Promise<LoginResult> {
       const result = await api.login(username, password)
+      if (isTOTPChallenge(result)) return result
       this.admin = result.admin
       this.checked = true
-      return this.admin
+      return result
+    },
+    /** loginTOTP completes a challenge and writes the session's admin. */
+    async loginTOTP(challenge: string, code: string): Promise<Admin> {
+      const result = await api.loginTOTP(challenge, code)
+      this.admin = result.admin
+      this.checked = true
+      return result.admin
+    },
+    /** setTOTPEnabled mirrors a setup/disable result without a full re-fetch. */
+    setTOTPEnabled(enabled: boolean) {
+      if (this.admin) {
+        this.admin = { ...this.admin, totp_enabled: enabled }
+      }
     },
     async logout() {
       try {

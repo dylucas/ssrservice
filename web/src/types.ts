@@ -153,6 +153,8 @@ export interface Admin {
   id: number
   username: string
   must_change_password: boolean
+  /** Whether a second factor is required at login. */
+  totp_enabled: boolean
   created_at?: number
   last_login_at?: number
 }
@@ -161,6 +163,44 @@ export interface Admin {
 export interface LoginResponse {
   admin: Admin
   expires_at: number
+  totp_required?: false
+}
+
+/**
+ * The first step of a 2FA login: no session yet. The challenge is the opaque
+ * handle the second step submits together with the code; expires_at is unix
+ * seconds after which the server rejects it.
+ */
+export interface TOTPChallengeResponse {
+  totp_required: true
+  challenge: string
+  expires_at: number
+}
+
+/** POST /auth/login answers either a session or a second-factor challenge. */
+export type LoginResult = LoginResponse | TOTPChallengeResponse
+
+/** POST /auth/totp/setup: the secret to add to an authenticator app. */
+export interface TOTPSetupResponse {
+  secret: string
+  otpauth_url: string
+}
+
+/** POST /auth/totp/enable: one-time recovery codes and the new state. */
+export interface TOTPEnableResponse {
+  recovery_codes: string[]
+  totp_enabled: boolean
+}
+
+/** POST /auth/totp/recovery-codes: a freshly rotated set of recovery codes. */
+export interface TOTPRecoveryCodesResponse {
+  recovery_codes: string[]
+}
+
+/** POST /auth/totp/disable. */
+export interface TOTPDisableResponse {
+  ok: boolean
+  totp_enabled: boolean
 }
 
 /** GET /auth/me returns the same admin shape as the login response. */

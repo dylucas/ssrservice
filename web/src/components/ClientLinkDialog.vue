@@ -19,8 +19,8 @@
           </el-input>
         </el-form-item>
         <el-form-item label="二维码">
-          <div class="qr-wrap">
-            <img v-if="qr" :src="qr" alt="分享二维码" class="qr" />
+          <div class="qr-frame">
+            <img v-if="qr" :src="qr" alt="分享二维码" class="qr-image" />
             <div v-else class="muted">暂无二维码</div>
           </div>
         </el-form-item>
@@ -41,6 +41,7 @@ import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, basePath } from '@/api'
 import { copyText } from '@/utils/format'
+import { encodeQR } from '@/utils/qr'
 import { absoluteURL } from '@/utils/subscription'
 
 const props = defineProps<{ modelValue: boolean; clientId: number | null }>()
@@ -58,43 +59,6 @@ const qr = ref('')
 const absoluteSub = computed(() =>
   subURL.value ? absoluteURL(basePath, subURL.value, window.location.origin) : '',
 )
-
-// The QR encoder is ~26 kB that only this dialog needs, so it is loaded on
-// demand instead of riding along in the clients route chunk.
-type QREncoder = (text: string, options: { margin: number; width: number }) => Promise<string>
-
-let loadQRCode: (() => Promise<typeof import('qrcode')>) | null = null
-
-/**
- * resolveEncoder picks toDataURL out of the module namespace.
- *
- * qrcode is CommonJS (`module.exports = require('./server')`), and a dynamic
- * import of it can surface the function either as a named export or under
- * `default` depending on the interop pass, so both shapes are accepted.
- */
-function resolveEncoder(mod: typeof import('qrcode')): QREncoder | null {
-  const named = (mod as { toDataURL?: QREncoder }).toDataURL
-  if (named) return named
-  const interop = (mod as { default?: { toDataURL?: QREncoder } }).default
-  return interop?.toDataURL ?? null
-}
-
-/**
- * encodeQR renders the share link as a data URL.
- *
- * A failure returns an empty string: the link and the subscription URL are the
- * content, and a missing QR image must not turn the whole dialog into an error.
- */
-async function encodeQR(value: string): Promise<string> {
-  try {
-    if (!loadQRCode) loadQRCode = () => import('qrcode')
-    const encode = resolveEncoder(await loadQRCode())
-    if (!encode) throw new Error('qrcode encoder unavailable')
-    return await encode(value, { margin: 1, width: 220 })
-  } catch {
-    return ''
-  }
-}
 
 // loadSeq makes the last request win: clicking "链接" on one row and then on
 // another must not leave the first (slower) response on screen with the second
@@ -166,19 +130,3 @@ async function copy(value: string) {
 }
 </script>
 
-<style scoped>
-.qr-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-}
-.qr {
-  width: var(--sspanel-qr-size);
-  height: var(--sspanel-qr-size);
-  border: 1px solid var(--sspanel-border);
-  border-radius: var(--sspanel-radius-sm);
-  padding: var(--sspanel-space-2);
-  background: var(--sspanel-surface);
-}
-</style>

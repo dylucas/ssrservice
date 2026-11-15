@@ -12,9 +12,14 @@ import type {
   InboundInput,
   InboundsResponse,
   LoginResponse,
+  LoginResult,
   MeResponse,
   ResetTokenResponse,
   Settings,
+  TOTPDisableResponse,
+  TOTPEnableResponse,
+  TOTPRecoveryCodesResponse,
+  TOTPSetupResponse,
   UsageResponse,
 } from './types'
 
@@ -56,9 +61,13 @@ export function setPasswordRequiredHandler(handler: SessionHandler | null): void
   passwordRequiredHandler = handler
 }
 
-/** The login endpoint's own 401 means bad credentials, not an expired session. */
+/**
+ * The login endpoints' own 401 means bad credentials or a bad second factor,
+ * not an expired session: redirecting on it would drop the password step and the
+ * challenge before the login view can show the error.
+ */
 function isLoginRequest(path: string): boolean {
-  return path === '/auth/login'
+  return path === '/auth/login' || path === '/auth/login/totp'
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -121,7 +130,16 @@ function clientListQuery(params: ClientListParams): string {
 
 export const api = {
   login: (username: string, password: string) =>
-    request<LoginResponse>('POST', '/auth/login', { username, password }),
+    request<LoginResult>('POST', '/auth/login', { username, password }),
+  loginTOTP: (challenge: string, code: string) =>
+    request<LoginResponse>('POST', '/auth/login/totp', { challenge, code }),
+  totpSetup: (password: string) =>
+    request<TOTPSetupResponse>('POST', '/auth/totp/setup', { password }),
+  totpEnable: (code: string) => request<TOTPEnableResponse>('POST', '/auth/totp/enable', { code }),
+  totpDisable: (password: string, code: string) =>
+    request<TOTPDisableResponse>('POST', '/auth/totp/disable', { password, code }),
+  totpRecoveryCodes: (password: string, code: string) =>
+    request<TOTPRecoveryCodesResponse>('POST', '/auth/totp/recovery-codes', { password, code }),
   logout: () => request<{ ok: boolean }>('POST', '/auth/logout'),
   me: () => request<MeResponse>('GET', '/auth/me'),
   changePassword: (current_password: string, new_password: string) =>
