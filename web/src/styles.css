@@ -136,6 +136,10 @@
   --sspanel-control-sm: 140px;
   --sspanel-control-md: 200px;
   --sspanel-control-lg: 260px;
+  /* Widest a settings field may grow. A single-column card can be wider than
+   * this; past this point a hint line runs longer than is comfortable to read,
+   * so the extra width stays as card surface. */
+  --sspanel-form-field-max: 560px;
 
   /* Chart series. Blue against orange, the pair that stays distinguishable for
    * the two most common colour vision deficiencies, and both clear AA against
@@ -565,9 +569,43 @@ select {
   letter-spacing: 0.2px;
 }
 
-/* Narrow form column, so a long settings form keeps a readable line length. */
-.form-narrow {
-  max-width: 640px;
+/* Settings: a grid of cards rather than one narrow column.
+ *
+ * The column used to be capped at 640px, which left 46% of a 1440px viewport as
+ * empty page background. Cards now share the width, and at two columns each is
+ * about 585px at 1440 - narrow enough on its own that a hostname field and its
+ * hint keep a readable line length. The extra column is added by a min-width
+ * query so the existing single (max-width) mobile breakpoint below still means
+ * exactly what it did. */
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sspanel-gap);
+  margin-bottom: var(--sspanel-space-7);
+}
+
+@media (min-width: 1200px) {
+  .settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* The gap above replaces the card's own bottom margin inside a grid. */
+.settings-grid .card {
+  margin-bottom: 0;
+}
+
+/* A card can be much wider than one column is on a narrower screen (single
+ * column at 1024 is 768px). Without a cap the hostname field and its hint would
+ * stretch to ~740px, which is past a comfortable reading measure for Chinese
+ * text; the extra space stays as card surface instead. */
+.settings-grid .el-form-item__content {
+  max-width: var(--sspanel-form-field-max);
+}
+
+/* One card on its own (the forced password change) must not sit in half a grid. */
+.settings-grid--single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Action row of a form, outside the card that holds the fields. The card above
@@ -579,6 +617,45 @@ select {
   gap: var(--sspanel-space-4);
   flex-wrap: wrap;
   margin-bottom: var(--sspanel-space-7);
+}
+
+/* A row of actions and their note inside a card (backup, save). */
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sspanel-space-5);
+  flex-wrap: wrap;
+}
+
+/* Resolves what a share link will contain, so the fallback chain behind the two
+ * address fields is visible instead of implied. Sunken rather than bordered: it
+ * is a read-out, not another control. */
+.settings-preview {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sspanel-space-4);
+  flex-wrap: wrap;
+  margin-top: var(--sspanel-space-6);
+  padding: var(--sspanel-space-5);
+  border-radius: var(--sspanel-radius-sm);
+  background: var(--sspanel-surface-sunken);
+}
+
+.settings-preview-label {
+  color: var(--sspanel-text-muted);
+  font-size: var(--sspanel-fs-xs);
+}
+
+.settings-preview-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--sspanel-fs-sm);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.settings-preview-hint {
+  color: var(--sspanel-text-hint);
+  font-size: var(--sspanel-fs-xs);
 }
 
 /* Vertical rhythm helper for standalone blocks. */

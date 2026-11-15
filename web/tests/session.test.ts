@@ -82,7 +82,10 @@ describe('forced password change flow', () => {
   it('disables saving until the settings were actually loaded', () => {
     const text = read('views/SettingsView.vue')
     expect(text).toMatch(/const loaded = ref\(false\)/)
-    expect(text).toMatch(/:disabled="!loaded"/)
+    // Saving is offered only once a GET succeeded *and* something actually
+    // changed; before that the defaults on screen are not the server's values
+    // and a save would overwrite the real configuration with them.
+    expect(text).toMatch(/:disabled="!loaded \|\| !dirty"/)
     expect(text).toMatch(/if \(!loaded\.value \|\| forced\.value\) return/)
   })
 

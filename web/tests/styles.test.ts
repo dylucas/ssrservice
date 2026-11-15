@@ -438,6 +438,29 @@ describe('responsive rules', () => {
     expect(media).toContain('overflow-x: auto')
   })
 
+  it('lets the settings page use the width it has', () => {
+    // A single 640px column in a 1440px viewport left 46% of the page empty.
+    // The layout is a card grid that adds a column when there is room, so the
+    // guard checks for the grid rather than for a pixel width.
+    // Read the block itself: the same declaration also appears on
+    // .settings-grid--single, so a whole-file substring match would pass even
+    // with the main rule capped at a fixed width.
+    const gridBlock = css.slice(css.indexOf('.settings-grid {'))
+    const gridBlockEnd = gridBlock.indexOf('}')
+    const gridRule = gridBlock.slice(0, gridBlockEnd)
+    expect(gridRule, 'settings must lay its cards out in a grid').toContain('display: grid')
+    expect(
+      gridRule,
+      'the single-column case must fill its container, not a fixed width',
+    ).toContain('grid-template-columns: minmax(0, 1fr)')
+    // And it must never go back to a fixed narrow column.
+    expect(css, 'form-narrow was removed; do not cap settings at a fixed width').not.toContain(
+      '.form-narrow',
+    )
+    // Two columns are added at a width, not capped away from one.
+    expect(css).toMatch(/\.settings-grid \{[^}]*grid-template-columns: repeat\(2/)
+  })
+
   it('keeps the row-action buttons compact enough to stay on one line', () => {
     // Element pads a text button by 11px per side and only spaces *adjacent*
     // buttons, so at its defaults "链接 趋势 编辑 更多" needs 237px against a
