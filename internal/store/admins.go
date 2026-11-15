@@ -7,17 +7,23 @@ import (
 	"github.com/ydong/ssrservice/internal/model"
 )
 
-const adminColumns = `id, username, password_hash, must_change_password, created_at, last_login_at`
+const adminColumns = `id, username, password_hash, must_change_password,
+	totp_enabled, totp_secret, totp_pending_secret, totp_last_step,
+	created_at, last_login_at`
 
 func scanAdmin(row interface{ Scan(...any) error }) (*model.Admin, error) {
 	var (
 		admin      model.Admin
 		mustChange int64
+		totpOn     int64
 	)
-	if err := row.Scan(&admin.ID, &admin.Username, &admin.PasswordHash, &mustChange, &admin.CreatedAt, &admin.LastLoginAt); err != nil {
+	if err := row.Scan(&admin.ID, &admin.Username, &admin.PasswordHash, &mustChange,
+		&totpOn, &admin.TOTPSecret, &admin.TOTPPendingSecret, &admin.TOTPLastStep,
+		&admin.CreatedAt, &admin.LastLoginAt); err != nil {
 		return nil, scanErr(err)
 	}
 	admin.MustChangePassword = mustChange != 0
+	admin.TOTPEnabled = totpOn != 0
 	return &admin, nil
 }
 
@@ -94,4 +100,134 @@ func (s *Store) TouchAdminLogin(id int64) error {
 		_, err := tx.Exec(`UPDATE admins SET last_login_at = ? WHERE id = ?`, time.Now().Unix(), id)
 		return err
 	})
+}
+
+// SetAdminTOTPPending stores a proposed TOTP secret. The active secret and the
+// enabled flag are untouched: enrollment only takes effect once a live code
+// proves the operator really added the account to an authenticator.
+func (s *Store) SetAdminTOTPPending(id int64, secret string) error {
+	return s.write(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE admins SET totp_pending_secret = ? WHERE id = ?`, secret, id)
+		if err != nil {
+			return scanErr(err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// EnableAdminTOTP makes a verified secret active and installs a fresh set of
+// recovery codes in the same transaction: a half enrolled administrator (enabled
+// without recovery codes, or the other way round) must never be observable.
+func (s *Store) EnableAdminTOTP(id int64, secret string, lastStep int64, recoveryHashes []string) error {
+	return s.write(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE admins
+			SET totp_secret = ?, totp_pending_secret = '', totp_enabled = 1, totp_last_step = ?
+			WHERE id = ?`, secret, lastStep, id)
+		if err != nil {
+			return scanErr(err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		if err := replaceRecoveryCodes(tx, id, recoveryHashes); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// DisableAdminTOTP clears every TOTP artifact for the administrator.
+func (s *Store) DisableAdminTOTP(id int64) error {
+	return s.write(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE admins
+			SET totp_secret = '', totp_pending_secret = '', totp_enabled = 0, totp_last_step = 0
+			WHERE id = ?`, id)
+		if err != nil {
+			return scanErr(err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		_, err = tx.Exec(`DELETE FROM admin_recovery_codes WHERE admin_id = ?`, id)
+		return err
+	})
+}
+
+// ConsumeAdminTOTPStep records that step was accepted and reports whether this
+// call was the one that won. The UPDATE is conditional, so two concurrent
+// submissions of the same code cannot both succeed: exactly one row changes.
+func (s *Store) ConsumeAdminTOTPStep(id int64, step int64) (bool, error) {
+	var consumed bool
+	err := s.write(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE admins SET totp_last_step = ?
+			WHERE id = ? AND totp_last_step < ?`, step, id, step)
+		if err != nil {
+			return scanErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		consumed = n == 1
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return consumed, nil
+}
+
+// ReplaceAdminTOTPRecoveryCodes swaps the recovery code set. It is a separate
+// operation from enabling so an operator can rotate codes without re-enrolling.
+func (s *Store) ReplaceAdminTOTPRecoveryCodes(id int64, recoveryHashes []string) error {
+	return s.write(func(tx *sql.Tx) error {
+		var exists int64
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM admins WHERE id = ?`, id).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return ErrNotFound
+		}
+		return replaceRecoveryCodes(tx, id, recoveryHashes)
+	})
+}
+
+// ConsumeAdminTOTPRecoveryCode deletes one recovery code and reports whether it
+// existed. The DELETE is the consumption: a replay finds no row.
+func (s *Store) ConsumeAdminTOTPRecoveryCode(id int64, codeHash string) (bool, error) {
+	var consumed bool
+	err := s.write(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`DELETE FROM admin_recovery_codes WHERE admin_id = ? AND code_hash = ?`, id, codeHash)
+		if err != nil {
+			return scanErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		consumed = n == 1
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return consumed, nil
+}
+
+// replaceRecoveryCodes rewrites the code set inside an existing transaction.
+func replaceRecoveryCodes(tx *sql.Tx, id int64, hashes []string) error {
+	if _, err := tx.Exec(`DELETE FROM admin_recovery_codes WHERE admin_id = ?`, id); err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	for _, hash := range hashes {
+		if _, err := tx.Exec(`INSERT INTO admin_recovery_codes(admin_id, code_hash, created_at) VALUES(?, ?, ?)`,
+			id, hash, now); err != nil {
+			return scanErr(err)
+		}
+	}
+	return nil
 }

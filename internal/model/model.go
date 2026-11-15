@@ -165,8 +165,19 @@ type Admin struct {
 	Username           string `json:"username"`
 	PasswordHash       string `json:"-"`
 	MustChangePassword bool   `json:"must_change_password"`
-	CreatedAt          int64  `json:"created_at"`
-	LastLoginAt        int64  `json:"last_login_at"`
+	// TOTPEnabled reports whether two-step verification is active for this
+	// administrator. The secrets themselves never reach the API.
+	TOTPEnabled bool `json:"totp_enabled"`
+	// TOTPSecret is the active secret; empty means no verified enrollment.
+	// TOTPPendingSecret holds a proposed secret whose enrollment a client has
+	// started but not confirmed with a live code.
+	TOTPSecret        string `json:"-"`
+	TOTPPendingSecret string `json:"-"`
+	// TOTPLastStep is the newest time step already accepted. It makes a code
+	// single use even when it is submitted twice in the same window.
+	TOTPLastStep int64 `json:"-"`
+	CreatedAt    int64 `json:"created_at"`
+	LastLoginAt  int64 `json:"last_login_at"`
 }
 
 // DailyUsage is one day of traffic for a client.
@@ -211,25 +222,28 @@ func NowUnix() int64 { return time.Now().Unix() }
 // Audit actions recorded in the audit trail. They are stable identifiers the
 // panel filters on, so treat them as part of the API surface.
 const (
-	AuditAuthLogin       = "auth.login"
-	AuditAuthLoginFailed = "auth.login.failed"
-	AuditAuthLogout      = "auth.logout"
-	AuditAdminPassword   = "admin.password"
-	AuditInboundCreate   = "inbound.create"
-	AuditInboundUpdate   = "inbound.update"
-	AuditInboundDelete   = "inbound.delete"
-	AuditInboundToggle   = "inbound.toggle"
-	AuditInboundRestart  = "inbound.restart"
-	AuditSettingsUpdate  = "settings.update"
-	AuditClientCreate    = "client.create"
-	AuditClientUpdate    = "client.update"
-	AuditClientDelete    = "client.delete"
-	AuditClientToggle    = "client.toggle"
-	AuditClientReset     = "client.reset"
-	AuditClientToken     = "client.token"
-	AuditClientKick      = "client.kick"
-	AuditClientImport    = "client.import"
-	AuditClientExport    = "client.export"
+	AuditAuthLogin         = "auth.login"
+	AuditAuthLoginFailed   = "auth.login.failed"
+	AuditAuthLogout        = "auth.logout"
+	AuditAdminPassword     = "admin.password"
+	AuditAdminTOTPEnable   = "admin.totp.enable"
+	AuditAdminTOTPDisable  = "admin.totp.disable"
+	AuditAdminTOTPRecovery = "admin.totp.recovery"
+	AuditInboundCreate     = "inbound.create"
+	AuditInboundUpdate     = "inbound.update"
+	AuditInboundDelete     = "inbound.delete"
+	AuditInboundToggle     = "inbound.toggle"
+	AuditInboundRestart    = "inbound.restart"
+	AuditSettingsUpdate    = "settings.update"
+	AuditClientCreate      = "client.create"
+	AuditClientUpdate      = "client.update"
+	AuditClientDelete      = "client.delete"
+	AuditClientToggle      = "client.toggle"
+	AuditClientReset       = "client.reset"
+	AuditClientToken       = "client.token"
+	AuditClientKick        = "client.kick"
+	AuditClientImport      = "client.import"
+	AuditClientExport      = "client.export"
 )
 
 // AuditActions lists every recorded action in display order.
@@ -238,6 +252,9 @@ var AuditActions = []string{
 	AuditAuthLoginFailed,
 	AuditAuthLogout,
 	AuditAdminPassword,
+	AuditAdminTOTPEnable,
+	AuditAdminTOTPDisable,
+	AuditAdminTOTPRecovery,
 	AuditInboundCreate,
 	AuditInboundUpdate,
 	AuditInboundDelete,
