@@ -711,6 +711,79 @@ html .el-table .cell .el-button.is-text {
   font-variant-numeric: tabular-nums;
 }
 
+/* A line in a cell that holds a value and a companion badge. */
+.cell-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sspanel-space-3);
+  min-width: 0;
+}
+
+/* Progress bar plus its label, stacked, inside the quota column. */
+.quota-cell {
+  min-width: 0;
+}
+
+.quota-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sspanel-space-4);
+  margin-top: var(--sspanel-space-2);
+  font-size: var(--sspanel-fs-xs);
+}
+
+/* Expiry, coloured by how soon it matters. Three tones, not four: "ok" and
+ * "soon" are the same readable colour and differ only in weight, so the column
+ * does not read as a traffic light. */
+.expiry {
+  font-size: var(--sspanel-fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.expiry--none {
+  color: var(--sspanel-text-hint);
+}
+
+.expiry--ok {
+  color: var(--sspanel-text-muted);
+}
+
+.expiry--soon {
+  color: var(--sspanel-warning);
+  font-weight: 600;
+}
+
+.expiry--expired {
+  color: var(--sspanel-danger);
+  font-weight: 600;
+}
+
+/* Figures beside a chart title (total / average / peak). */
+.chart-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sspanel-space-6);
+  flex-wrap: wrap;
+}
+
+.chart-summary-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sspanel-space-2);
+}
+
+.chart-summary-label {
+  color: var(--sspanel-text-muted);
+  font-size: var(--sspanel-fs-xs);
+}
+
+.chart-summary-value {
+  font-size: var(--sspanel-fs-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Small status chip inside a cell. */
 .chip {
   display: inline-flex;
@@ -1023,8 +1096,11 @@ html .el-table th.el-table__cell {
   font-weight: 600;
 }
 
-/* Element lets a cell wrap anywhere; the client and audit tables put monospace
- * lists and key=value summaries in cells, which must break. */
+/* Element lets a cell wrap anywhere. That is right for the audit log's key=value
+ * summaries, so wrapping stays on; what made list rows uneven was the client
+ * table's method names breaking onto a second line. Those cells now use the
+ * .ellipsis utility on the specific line that must stay single (with the full
+ * value in `title`) rather than a blanket nowrap. */
 html .el-table .cell {
   line-height: 22px;
   word-break: break-word;

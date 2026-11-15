@@ -35,7 +35,21 @@
 
     <div class="card">
       <div class="card-head">
-        <h3 class="card-title">流量趋势（30 天）</h3>
+        <h3 class="card-title">流量趋势（{{ windowLabel }}）</h3>
+        <div class="chart-summary">
+          <span class="chart-summary-item">
+            <span class="chart-summary-label">合计</span>
+            <span class="chart-summary-value">{{ formatBytes(traffic.total) }}</span>
+          </span>
+          <span class="chart-summary-item">
+            <span class="chart-summary-label">日均</span>
+            <span class="chart-summary-value">{{ formatBytes(traffic.average) }}</span>
+          </span>
+          <span class="chart-summary-item">
+            <span class="chart-summary-label">峰值</span>
+            <span class="chart-summary-value">{{ formatBytes(traffic.peak) }}</span>
+          </span>
+        </div>
       </div>
       <TrafficChart
         :labels="chartLabels"
@@ -97,6 +111,7 @@ import StatCard from '@/components/StatCard.vue'
 import TrafficChart from '@/components/TrafficChart.vue'
 import type { Dashboard } from '@/types'
 import { formatBytes, formatDuration } from '@/utils/format'
+import { summarizeTraffic } from '@/utils/usage'
 
 const loading = ref(false)
 let timer: number | undefined
@@ -128,6 +143,16 @@ const data = reactive<Dashboard>({
     host_metrics: false,
   },
 })
+
+// Three figures above the plot, derived from the same series: the total, the
+// daily average over the days actually returned, and the busiest day. They answer
+// "how much" without reading the axis, which the chart alone cannot.
+const traffic = computed(() => summarizeTraffic(data.traffic_30d))
+const windowLabel = computed(() =>
+  data.traffic_30d.length > 0 && data.traffic_30d.length !== 30
+    ? `${data.traffic_30d.length} 天`
+    : '30 天',
+)
 
 // The chart is a pure function of the response, so polling only has to update
 // the data: the two computeds below rebuild the SVG on every tick.

@@ -438,6 +438,36 @@ describe('responsive rules', () => {
     expect(media).toContain('overflow-x: auto')
   })
 
+  it('keeps list rows a predictable height', () => {
+    // Row heights used to differ row to row (65px vs 87px) because a long method
+    // name wrapped the identity line inside the client table. The fix is the
+    // .ellipsis utility on that specific line; a blanket `white-space: nowrap`
+    // over every cell would clip the audit log's key=value summaries instead.
+    const block = css.slice(css.indexOf('.ellipsis {'), css.indexOf('}', css.indexOf('.ellipsis {')))
+    expect(block, '.ellipsis must clip rather than wrap').toContain('white-space: nowrap')
+    expect(block, '.ellipsis must actually clip').toContain('overflow: hidden')
+    expect(block, '.ellipsis must mark the truncation').toContain('text-overflow: ellipsis')
+    // And the blanket rule must not come back.
+    expect(css).not.toMatch(/html \.el-table \.cell[^{]*\{[^}]*white-space:\s*nowrap/)
+  })
+
+  it('colours expiry by urgency with the semantic tokens', () => {
+    // The four tones are read at 12-13px inside a table, so they must come from
+    // the token block rather than a literal, and the two urgent ones must be the
+    // semantic colours the contrast test already checks.
+    for (const [tone, token] of [
+      ['none', '--sspanel-text-hint'],
+      ['ok', '--sspanel-text-muted'],
+      ['soon', '--sspanel-warning'],
+      ['expired', '--sspanel-danger'],
+    ]) {
+      const start = css.indexOf(`.expiry--${tone} {`)
+      expect(start, `.expiry--${tone} is missing`).toBeGreaterThanOrEqual(0)
+      const rule = css.slice(start, css.indexOf('}', start))
+      expect(rule, `.expiry--${tone} must use ${token}`).toContain(`var(${token})`)
+    }
+  })
+
   it('lets the settings page use the width it has', () => {
     // A single 640px column in a 1440px viewport left 46% of the page empty.
     // The layout is a card grid that adds a column when there is room, so the

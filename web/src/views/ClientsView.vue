@@ -56,39 +56,76 @@
             </el-button>
           </EmptyState>
         </template>
-        <el-table-column label="用户" min-width="150">
+        <el-table-column label="用户" min-width="240">
           <template #default="{ row }">
-            <div>{{ row.name }}</div>
-            <div class="muted">{{ row.inbound_remark }} · {{ row.method }}</div>
+            <div class="cell-line">
+              <span class="cell-strong ellipsis">{{ row.name }}</span>
+              <span
+                v-if="row.online_ips?.length"
+                class="chip chip--live"
+                :title="row.online_ips.join(', ')"
+              >
+                在线 {{ row.online_ips.length }} IP
+              </span>
+            </div>
+            <!-- Inbound and method on one line, ellipsised: the pair identifies
+                 where the user lives, and letting it wrap made rows 65px or 87px
+                 tall depending on the method's length. The full value is in the
+                 title. -->
+            <div
+              class="muted mono ellipsis cell-sub"
+              :title="`${row.inbound_remark} · ${row.method}`"
+            >
+              {{ row.inbound_remark }} · {{ row.method }}
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="96">
           <template #default="{ row }">
             <el-tag :type="statusMeta[row.status]?.type || 'info'" size="small">
               {{ statusMeta[row.status]?.label || row.status }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="流量" min-width="200">
+        <el-table-column label="流量" min-width="210">
           <template #default="{ row }">
-            <div class="progress-row">
+            <div class="quota-cell">
               <el-progress
                 v-if="row.quota_bytes"
                 :percentage="percent(row.used_bytes, row.quota_bytes)"
                 :status="percent(row.used_bytes, row.quota_bytes) >= 100 ? 'exception' : undefined"
-                :stroke-width="8"
+                :stroke-width="6"
+                :show-text="false"
               />
-              <div class="muted">{{ quotaLabel(asClient(row)) }}</div>
+              <!-- quotaLabel already says 不限 for an unlimited account, so the
+                   second half of this line only carries the percentage. -->
+              <div class="quota-line">
+                <span class="num">{{ quotaLabel(asClient(row)) }}</span>
+                <span v-if="row.quota_bytes" class="muted num">
+                  {{ percent(row.used_bytes, row.quota_bytes) }}%
+                </span>
+              </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="到期" width="160">
-          <template #default="{ row }">{{ formatDate(row.expires_at) }}</template>
-        </el-table-column>
-        <el-table-column label="在线 IP" min-width="130">
+        <el-table-column label="到期" width="130">
           <template #default="{ row }">
-            <span v-if="row.online_ips?.length" class="mono">{{ row.online_ips.join(', ') }}</span>
-            <span v-else class="muted">—</span>
+            <!-- Relative, because the column answers "does this expire soon?".
+                 The absolute timestamp stays in the title. -->
+            <span
+              :class="['expiry', `expiry--${expiryOf(asClient(row)).tone}`]"
+              :title="formatDate(row.expires_at)"
+            >
+              {{ expiryOf(asClient(row)).text }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="IP 限制" width="90" align="right">
+          <template #default="{ row }">
+            <span v-if="row.ip_limit" class="num">
+              {{ row.online_ips?.length || 0 }} / {{ row.ip_limit }}
+            </span>
+            <span v-else class="muted">不限</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
@@ -168,7 +205,7 @@ import {
 } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { ClientListParams, ClientSummary, Inbound } from '@/types'
-import { formatDate, percent, quotaLabel, statusMeta } from '@/utils/format'
+import { describeExpiry, formatDate, percent, quotaLabel, statusMeta } from '@/utils/format'
 import {
   CLIENT_PAGE_SIZE,
   buildClientListParams,
@@ -239,6 +276,16 @@ const editingMethodComputed = computed(() => {
   return inbound?.method || editing.value.method
 })
 
+// now is captured per data load rather than per cell render, so every row of one
+// page describes "expires in N days" against the same instant. Reading the clock
+// inside the template would let two rows of the same table disagree, and it would
+// re-render on every tick.
+const nowSeconds = ref(Math.floor(Date.now() / 1000))
+
+function expiryOf(row: ClientSummary) {
+  return describeExpiry(row.expires_at, nowSeconds.value)
+}
+
 function currentParams(): ClientListParams {
   return buildClientListParams({
     inboundId: inboundFilter.value,
@@ -276,6 +323,7 @@ async function load(): Promise<boolean> {
     if (seq !== loadSeq) return true
     clients.value = result.items || []
     total.value = result.total || 0
+    nowSeconds.value = Math.floor(Date.now() / 1000)
     return true
   } catch (error: any) {
     if (seq !== loadSeq) return false

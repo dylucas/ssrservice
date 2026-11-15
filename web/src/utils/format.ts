@@ -23,7 +23,10 @@ export function formatDuration(seconds: number | null | undefined): string {
   const minutes = Math.floor(value / 60)
   if (days > 0) return `${days} 天 ${hours} 小时`
   if (hours > 0) return `${hours} 小时 ${minutes} 分`
-  return `${minutes} 分`
+  // Under a minute the minute field would read "0 分", which on a freshly
+  // started panel looks like missing data rather than "just started".
+  if (minutes > 0) return `${minutes} 分`
+  return `${value % 60} 秒`
 }
 
 export function percent(used: number, total: number): number {
@@ -67,4 +70,36 @@ export function formatDateTime(unix: number | null | undefined): string {
     `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
     `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
   )
+}
+
+/**
+ * describeExpiry turns an expiry timestamp into something scannable.
+ *
+ * The list used to print an absolute date in every row, which is precise but
+ * useless for the question the column exists to answer ("does this expire
+ * soon?"). The absolute date stays available as the cell's title.
+ *
+ *   describeExpiry(0)                -> { text: '永不过期', tone: 'none' }
+ *   describeExpiry(now + 30d)        -> { text: '30 天后到期', tone: 'ok' }
+ *   describeExpiry(now + 5d)         -> { text: '5 天后到期', tone: 'soon' }
+ *   describeExpiry(now - 2d)         -> { text: '已过期 2 天', tone: 'expired' }
+ *
+ * `now` is injectable so the boundaries are testable without freezing time.
+ */
+export function describeExpiry(
+  unix: number | null | undefined,
+  now: number = Math.floor(Date.now() / 1000),
+): { text: string; tone: 'none' | 'ok' | 'soon' | 'expired' } {
+  const expires = Number(unix || 0)
+  if (!expires) return { text: '永不过期', tone: 'none' }
+  const diff = expires - now
+  if (diff <= 0) {
+    const days = Math.max(1, Math.ceil(-diff / 86400))
+    return { text: `已过期 ${days} 天`, tone: 'expired' }
+  }
+  // Round a partial day up so "1 天后" never means "in an hour".
+  const days = Math.ceil(diff / 86400)
+  // A week is the window an operator can still act in (renew, extend, warn);
+  // the text is the same either side of it and only the emphasis changes.
+  return { text: `${days} 天后到期`, tone: days <= 7 ? 'soon' : 'ok' }
 }
