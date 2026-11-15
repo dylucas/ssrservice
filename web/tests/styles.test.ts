@@ -143,14 +143,25 @@ describe('design tokens', () => {
     // Media-query blocks may legitimately restate a class (e.g. .page shrinks on
     // phones), so only the top-level declarations are counted here.
     const baseRules = css.replace(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '')
-    const shared = [...baseRules.matchAll(/^\.([a-zA-Z][\w-]*)\s*\{/gm)].map(
-      (match) => `.${match[1]}`,
-    )
+    // A shared utility may carry an `html ` prefix when it has to outrank a
+    // library rule (el-select sets its own width, for instance). That prefix is
+    // part of the definition, not a second one, so it is stripped here.
+    const shared = [...baseRules.matchAll(/^(?:html )?\.([a-zA-Z][\w-]*)\s*\{/gm)]
+      .map((match) => match[1])
+      // `el-*` selectors are Element Plus' own; the rules that mention them are
+      // library overrides, not utilities of ours, and they legitimately repeat
+      // the class to reach different inner elements.
+      .filter((name) => !name.startsWith('el-'))
+      .map((name) => `.${name}`)
     expect(shared.length).toBeGreaterThan(10)
     for (const className of shared) {
-      // Match "selector {" at any nesting depth, anchored to the class token.
-      const pattern = new RegExp(`(?<![\\w-])\\${className}(?![\\w-])[^{}]*\\{`, 'g')
-      const matches = baseRules.match(pattern) ?? []
+      // Count standalone definitions only: `.toolbar {` or `html .toolbar {`.
+      // A deliberately scoped combo such as `html .el-date-editor.w-control-lg`
+      // is an override of one library control, not a second definition of the
+      // utility, and the anchored pattern is what tells the two apart.
+      // className already carries its leading dot; the backslash escapes it.
+      const definition = new RegExp(`^(?:html )?\\${className}\\s*\\{`, 'gm')
+      const matches = baseRules.match(definition) ?? []
       expect(matches.length, `${className} should be defined once in styles.css`).toBe(1)
       const componentRedefinitions: string[] = []
       for (const file of walk(srcDir).filter((path) => path.endsWith('.vue'))) {
@@ -173,7 +184,7 @@ describe('design tokens', () => {
 describe('template and token hygiene', () => {
   const vueFiles = walk(srcDir).filter((path) => path.endsWith('.vue'))
   const globalClasses = new Set(
-    [...css.matchAll(/^\.([a-zA-Z][\w-]*)\s*\{/gm)].map((match) => match[1]),
+    [...css.matchAll(/^(?:html )?\.([a-zA-Z][\w-]*)\s*\{/gm)].map((match) => match[1]),
   )
 
   it('defines every class a template uses', () => {
@@ -305,6 +316,21 @@ describe('element plus bridge', () => {
     }
   })
 
+  it('prefixes the control-width utilities so el-select cannot stretch them', () => {
+    // el-select declares `width: var(--el-select-width)` (100%) on itself at the
+    // same specificity as a bare utility class, and its stylesheet is appended
+    // after this file. A bare `.w-control-md` therefore does nothing and every
+    // select fills its row - which is exactly the state this check was added to
+    // prevent from coming back.
+    for (const utility of ['w-control-sm', 'w-control-md', 'w-control-lg']) {
+      expect(css, `html .${utility} is missing its prefix`).toContain(`html .${utility} {`)
+      expect(
+        css,
+        `.${utility} must not also exist without the prefix`,
+      ).not.toMatch(new RegExp(`^\\.${utility}\\s*\\{`, 'm'))
+    }
+  })
+
   it('overrides component-level variables with a higher-specificity selector', () => {
     // Element declares --el-table-*, --el-dialog-*, --el-pagination-* and
     // --el-tag-* on the component itself. The page-specific components ship in a
@@ -410,6 +436,27 @@ describe('responsive rules', () => {
     const media = css.slice(css.indexOf('@media (max-width: 782px)'))
     expect(media).toContain('--sspanel-chart-height')
     expect(media).toContain('overflow-x: auto')
+  })
+
+  it('keeps the row-action buttons compact enough to stay on one line', () => {
+    // Element pads a text button by 11px per side and only spaces *adjacent*
+    // buttons, so at its defaults "链接 趋势 编辑 更多" needs 237px against a
+    // 240px column minus 24px of cell padding - the dropdown wrapper wraps onto
+    // a second line and the row looks cramped. The override is what buys the
+    // room, so its absence is a silent regression rather than a build failure.
+    expect(
+      css,
+      'in-cell text buttons need the tighter padding (see .row-more notes)',
+    ).toContain('html .el-table .cell .el-button.is-text')
+
+    // The "more" wrapper replaces the margin Element would have added between
+    // two buttons, so its gap must equal that margin (12px = space-5).
+    const block = css.slice(css.indexOf('.row-more {'), css.indexOf('}', css.indexOf('.row-more {')))
+    expect(block, '.row-more must use the same gap as .el-button + .el-button').toContain(
+      'var(--sspanel-space-5)',
+    )
+    const tokensBlock = tokenBlock(css)
+    expect(tokensBlock, 'space-5 is the 12px step Element uses').toContain('--sspanel-space-5: 12px')
   })
 
   it('switches layout at the breakpoint the script uses', () => {

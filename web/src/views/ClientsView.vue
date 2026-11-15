@@ -22,7 +22,7 @@
             :prefix-icon="Search"
             placeholder="搜索用户名 / 备注"
             clearable
-            class="w-control-lg"
+            class="w-control-md"
           />
           <el-select v-model="statusFilter" class="w-control-sm" @change="onFilterChange">
             <el-option label="全部状态" value="all" />

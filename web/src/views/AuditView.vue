@@ -21,7 +21,7 @@
             v-model="filters.username"
             placeholder="操作人"
             clearable
-            class="w-control-md"
+            class="w-control-sm"
             @keyup.enter="reload"
           />
           <el-date-picker

@@ -481,6 +481,45 @@ select {
   margin-top: var(--sspanel-space-3);
 }
 
+/* Dataset summary above a list -------------------------------------------------
+ * A single quiet row instead of four statistic cards: a list page is about the
+ * rows, and four 22px numbers above a three-row table would outshout it. */
+
+.summary-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sspanel-space-6);
+  margin-bottom: var(--sspanel-space-7);
+  padding: var(--sspanel-space-5) var(--sspanel-space-7);
+  background: var(--sspanel-surface);
+  border-radius: var(--sspanel-radius);
+  box-shadow: var(--sspanel-shadow);
+}
+
+.summary-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sspanel-space-2);
+}
+
+.summary-label {
+  color: var(--sspanel-text-muted);
+  font-size: var(--sspanel-fs-sm);
+}
+
+.summary-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hairline between two summary items. */
+.summary-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--sspanel-border);
+}
+
 /* Empty states --------------------------------------------------------------
  * Rendered through components/EmptyState.vue, which is mounted in el-table's
  * #empty slot: that slot is a <span>, so the root here must be a span. */
@@ -552,22 +591,83 @@ select {
   margin-left: var(--sspanel-space-4);
 }
 
-/* A dropdown that follows text buttons in a table row. Element spaces adjacent
- * buttons itself, but the dropdown wrapper breaks that adjacency. */
-.row-more {
-  margin-left: var(--sspanel-space-4);
+/* Row actions ---------------------------------------------------------------
+ * A table row shows a few text buttons plus a "more" dropdown. Element only
+ * spaces *adjacent* buttons (`.el-button + .el-button`), and the dropdown that
+ * holds "more" is a div, so that rule skips it; the wrapper therefore carries the
+ * same gap as the margin Element would have used.
+ *
+ * The text buttons also get a tighter horizontal padding inside a cell. At
+ * Element's default 11px each side, "链接 趋势 编辑 更多" measures 237px, which
+ * does not fit the fixed action column, and the dropdown silently wraps onto a
+ * second line - the row then looks cramped and the last button jumps to the left
+ * edge. At 8px the same row measures 216px and stays on one line. */
+html .el-table .cell .el-button.is-text {
+  padding-left: var(--sspanel-space-3);
+  padding-right: var(--sspanel-space-3);
 }
 
-/* Control widths. Applied to el-input/el-select so the widths are not inline styles. */
-.w-control-sm {
+.row-more {
+  margin-left: var(--sspanel-space-5);
+}
+
+/* The first line of a table cell: the value the row is scanned for. */
+.cell-strong {
+  font-weight: 600;
+}
+
+/* A secondary line under the main value of a cell. */
+.cell-sub {
+  margin-top: var(--sspanel-space-1);
+}
+
+/* One-line text that must not wrap a table cell into two lines. The title
+ * attribute carries the full value. */
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Numbers that are compared down a column (traffic, counts). */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Small status chip inside a cell. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sspanel-space-2);
+  border-radius: var(--sspanel-radius-chip);
+  font-size: var(--sspanel-fs-xs);
+  line-height: 18px;
+}
+
+/* Something is connected to this inbound right now. Green on its own light
+ * tint, the pair the contrast test checks at 4.65:1. */
+.chip--live {
+  background: var(--sspanel-success-light-9);
+  color: var(--sspanel-success);
+}
+
+/* Control widths. Applied to el-input/el-select so the widths are not inline
+ * styles.
+ *
+ * The `html` prefix is load-bearing, exactly as it is for the component
+ * overrides below: el-select declares `width: var(--el-select-width)` on itself,
+ * which is the same specificity as a bare utility class, and its stylesheet is
+ * in a lazily loaded chunk that comes after this file. Without the prefix every
+ * select silently stretches to fill its row and these widths do nothing. */
+html .w-control-sm {
   width: var(--sspanel-control-sm);
 }
 
-.w-control-md {
+html .w-control-md {
   width: var(--sspanel-control-md);
 }
 
-.w-control-lg {
+html .w-control-lg {
   width: var(--sspanel-control-lg);
 }
 
@@ -583,6 +683,18 @@ select {
 html .el-date-editor.w-full,
 html .el-select.w-full {
   width: 100%;
+}
+
+/* A date-range picker is not a normal control: it sets its own
+ * --el-date-editor-width (350px), carries flex: 1 1 auto, and therefore both
+ * ignores .w-control-lg and grows to swallow whatever space is left in the
+ * toolbar - which pushes the rest of the filter row onto a second line. Here it
+ * gets a basis of its own and may shrink, so a three-control filter row holds
+ * together down to a laptop width instead of breaking after the second one. */
+html .el-date-editor.w-control-lg {
+  flex: 1 1 var(--sspanel-control-md);
+  min-width: var(--sspanel-control-md);
+  max-width: var(--sspanel-control-lg);
 }
 
 .mono {
@@ -841,6 +953,13 @@ html .el-table .cell {
   word-break: break-word;
 }
 
+/* A stopped inbound keeps its row on screen - it is restarted from here - but it
+ * stops competing with the live ones. The muted token is 5.43:1 on a row, so the
+ * detail stays readable rather than fading into decoration. */
+.row-disabled td {
+  color: var(--sspanel-text-muted);
+}
+
 /* The default empty text is 50% wide with a fixed 60px line height, which
  * crushes the icon + message + action block EmptyState renders; a full-width
  * block also centres that block regardless of how long the message is. */
@@ -899,6 +1018,13 @@ html .el-alert {
   }
   .card-head {
     flex-wrap: wrap;
+  }
+  /* Filter controls fill the row on a phone. Two fixed-width controls wrapping
+   * onto separate lines each leave a ragged hole on the right. */
+  .toolbar .w-control-sm,
+  .toolbar .w-control-md,
+  .toolbar .w-control-lg {
+    width: 100%;
   }
   .login-card {
     padding: var(--sspanel-space-9) var(--sspanel-space-8);
