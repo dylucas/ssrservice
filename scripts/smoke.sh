@@ -233,6 +233,118 @@ for name in ("CLIENT_PSK", "SERVER_PSK"):
 print(f"audit rows: {payload['total']}, actions: {len(actions)}")
 PY
 
+# TOTP code for a step offset, computed with the same RFC 6238 parameters the
+# server uses (SHA-1, 6 digits, 30 seconds). Taking the offset as an argument
+# lets the script use the next step right after enrollment without sleeping: the
+# confirming code is consumed at enrollment, so a login must present a newer one.
+totp_code() {
+  python3 - "$1" "$2" <<'PY'
+import base64, hashlib, hmac, struct, sys, time
+secret, offset = sys.argv[1], int(sys.argv[2])
+key = base64.b32decode(secret + "=" * (-len(secret) % 8), casefold=True)
+counter = int(time.time()) // 30 + offset
+digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+start = digest[-1] & 0x0F
+value = struct.unpack(">I", digest[start:start + 4])[0] & 0x7FFFFFFF
+print(f"{value % 1000000:06d}")
+PY
+}
+
+log "checking two-step verification"
+# Enable it through the API, exactly as the settings dialog does.
+TOTP_SETUP=$(api POST /api/v1/auth/totp/setup "{\"password\":\"$ADMIN_PASSWORD\"}")
+TOTP_SECRET=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["secret"])' <<<"$TOTP_SETUP")
+TOTP_URI=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["otpauth_url"])' <<<"$TOTP_SETUP")
+[[ "$TOTP_URI" == otpauth://totp/* ]] || fail "setup did not return an otpauth URI"
+TOTP_ENABLE=$(api POST /api/v1/auth/totp/enable "{\"code\":\"$(totp_code "$TOTP_SECRET" 0)\"}")
+TOTP_ENABLED=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["totp_enabled"])' <<<"$TOTP_ENABLE")
+[[ "$TOTP_ENABLED" == "True" ]] || fail "enabling two-step verification did not report success"
+TOTP_RECOVERY=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["recovery_codes"][0])' <<<"$TOTP_ENABLE")
+TOTP_RECOVERY_2=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["recovery_codes"][1])' <<<"$TOTP_ENABLE")
+[[ -n "$TOTP_RECOVERY" && -n "$TOTP_RECOVERY_2" ]] || fail "enable returned too few recovery codes"
+
+# A fresh client: the password step must answer with a challenge and no cookie.
+TOTP_JAR="$WORK/totp-cookies.txt"
+rm -f "$TOTP_JAR"
+TOTP_LOGIN=$(curl -fsS -c "$TOTP_JAR" -X POST -H 'Content-Type: application/json' \
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/login")
+TOTP_CHALLENGE=$(TOTP_LOGIN="$TOTP_LOGIN" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["TOTP_LOGIN"])
+assert payload.get("totp_required") is True, payload
+assert "admin" not in payload, payload
+assert payload.get("challenge"), payload
+print(payload["challenge"])
+PY
+)
+grep -q 'sspanel_session' "$TOTP_JAR" 2>/dev/null && fail "the password step issued a session cookie"
+[[ -n "$TOTP_CHALLENGE" ]] || fail "the password step returned no challenge"
+
+# The wrong code is rejected and the right one completes the login.
+TOTP_BAD=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"challenge\":\"$TOTP_CHALLENGE\",\"code\":\"000000\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/login/totp")
+[[ "$TOTP_BAD" == "401" ]] || fail "a wrong verification code returned $TOTP_BAD, want 401"
+# The code from the next step: the enrollment consumed the current one.
+TOTP_STEP_CODE=$(totp_code "$TOTP_SECRET" 1)
+curl -fsS -c "$TOTP_JAR" -X POST -H 'Content-Type: application/json' \
+  -d "{\"challenge\":\"$TOTP_CHALLENGE\",\"code\":\"$TOTP_STEP_CODE\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/login/totp" >/dev/null
+curl -fsS -b "$TOTP_JAR" "http://127.0.0.1:$PANEL_PORT/api/v1/auth/me" \
+  | grep -q '"totp_enabled":true' || fail "the session from the second step does not report totp_enabled"
+
+# Replaying the same code with a fresh challenge must fail: it is single use.
+TOTP_REPLAY_CHALLENGE=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/login" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["challenge"])')
+TOTP_REPLAY=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"challenge\":\"$TOTP_REPLAY_CHALLENGE\",\"code\":\"$TOTP_STEP_CODE\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/login/totp")
+[[ "$TOTP_REPLAY" == "401" ]] || fail "a replayed code returned $TOTP_REPLAY, want 401"
+
+# A recovery code logs in exactly once.
+TOTP_RECOVERY_CHALLENGE=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/login" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["challenge"])')
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  -d "{\"challenge\":\"$TOTP_RECOVERY_CHALLENGE\",\"code\":\"$TOTP_RECOVERY\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/login/totp" >/dev/null || fail "a recovery code did not complete the login"
+TOTP_RECOVERY_REPLAY_CHALLENGE=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+  -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/login" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["challenge"])')
+TOTP_RECOVERY_REPLAY=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d "{\"challenge\":\"$TOTP_RECOVERY_REPLAY_CHALLENGE\",\"code\":\"$TOTP_RECOVERY\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/login/totp")
+[[ "$TOTP_RECOVERY_REPLAY" == "401" ]] || fail "a replayed recovery code returned $TOTP_RECOVERY_REPLAY, want 401"
+
+# The audit trail names the actions and carries none of the secrets.
+TOTP_AUDIT=$(api GET "/api/v1/audit?limit=50")
+TOTP_AUDIT="$TOTP_AUDIT" TOTP_SECRET="$TOTP_SECRET" TOTP_RECOVERY="$TOTP_RECOVERY" \
+  TOTP_RECOVERY_2="$TOTP_RECOVERY_2" TOTP_STEP_CODE="$TOTP_STEP_CODE" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["TOTP_AUDIT"])
+actions = {item["action"] for item in payload["items"]}
+assert "admin.totp.enable" in actions, sorted(actions)
+body = json.dumps(payload)
+for name in ("TOTP_SECRET", "TOTP_RECOVERY", "TOTP_RECOVERY_2", "TOTP_STEP_CODE"):
+    value = os.environ.get(name, "")
+    assert value and value not in body, f"the audit log leaked {name}"
+PY
+
+# Turn it back off through the API, then the login is single step again. The
+# second factor here is a recovery code, which also proves the disable path
+# accepts either form; a TOTP code would need waiting for the next time step.
+TOTP_DISABLE=$(curl -fsS -b "$TOTP_JAR" -X POST -H 'Content-Type: application/json' \
+  -d "{\"password\":\"$ADMIN_PASSWORD\",\"code\":\"$TOTP_RECOVERY_2\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/totp/disable")
+grep -q '"totp_enabled":false' <<<"$TOTP_DISABLE" || fail "disabling two-step verification did not report success"
+api POST /api/v1/auth/login "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" >/dev/null
+log "two-step verification: challenge, code, replay and recovery code all behave"
+
 log "checking client export"
 api GET /api/v1/export/clients >"$WORK/clients.csv"
 head -1 "$WORK/clients.csv" | grep -q '^inbound_id,inbound_remark,name,psk' || fail "unexpected export header"
