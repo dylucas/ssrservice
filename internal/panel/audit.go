@@ -88,12 +88,20 @@ func (s *Server) audit(c *gin.Context, entry auditEntry) {
 }
 
 // auditLogin records a login attempt, which happens before a session exists.
-func (s *Server) auditLogin(c *gin.Context, username string, admin *model.Admin, action string) {
+//
+// extra is an optional fixed key=value fragment such as "stage=totp". It is
+// assembled from literal call sites, never from the request body, so a password
+// or a verification code cannot end up in the trail through this path.
+func (s *Server) auditLogin(c *gin.Context, username string, admin *model.Admin, action, extra string) {
+	detail := auditFields("username", username)
+	if extra != "" {
+		detail += " " + extra
+	}
 	entry := model.AuditLog{
 		CreatedAt: nowFunc().Unix(),
 		Username:  username,
 		Action:    action,
-		Detail:    auditFields("username", username),
+		Detail:    detail,
 		IP:        c.ClientIP(),
 	}
 	if admin != nil {

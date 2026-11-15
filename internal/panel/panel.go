@@ -204,12 +204,19 @@ func (s *Server) buildHandler() http.Handler {
 	apiV1.Use(limitRequestBody(maxAPIRequestBody))
 	apiV1.Use(noStore())
 	apiV1.POST("/auth/login", s.handleLogin)
+	// The second login step carries a challenge instead of a session, so it
+	// lives on the unauthenticated group next to the password step.
+	apiV1.POST("/auth/login/totp", s.handleTOTPLogin)
 	api := apiV1.Group("")
 	api.Use(s.requireAuth())
 
 	api.POST("/auth/logout", s.handleLogout)
 	api.GET("/auth/me", s.handleMe)
 	api.PUT("/auth/password", s.handleChangePassword)
+	api.POST("/auth/totp/setup", s.handleTOTPSetup)
+	api.POST("/auth/totp/enable", s.handleTOTPEnable)
+	api.POST("/auth/totp/disable", s.handleTOTPDisable)
+	api.POST("/auth/totp/recovery-codes", s.handleTOTPRecoveryCodes)
 	api.GET("/dashboard", s.handleDashboard)
 	api.GET("/system", s.handleSystem)
 	api.GET("/inbounds", s.handleListInbounds)
