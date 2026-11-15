@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -95,5 +96,64 @@ func TestRandomPassword(t *testing.T) {
 	}
 	if len(a) != 20 || a == b {
 		t.Fatalf("unexpected passwords %q %q", a, b)
+	}
+}
+
+func TestChallengeTokens(t *testing.T) {
+	sessions, err := NewSessions([]byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	if err != nil {
+		t.Fatalf("new sessions: %v", err)
+	}
+	now := time.Now()
+	value, expires, err := sessions.IssueChallenge(9, "hash-a", now)
+	if err != nil {
+		t.Fatalf("issue challenge: %v", err)
+	}
+	if !expires.After(now) {
+		t.Fatal("challenge must expire in the future")
+	}
+	// The window is minutes, not the session lifetime.
+	if expires.Sub(now) > 10*time.Minute {
+		t.Fatalf("challenge lifetime %v is too long", expires.Sub(now))
+	}
+	id, version, err := sessions.ParseChallenge(value, now)
+	if err != nil {
+		t.Fatalf("parse challenge: %v", err)
+	}
+	if id != 9 || version != SessionVersion("hash-a") {
+		t.Fatalf("unexpected challenge payload id=%d version=%q", id, version)
+	}
+
+	// A challenge does not double as a session cookie and vice versa: the two
+	// carry different grants and must never be interchangeable.
+	if _, _, err := sessions.Parse(value, now); err == nil {
+		t.Fatal("challenge accepted as a session")
+	}
+	session, _, err := sessions.Issue(9, "hash-a", now)
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	if _, _, err := sessions.ParseChallenge(session, now); err == nil {
+		t.Fatal("session accepted as a challenge")
+	}
+
+	// Tampering and a different signing key are rejected.
+	if _, _, err := sessions.ParseChallenge(value+"x", now); err == nil {
+		t.Fatal("tampered challenge accepted")
+	}
+	other, _ := NewSessions([]byte("ffffffffffffffffffffffffffffffff"), time.Hour)
+	if _, _, err := other.ParseChallenge(value, now); err == nil {
+		t.Fatal("challenge verified with a different secret")
+	}
+
+	// Expiry is reported separately so the login page can send the operator back
+	// to the password step instead of showing "invalid credentials".
+	if _, _, err := sessions.ParseChallenge(value, now.Add(6*time.Minute)); !errors.Is(err, ErrExpiredChallenge) {
+		t.Fatalf("expired challenge error = %v, want ErrExpiredChallenge", err)
+	}
+
+	// The session version ties the challenge to the password it was issued for.
+	if version == SessionVersion("hash-b") {
+		t.Fatal("session version must depend on the password hash")
 	}
 }
