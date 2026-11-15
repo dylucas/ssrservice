@@ -21,6 +21,8 @@
 
 - `message` 面向调用方：校验错误、端口占用、权限不足会说明原因；`500 internal_error` 只返回通用文案，`409 conflict` 只说明冲突字段（例如重名用户），内部细节（SQLite 约束名、文件路径）只写日志。
 
+- 两步验证相关错误码：`invalid_totp`（验证码或恢复码错误）、`totp_challenge_expired`（挑战过期，需重新登录）、`totp_challenge_invalid`（挑战无效，例如两步之间密码被修改）、`totp_already_enabled`、`totp_not_setup`、`totp_not_enabled`、`invalid_password`。`totp_required` 是登录响应字段而不是错误码。
+
 - 时间字段为 UTC Unix 秒（`expires_at`、`created_at` 等）；前端按本地时区展示。
 - 会话 Cookie 名 `sspanel_session`，`HttpOnly`、`SameSite=Strict`，HTTPS 时带 `Secure`。
 - 变更请求若带 `Origin` 头，必须与 `Host` 同源，否则返回 `403 invalid_origin`。
@@ -34,22 +36,84 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/auth/login` | body `{username, password}`，成功后 Set-Cookie |
+| POST | `/auth/login` | body `{username, password}`；未启用两步验证时成功即 Set-Cookie，启用时返回挑战 |
+| POST | `/auth/login/totp` | body `{challenge, code}`，完成两步登录并 Set-Cookie |
 | POST | `/auth/logout` | 清除会话 |
-| GET | `/auth/me` | 当前管理员信息 |
+| GET | `/auth/me` | 当前管理员信息（含 `totp_enabled`） |
 | PUT | `/auth/password` | body `{current_password, new_password}`，修改后轮换会话 |
+| POST | `/auth/totp/setup` | body `{password}`，生成待绑定的 TOTP 密钥 |
+| POST | `/auth/totp/enable` | body `{code}`，完成绑定并返回恢复码 |
+| POST | `/auth/totp/disable` | body `{password, code}`，关闭两步验证 |
+| POST | `/auth/totp/recovery-codes` | body `{password, code}`，重生成恢复码 |
 
-登录响应：
+登录响应（未启用两步验证）：
 
 ```json
 {
-  "admin": { "id": 1, "username": "admin", "must_change_password": false },
+  "admin": {
+    "id": 1,
+    "username": "admin",
+    "must_change_password": false,
+    "totp_enabled": false
+  },
   "expires_at": 1790000000
 }
 ```
 
+登录响应（已启用两步验证）：
+
+```json
+{ "totp_required": true, "challenge": "…", "expires_at": 1790000000 }
+```
+
+- 启用两步验证后，密码校验通过只返回挑战，**不下发会话 Cookie**；`challenge` 是 5 分钟有效的 HMAC 签名令牌，绑定管理员与会话版本（改密码或两步验证状态变化后失效）。
+- 第二步调用 `POST /auth/login/totp`，`code` 可以是 6 位 TOTP 验证码或一次性恢复码。成功后返回 `200`，响应形状与普通登录相同并下发 Cookie。
+- 第二步错误码：`400 invalid_request`（请求体不合法）、`401 invalid_totp`（验证码或恢复码错误）、`401 totp_challenge_expired`（挑战过期，需重新登录）、`401 totp_challenge_invalid`（密码已修改或两步验证状态变化）、`429 too_many_attempts`。
+- 密码错误返回 `401 invalid_credentials`；超过限流返回 `429 too_many_attempts`。第二步与密码步共用同一套按 IP 限流（默认 5 次/分钟）：密码步成功**不会**清空失败计数，只有完整登录成功（拿到会话）才会清空——否则知道密码的人可以靠反复走密码步重置预算，把 6 位验证码变成可穷举。
+
+`GET /auth/me` 响应：
+
+```json
+{
+  "id": 1,
+  "username": "admin",
+  "must_change_password": false,
+  "totp_enabled": true,
+  "created_at": 1780000000,
+  "last_login_at": 1790000000
+}
+```
+
 `must_change_password=true` 时，除 `/auth/me`、`/auth/password`、`/auth/logout` 外的接口返回
-`403 password_change_required`。
+`403 password_change_required`；`/auth/totp/*` 也在此列，需先改密码。
+
+### 两步验证管理
+
+| 方法 | 路径 | 请求体 | 成功响应 |
+|---|---|---|---|
+| POST | `/auth/totp/setup` | `{password}` | `{secret, otpauth_url}` |
+| POST | `/auth/totp/enable` | `{code}` | `{recovery_codes: [...], totp_enabled: true}` |
+| POST | `/auth/totp/disable` | `{password, code}` | `{ok: true, totp_enabled: false}` |
+| POST | `/auth/totp/recovery-codes` | `{password, code}` | `{recovery_codes: [...]}` |
+
+| 路径 | 错误 |
+|---|---|
+| `/auth/totp/setup` | `400 invalid_password`、`409 totp_already_enabled` |
+| `/auth/totp/enable` | `400 totp_not_setup`、`400 invalid_totp`、`409 totp_already_enabled` |
+| `/auth/totp/disable` | `400 invalid_password`、`400 invalid_totp`、`400 totp_not_enabled` |
+| `/auth/totp/recovery-codes` | `400 invalid_password`、`400 invalid_totp`、`400 totp_not_enabled` |
+
+- `setup` 返回 20 字节随机密钥（base32）与 `otpauth://` URI；待绑定密钥在完成绑定前不参与登录校验，因此绑定流程中断不影响当前登录。返回 `409 totp_already_enabled` 时需先关闭再重新绑定。
+- `enable` 用待绑定密钥对应的 6 位验证码确认；成功后返回 10 个一次性恢复码。**恢复码只在启用或重生成恢复码的那次响应里返回明文**，之后数据库只存其 SHA-256 哈希。
+- `disable` 与 `recovery-codes` 都要求当前密码与有效验证码（或恢复码）；重生成后旧恢复码立即失效。
+- 这些接口都在会话认证之后，继承同源校验、`Cache-Control: no-store` 等既有约定。
+- 启用、关闭与重生成恢复码分别记审计动作 `admin.totp.enable`、`admin.totp.disable`、`admin.totp.recovery`；审计与日志不含密钥、验证码与恢复码。
+
+### API 客户端兼容性
+
+- 只发送用户名与密码的客户端，在目标账号启用两步验证后会收到 `{totp_required: true, challenge, expires_at}` 而不是 Cookie，必须再调用 `POST /auth/login/totp` 完成第二步，否则无法建立会话。
+- `totp_required` 是响应字段，HTTP 状态仍为 `200`；客户端应先判断它，而不是把登录成功等同于拿到 Cookie。
+- 未启用两步验证的账号行为与之前完全一致；`admin.totp_enabled` 与 `/auth/me` 的 `totp_enabled` 可用于提前判断。
 
 ## 仪表盘与系统
 
@@ -337,15 +401,16 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 
 | 动作 | 说明 |
 |---|---|
-| `auth.login` / `auth.login.failed` / `auth.logout` | 登录成功、失败（含尝试的用户名）与退出 |
+| `auth.login` / `auth.login.failed` / `auth.logout` | 登录成功、失败（含尝试的用户名；第二步失败带 `stage=totp`）与退出 |
 | `admin.password` | 修改管理员密码 |
+| `admin.totp.enable` / `.disable` / `.recovery` | 启用/关闭两步验证、重生成恢复码 |
 | `inbound.create` / `.update` / `.delete` / `.toggle` / `.restart` | 入站变更 |
 | `client.create` / `.update` / `.delete` / `.toggle` / `.reset` / `.token` / `.kick` | 用户变更 |
 | `client.import` / `client.export` | 导入导出 |
 | `settings.update` | 系统设置变更 |
 
 - 只记录**成功**的操作；失败的登录例外（记 `auth.login.failed`）。
-- `detail` 为固定的 `key=value` 摘要，**不包含**密码、用户 PSK、服务器 PSK、订阅 token。
+- `detail` 为固定的 `key=value` 摘要，**不包含**密码、用户 PSK、服务器 PSK、订阅 token、TOTP 密钥、验证码与恢复码。
 - 保留策略：90 天，且最多 5 万条（超出按时间删除最旧记录）。
 
 ## 设置
