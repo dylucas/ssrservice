@@ -40,6 +40,7 @@ Usage:
   sspanel check [--config path]
   sspanel repair [--config path]
   sspanel admin reset-password [--config path]
+  sspanel admin reset-totp [--config path] [--username admin]
   sspanel version
 
 `, version.Full())
@@ -272,11 +273,13 @@ func validateStoredInbounds(inbounds []model.Inbound) error {
 
 func runAdmin(args []string) error {
 	if len(args) == 0 {
-		return errors.New("admin subcommand required: reset-password")
+		return errors.New("admin subcommand required: reset-password or reset-totp")
 	}
 	switch args[0] {
 	case "reset-password":
 		return adminResetPassword(args[1:])
+	case "reset-totp":
+		return adminResetTOTP(args[1:])
 	default:
 		return fmt.Errorf("unknown admin subcommand %q", args[0])
 	}
@@ -315,6 +318,12 @@ func adminResetPassword(args []string) error {
 		return err
 	}
 	fmt.Printf("password updated for %s: %s\n", admin.Username, password)
+	// Two-step verification survives a password reset on purpose, but an operator
+	// recovering an account this way would then still be asked for a code. Point
+	// at the command that clears it instead of letting them discover the wall.
+	if admin.TOTPEnabled {
+		fmt.Printf("note: two-step verification is still enabled for %s; run `sspanel admin reset-totp` if the authenticator is unavailable\n", admin.Username)
+	}
 	return nil
 }
 
@@ -363,5 +372,39 @@ func runRepair(args []string) error {
 		return fmt.Errorf("daily totals: %w", err)
 	}
 	fmt.Printf("daily totals rebuilt: %d -> %d rows\n", before, after)
+	return nil
+}
+
+// adminResetTOTP clears two-step verification for an administrator.
+//
+// It is the offline escape hatch for the one case the panel cannot solve: the
+// authenticator device AND every recovery code are gone. Whoever can run this
+// command already has the database file and root on the host, so it grants no
+// privilege that was not already available; it only avoids having to hand-edit
+// the admins table.
+func adminResetTOTP(args []string) error {
+	fs, configPath, dbPath := newFlagSet("admin reset-totp")
+	username := fs.String("username", "admin", "administrator username")
+	cfg, err := loadConfig(fs, args, configPath, dbPath)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(cfg.Database.Path)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	admin, err := st.AdminByUsername(*username)
+	if err != nil {
+		return fmt.Errorf("administrator %q: %w", *username, err)
+	}
+	if !admin.TOTPEnabled && admin.TOTPPendingSecret == "" {
+		fmt.Printf("two-step verification is already disabled for %s\n", admin.Username)
+		return nil
+	}
+	if err := st.DisableAdminTOTP(admin.ID); err != nil {
+		return err
+	}
+	fmt.Printf("two-step verification cleared for %s\n", admin.Username)
 	return nil
 }
