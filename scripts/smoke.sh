@@ -342,6 +342,35 @@ assert payload["total"] > 0, payload
 assert all(item["client_id"] for item in payload["items"]), payload
 PY
 
+# The access page can scope both halves to one inbound. All recorded traffic in
+# this instance belongs to INBOUND_ID, so the scoped summary must agree with the
+# global one and every returned event must carry that id.
+ACCESS_BY_INBOUND_SUMMARY=$(api GET "/api/v1/access/summary?inbound_id=$INBOUND_ID")
+ACCESS_BY_INBOUND_EVENTS=$(api GET "/api/v1/access/events?inbound_id=$INBOUND_ID&limit=20")
+ACCESS_BY_INBOUND_SUMMARY="$ACCESS_BY_INBOUND_SUMMARY" \
+ACCESS_BY_INBOUND_EVENTS="$ACCESS_BY_INBOUND_EVENTS" \
+INBOUND_ID="$INBOUND_ID" python3 - <<'PY'
+import json, os
+summary = json.loads(os.environ["ACCESS_BY_INBOUND_SUMMARY"])
+events = json.loads(os.environ["ACCESS_BY_INBOUND_EVENTS"])
+wanted = int(os.environ["INBOUND_ID"])
+assert summary["total_hits"] > 0, summary
+assert len(summary["daily"]) == 7, "the trend is filled to the window"
+assert events["total"] > 0, events
+assert all(item["inbound_id"] == wanted for item in events["items"]), events["items"]
+assert all(item["inbound_remark"] == "smoke" for item in events["items"]), events["items"]
+PY
+# A deleted inbound id still returns an empty, well-formed view (history is
+# keyed by id, not by the current row).
+DELETED_SCOPE=$(api GET "/api/v1/access/summary?inbound_id=999999")
+DELETED_SCOPE="$DELETED_SCOPE" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["DELETED_SCOPE"])
+assert d["total_hits"] == 0, d
+assert len(d["daily"]) == 7, d
+assert d["top_hosts"] == [] and d["top_clients"] == [], d
+PY
+
 # Bad parameters are rejected instead of being silently clamped.
 for bad in "summary?days=0" "summary?days=91" "events?outcome=weird" \
   "events?network=icmp" "events?limit=0" "events?offset=-1"; do

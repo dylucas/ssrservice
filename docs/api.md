@@ -499,7 +499,7 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 |---|---|
 | `days` | 1–90，默认 7；窗口按有效时区换算 |
 | `client_id` | 可选，只看一个用户 |
-| `inbound_id` | 可选，只看一个入站 |
+| `inbound_id` | 可选，只看一个入站；面板的「访问分析」页顶部有入站选择器，入站详情页的「访问分析」按钮会带上此参数深链过来（`/access?inbound_id=N`） |
 
 ```json
 {
@@ -549,6 +549,7 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 ```
 
 - `host` 是客户端请求的目标（域名或 IP 字面量），`ip` 是实际拨号的地址；被拦截或解析失败时 `ip` 为空。
+- 面板把 `inbound_id` 作为独立范围：选择某个入站后，汇总卡片、趋势、Top 目标、Top 用户与明细一起收窄；点 Top 用户还会同时带上 `client_id`，因为聚合表按「用户 + 入站」分组。清除用户筛选保留入站范围，清除全部筛选才回到全局。
 - `daily` 恒为窗口内**每天一行**（没有流量的天补 0），因此图表横轴不会跳过安静的日子；`allowed_hits` / `blocked_hits` / `failed_hits` 与顶层的三个总数同源，因此趋势线和卡片不会互相矛盾。
 - 聚合表每个 `(天, 用户, 入站)` 最多保留 **256** 个不同目标（`internal/model.AccessMaxHostsPerKey`），溢出部分折叠为一行 `host = "<other>"`；因此 `unique_hosts` 是折叠后的计数，成交与字节总数不受影响。明细列表里不会出现这一行。
 - `outcome`：`allowed`（已连接）、`blocked`（门禁或策略拒绝，未拨号）、`failed`（已尝试但失败）。
