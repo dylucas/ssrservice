@@ -40,14 +40,14 @@ func (s *Service) AccessDropped() uint64 { return s.mgr.AccessDropped() }
 
 // AccessEvents returns one page of raw access records.
 //
-// A window given as local day boundaries is resolved here, in the effective time
-// zone, so "the day the operator picked" means the same day the summary buckets
-// its rows by even when the browser's zone differs from the server's. Unix
-// second bounds (Since/Until) are taken as absolute instants.
-func (s *Service) AccessEvents(filter store.AccessEventFilter) ([]model.AccessEvent, int64, error) {
-	if filter.SinceDay != "" || filter.UntilDay != "" {
-		loc := s.location()
-		since, until, err := dayWindow(filter.SinceDay, filter.UntilDay, loc)
+// The window may be given either as absolute instants (already inside filter) or
+// as inclusive local days, resolved here in the effective time zone so that
+// "the day the operator picked" means the same day the summary buckets its rows
+// by even when the browser's zone differs from the server's. A non-empty day
+// boundary takes precedence over the corresponding instant.
+func (s *Service) AccessEvents(filter store.AccessEventFilter, sinceDay, untilDay string) ([]model.AccessEvent, int64, error) {
+	if sinceDay != "" || untilDay != "" {
+		since, until, err := dayWindow(sinceDay, untilDay, s.location())
 		if err != nil {
 			return nil, 0, err
 		}

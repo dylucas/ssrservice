@@ -184,10 +184,8 @@ func (s *Server) handleAccessEvents(c *gin.Context) {
 	filter.Query = query
 	filter.Since = since
 	filter.Until = until
-	filter.SinceDay = sinceDay
-	filter.UntilDay = untilDay
 
-	events, total, err := s.svc.AccessEvents(filter)
+	events, total, err := s.svc.AccessEvents(filter, sinceDay, untilDay)
 	if err != nil {
 		s.writeServiceError(c, err)
 		return

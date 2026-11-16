@@ -54,16 +54,11 @@ type AccessEventFilter struct {
 	Network   string
 	// Query is a case-insensitive substring matched against the destination
 	// host.
-	Query string
-	Since int64 // inclusive, unix seconds
-	Until int64 // exclusive, unix seconds
-	// SinceDay and UntilDay are the same window expressed as inclusive local
-	// days. The service resolves them into Since/Until before the store sees
-	// them, because only the service knows the effective time zone.
-	SinceDay string
-	UntilDay string
-	Limit    int
-	Offset   int
+	Query  string
+	Since  int64 // inclusive, unix seconds
+	Until  int64 // exclusive, unix seconds
+	Limit  int
+	Offset int
 }
 
 // NormalizeAccessPage applies the documented defaults and bounds without
