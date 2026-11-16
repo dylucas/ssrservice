@@ -178,6 +178,9 @@ describe('trend and scope', () => {
   it('names what the figures cover', () => {
     expect(scopeLabel(7)).toBe('最近 7 天')
     expect(scopeLabel(30, 'alice')).toBe('最近 30 天 · 仅 alice')
+    // A client can be reached through more than one inbound, and the rollup
+    // groups by that pair, so the label names it.
+    expect(scopeLabel(7, 'alice', 'edge')).toBe('最近 7 天 · 仅 alice @ edge')
   })
 })
 

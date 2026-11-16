@@ -1,5 +1,5 @@
 import { computed, reactive, ref } from 'vue'
-import { hasAccessFilter } from '@/utils/access'
+import { hasAccessFilter, scopeLabel as scopeLabelOf } from '@/utils/access'
 import type {
   AccessEvent,
   AccessEventParams,
@@ -121,12 +121,10 @@ export function useAccessPage(options: AccessPageOptions) {
 
   /** scopeLabel says what the cards and the trend describe. */
   const scopeLabel = computed(() => {
-    const window = `最近 ${days.value} 天`
     const current = scope.value
-    if (!current) return window
-    const who = current.name || '已删除用户'
+    if (!current) return scopeLabelOf(days.value)
     const where = current.inboundRemark || (current.inboundId ? `入站 #${current.inboundId}` : '')
-    return where ? `${window} · 仅 ${who} @ ${where}` : `${window} · 仅 ${who}`
+    return scopeLabelOf(days.value, current.name || '已删除用户', where)
   })
 
   async function loadSummary(): Promise<void> {
