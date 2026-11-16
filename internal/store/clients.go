@@ -382,6 +382,13 @@ func clientStatusClause(status string, now int64) (string, []any, error) {
 	case model.StatusActive:
 		return `c.enabled = 1 AND (c.expires_at = 0 OR c.expires_at > ?) AND ` +
 			`(c.quota_bytes = 0 OR c.up_bytes + c.down_bytes < c.quota_bytes)`, []any{now}, nil
+	case StatusExpiring:
+		// A list-only filter value: the dashboard's "expires soon" card links
+		// here, and the predicate is the same one Attention counts with.
+		clause, args := expiringClause(now)
+		return clause, args, nil
+	case StatusIdle:
+		return idleClause(), nil, nil
 	default:
 		return "", nil, fmt.Errorf("invalid client status %q", status)
 	}
@@ -391,7 +398,8 @@ func clientStatusClause(status string, now int64) (string, []any, error) {
 func ValidClientStatus(status string) bool {
 	return status == "" || status == "all" || status == model.StatusActive ||
 		status == model.StatusDisabled || status == model.StatusExpired ||
-		status == model.StatusQuotaExceeded
+		status == model.StatusQuotaExceeded || status == StatusExpiring ||
+		status == StatusIdle
 }
 
 // escapeLike turns a user string into a literal LIKE operand. The patterns are

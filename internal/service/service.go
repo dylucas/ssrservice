@@ -392,6 +392,13 @@ func (s *Service) Logger() *slog.Logger { return s.logger }
 // Counts returns row counts.
 func (s *Service) Counts() (store.Counts, error) { return s.store.Stats() }
 
+// Attention returns the dashboard's "need attention" groups. The window is
+// evaluated against the same clock the list filter uses, so a card and the list
+// it links to describe the same rows.
+func (s *Service) Attention() (store.AttentionCounts, error) {
+	return s.store.Attention(time.Now().Unix())
+}
+
 func parseInt(value string) int {
 	n, err := strconv.Atoi(value)
 	if err != nil {

@@ -136,6 +136,10 @@
   "up_bytes": 123456,
   "down_bytes": 654321,
   "traffic_30d": [{ "day": "2026-01-01", "up_bytes": 1, "down_bytes": 2 }],
+  "attention": {
+    "expiring_soon": 2, "expired": 1, "quota_exceeded": 0, "idle": 7,
+    "expiring_window_days": 7
+  },
   "system": {
     "os": "linux", "arch": "amd64", "num_cpu": 2, "goroutines": 42,
     "cpu_percent": 3.5, "mem_used": 104857600, "mem_total": 2147483648,
@@ -143,6 +147,17 @@
   }
 }
 ```
+
+`attention` 是仪表盘「需要关注」的四个数字：
+
+| 字段 | 含义 | 对应列表 |
+|---|---|---|
+| `expiring_soon` | 启用且 `expiring_window_days`（7）天内到期 | `/clients?status=expiring` |
+| `expired` | 启用但已过期 | `/clients?status=expired` |
+| `quota_exceeded` | 启用且已超配额 | `/clients?status=quota_exceeded` |
+| `idle` | 启用且累计流量为 0（从未连接过） | `/clients?status=idle` |
+
+四个数字与对应列表的 `total` 由同一段 SQL 谓词求出，因此卡片与点进去的条数一致；`idle` 也因此包含刚创建但还没连过的用户，这是它的本意（预配了却没用）。
 
 ## 数据时效
 
@@ -268,7 +283,7 @@ curl -b cookies.txt -X PUT http://127.0.0.1:2096/api/v1/inbounds/1 \
 | 参数 | 默认 | 规则 |
 |---|---|---|
 | `inbound_id` | 全部 | `>0` 只返回该入站；`0`/省略=全部。仅顶层 `/clients` 有效，`/inbounds/:id/clients` 由路径决定并忽略此参数 |
-| `status` | `all` | `all`、`active`、`disabled`、`expired`、`quota_exceeded` |
+| `status` | `all` | `all`、`active`、`disabled`、`expired`、`quota_exceeded`，以及两个**仅用于筛选**的值 `expiring`（启用且 7 天内到期）与 `idle`（启用且累计流量为 0） |
 | `q` | 空 | 去空白后按子串匹配 `name`、`note`、入站 `remark`、`method`；最长 100 字符 |
 | `limit` | `100` | `1–500` |
 | `offset` | `0` | `0–10000000` |
@@ -284,6 +299,7 @@ curl -b cookies.txt -X PUT http://127.0.0.1:2096/api/v1/inbounds/1 \
 - 参数校验是**拒绝**而不是截断：`limit=0`、`limit=501`、`offset=-1`、`status=bogus`、`inbound_id=abc`、超长 `q` 都返回 `400 invalid_request`，避免调用方以为自己拿到了全量数据。
 - `offset` 超出总数返回 `200` + 空 `items` + 正确的 `total`。
 - 排序固定为 `id` 升序，翻页不跳行不重复。
+- `expiring` / `idle` 是**筛选值而非状态**：行内 `status` 字段永远只会是 `active`/`disabled`/`expired`/`quota_exceeded` 四者之一。它们存在的目的是让仪表盘「需要关注」的卡片能深链到对应的行（`/clients?status=expiring`），数字与列表 `total` 由同一段 SQL 谓词求出，不会各不相同。
 - `q` 里的 `%`、`_`、`\` 按字面量匹配（内部使用 `LIKE ... ESCAPE '\'`）。旧版面板在浏览器里把四个字段拼成一个串再匹配，因此**跨字段的短语（如 `alice 香港`）不再命中**，这是有意的简化。
 - 只读 `clients` 的展示列，并从 `inbounds` JOIN 出 `remark`/`method`，所以列表既不读也不返回任何 PSK。
 
@@ -410,6 +426,8 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 | `inbound.create` / `.update` / `.delete` / `.toggle` / `.restart` | 入站变更 |
 | `client.create` / `.update` / `.delete` / `.toggle` / `.reset` / `.token` / `.kick` | 用户变更 |
 | `client.import` / `client.export` | 导入导出 |
+| `client.batch` | 批量用户操作（动作、选中/成功/失败数、前 20 个 id） |
+| `export.audit` / `export.access` | 导出审计日志 / 访问明细（只记字节数与是否截断） |
 | `settings.update` | 系统设置变更 |
 
 - 只记录**成功**的操作；两个例外：登录失败记 `auth.login.failed`，重认证失败记 `admin.reauth.failed`（连续失败达到阈值后返回 429）。
@@ -522,6 +540,42 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 - 目标名会规范化（去空白、小写、去掉一个末尾点、截断到 255 字节），因为它是客户端可控的字符串。
 
 参数非法（`days`/`limit`/`offset` 越界、未知 `outcome`/`network`、`q` 过长、`until<=since`、`since_day`/`until_day` 不是合法日期或顺序颠倒）返回 `400 invalid_request`；未登录返回 `401`。
+
+## 批量操作
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/batch/clients` | 对一组用户执行同一动作 |
+
+> 位于 `/batch/clients` 而不是 `/clients/batch`：后者会与 `/clients/:id` 的通配同层冲突（gin 会 panic）。
+
+```json
+{ "action": "extend", "ids": [1, 2, 3], "days": 30 }
+```
+
+| 字段 | 规则 |
+|---|---|
+| `action` | `enable`、`disable`、`delete`、`extend`、`add_quota`、`reset` |
+| `ids` | 1–500 个正整数，重复项自动去重；空数组、0、负数、超上限都返回 `400` |
+| `days` | 仅 `extend` 使用，1–3650 |
+| `bytes` | 仅 `add_quota` 使用，1–2^50 |
+
+响应为**部分成功**语义，与导入一致：
+
+```json
+{ "action": "enable", "applied": 3, "failed": [{ "id": 7, "name": "bob", "error": "user not found" }] }
+```
+
+行为约定：
+
+- **按入站分组**：每个入站一个事务、一次监听重建。选中 N 个用户不会造成 N 次重建（可用 `ReloadCount` 观测），这一点与批量导入相同。
+- `enable` 在**单用户方法**的入站上会整组拒绝（`该入站为单用户方法，一次只能启用一个用户`）：批量启用可能让同一入站出现两个启用用户，逐行检查无法发现这种组合。其它入站不受影响。
+- `extend` 对 `expires_at = 0`（永不过期）的用户记失败 `never expires, nothing to extend`；`add_quota` 对 `quota_bytes = 0`（不限流量）的用户记失败 `unlimited traffic, nothing to add`。**不会**把一个「不限」的账号悄悄改成「有限」。
+- `delete` 会一并回收运行时计量账户并从按天汇总中扣除该用户的流量（与单个删除同一条路径）。
+- `reset` 是唯一**逐用户**执行的动作用户：它必须和内存计数器在同一把锁里归零（否则下一次落库会把旧计数写回来），因此每个用户一次事务，而不是一条批量 SQL。
+- 不存在的 id 记为该 id 失败，其余照常执行。
+- 事务成功但监听重建失败时，返回 500 并说明「已保存但未能重建」，此时需要重启该入站修复；这是唯一会出现的半一致状态。
+- 整批写一条审计 `client.batch`，内容为动作、选中数、成功数、失败数与前 20 个 id。
 
 ## 导出
 

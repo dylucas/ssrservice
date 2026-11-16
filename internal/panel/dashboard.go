@@ -25,7 +25,20 @@ type dashboardResponse struct {
 	UpBytes         int64              `json:"up_bytes"`
 	DownBytes       int64              `json:"down_bytes"`
 	Traffic30d      []model.DailyUsage `json:"traffic_30d"`
-	System          systemInfo         `json:"system"`
+	// Attention is the "needs attention" summary the dashboard shows above the
+	// traffic chart. Each number links to the list filtered to the same rows.
+	Attention attentionInfo `json:"attention"`
+	System    systemInfo    `json:"system"`
+}
+
+// attentionInfo mirrors store.AttentionCounts so the response names stay
+// documented JSON regardless of how the store spells its fields.
+type attentionInfo struct {
+	ExpiringSoon  int64 `json:"expiring_soon"`
+	Expired       int64 `json:"expired"`
+	QuotaExceeded int64 `json:"quota_exceeded"`
+	Idle          int64 `json:"idle"`
+	WindowDays    int   `json:"expiring_window_days"`
 }
 
 type systemInfo struct {
@@ -59,6 +72,11 @@ func (s *Server) handleDashboard(c *gin.Context) {
 		s.writeServiceError(c, err)
 		return
 	}
+	attention, err := s.svc.Attention()
+	if err != nil {
+		s.writeServiceError(c, err)
+		return
+	}
 	info := s.monitor.Snapshot()
 	resp := dashboardResponse{
 		Version:         version.Full(),
@@ -72,6 +90,13 @@ func (s *Server) handleDashboard(c *gin.Context) {
 		UpBytes:         up,
 		DownBytes:       down,
 		Traffic30d:      days,
+		Attention: attentionInfo{
+			ExpiringSoon:  attention.ExpiringSoon,
+			Expired:       attention.Expired,
+			QuotaExceeded: attention.QuotaExceeded,
+			Idle:          attention.Idle,
+			WindowDays:    attention.WindowDays,
+		},
 		System: systemInfo{
 			OS:          info.OS,
 			Arch:        info.Arch,

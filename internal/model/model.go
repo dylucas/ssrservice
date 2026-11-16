@@ -371,6 +371,7 @@ const (
 	AuditClientKick        = "client.kick"
 	AuditClientImport      = "client.import"
 	AuditClientExport      = "client.export"
+	AuditClientBatch       = "client.batch"
 	AuditExportAudit       = "export.audit"
 	AuditExportAccess      = "export.access"
 )
@@ -399,6 +400,7 @@ var AuditActions = []string{
 	AuditClientKick,
 	AuditClientImport,
 	AuditClientExport,
+	AuditClientBatch,
 	AuditExportAudit,
 	AuditExportAccess,
 	AuditSettingsUpdate,

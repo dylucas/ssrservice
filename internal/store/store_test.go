@@ -906,3 +906,95 @@ func TestInboundDomainRoundTrip(t *testing.T) {
 		t.Fatalf("list mismatch: %+v", list)
 	}
 }
+
+// TestAttentionCountsMatchTheListFilters pins the dashboard's "needs attention"
+// numbers to the list each card links to. If the two ever drift, an operator
+// clicks a card showing 3 and lands on a page with 5 rows.
+func TestAttentionCountsMatchTheListFilters(t *testing.T) {
+	st := newTestStore(t)
+	in := model.Inbound{Remark: "attention", Listen: "127.0.0.1", Port: 9201,
+		Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&in); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+	now := int64(1_800_000_000)
+	day := int64(24 * 60 * 60)
+	fixtures := []model.Client{
+		// Expiring soon: inside the window.
+		{Name: "expiring-1d", Enabled: true, ExpiresAt: now + day},
+		{Name: "expiring-7d", Enabled: true, ExpiresAt: now + 7*day},
+		// Outside the window.
+		{Name: "expiring-8d", Enabled: true, ExpiresAt: now + 8*day},
+		{Name: "permanent", Enabled: true},
+		// Expired.
+		{Name: "expired", Enabled: true, ExpiresAt: now - day},
+		{Name: "expired-at-now", Enabled: true, ExpiresAt: now},
+		// Over quota.
+		{Name: "over-quota", Enabled: true, QuotaBytes: 10, UpBytes: 10},
+		{Name: "under-quota", Enabled: true, QuotaBytes: 10, UpBytes: 1},
+		// Idle: enabled but never moved a byte.
+		{Name: "idle", Enabled: true},
+		{Name: "busy", Enabled: true, UpBytes: 1},
+		// Disabled clients belong to none of the groups.
+		{Name: "disabled-expiring", Enabled: false, ExpiresAt: now + day},
+		{Name: "disabled-idle", Enabled: false},
+	}
+	for i := range fixtures {
+		fixtures[i].InboundID = in.ID
+		fixtures[i].PSK = "psk"
+		fixtures[i].SubToken = "tok-" + itoaStore(i)
+		if err := st.CreateClient(&fixtures[i]); err != nil {
+			t.Fatalf("client %d: %v", i, err)
+		}
+	}
+
+	counts, err := st.Attention(now)
+	if err != nil {
+		t.Fatalf("attention: %v", err)
+	}
+	if counts.WindowDays != AttentionExpiringDays {
+		t.Fatalf("window = %d, want %d", counts.WindowDays, AttentionExpiringDays)
+	}
+
+	// Each number has to equal the number of rows the matching list filter
+	// returns, evaluated at the same instant.
+	cases := []struct {
+		name  string
+		count int64
+		// listStatus is the status filter that shows the same rows; an empty
+		// value means the group has no list filter (there is none today).
+		listStatus string
+		want       int64
+	}{
+		{"expiring_soon", counts.ExpiringSoon, StatusExpiring, 2},
+		{"expired", counts.Expired, model.StatusExpired, 2},
+		{"quota_exceeded", counts.QuotaExceeded, model.StatusQuotaExceeded, 1},
+		// Idle is "enabled and has never moved a byte", so it also covers the
+		// freshly provisioned accounts and the ones that expired before their
+		// first connection: 7 of the 12 fixtures.
+		{"idle", counts.Idle, StatusIdle, 7},
+	}
+	for _, tc := range cases {
+		if tc.count != tc.want {
+			t.Fatalf("%s = %d, want %d", tc.name, tc.count, tc.want)
+		}
+		_, total, err := st.ListClientPage(ClientPageFilter{Status: tc.listStatus, Now: now,
+			Limit: ClientPageMaxLimit})
+		if err != nil {
+			t.Fatalf("%s list: %v", tc.name, err)
+		}
+		if total != tc.count {
+			t.Fatalf("%s: the card shows %d but the list returns %d rows",
+				tc.name, tc.count, total)
+		}
+	}
+
+	// StatusAt never returns the two list-only values, so a row can never claim
+	// to be "expiring" or "idle" in its own status.
+	for _, c := range fixtures {
+		status := c.StatusAt(now)
+		if status == StatusExpiring || status == StatusIdle {
+			t.Fatalf("%s reported the list-only status %q", c.Name, status)
+		}
+	}
+}
