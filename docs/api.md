@@ -69,6 +69,7 @@
 - 启用两步验证后，密码校验通过只返回挑战，**不下发会话 Cookie**；`challenge` 是 5 分钟有效的 HMAC 签名令牌，绑定管理员与会话版本（改密码或两步验证状态变化后失效）。
 - 第二步调用 `POST /auth/login/totp`，`code` 可以是 6 位 TOTP 验证码或一次性恢复码。成功后返回 `200`，响应形状与普通登录相同并下发 Cookie。
 - 第二步错误码：`400 invalid_request`（请求体不合法）、`401 invalid_totp`（验证码或恢复码错误）、`401 totp_challenge_expired`（挑战过期，需重新登录）、`401 totp_challenge_invalid`（密码已修改或两步验证状态变化）、`429 too_many_attempts`。
+- **会话随两步验证状态失效**：启用或关闭两步验证都会改变会话版本，之前签发的会话与登录挑战立即失效（进行该操作的那个会话会被重发 cookie，不会掉线）。
 - 密码错误返回 `401 invalid_credentials`；超过限流返回 `429 too_many_attempts`。第二步与密码步共用同一套按 IP 限流（默认 5 次/分钟）：密码步成功**不会**清空失败计数，只有完整登录成功（拿到会话）才会清空——否则知道密码的人可以靠反复走密码步重置预算，把 6 位验证码变成可穷举。
 
 `GET /auth/me` 响应：
@@ -159,7 +160,7 @@
 | GET | `/inbounds/:id` | 详情 |
 | PUT | `/inbounds/:id` | 更新 |
 | DELETE | `/inbounds/:id` | 删除（级联删除用户与流量记录） |
-| POST | `/inbounds/:id/toggle` | body `{enabled}` |
+| POST | `/inbounds/:id/toggle` | body `{"enabled": true\|false}`，**必填**，缺失返回 `400` |
 | POST | `/inbounds/:id/restart` | 重建监听器 |
 | GET | `/inbounds/:id/clients` | 该入站的用户 |
 | POST | `/inbounds/:id/clients` | 在该入站创建用户 |
@@ -182,7 +183,7 @@
 
 - `server_psk` 留空时自动生成；SS2022 多用户方法必须为对应长度的 base64。
 - 单用户方法（`2022-blake3-chacha20-poly1305`）的 `server_psk` 必须为空，且入站只能有一个启用用户。
-- 端口冲突返回 `409 conflict`；权限不足/地址非法返回 `400`。
+- 端口冲突返回 `409 port_in_use`；权限不足返回 `403 permission_denied`；地址非法返回 `400 invalid_address`。调用方应按 `code` 分支，而不是按 HTTP 状态码猜原因。
 - `domain` 与 `domain_port` 可选，用于让该入站使用独立的分享域名（见下节）。
 - 列表与详情在入站**已启用但未能启动**（端口被占用、权限不足等）时带 `last_error` 说明原因；字段缺省表示运行时与记录一致。
 
@@ -232,12 +233,12 @@ curl -b cookies.txt -X PUT http://127.0.0.1:2096/api/v1/inbounds/1 \
 | GET | `/clients/:id` | 详情 |
 | PUT | `/clients/:id` | 更新 |
 | DELETE | `/clients/:id` | 删除 |
-| POST | `/clients/:id/toggle` | body `{enabled}` |
+| POST | `/clients/:id/toggle` | body `{"enabled": true\|false}`，**必填**，缺失返回 `400`（避免空 body 把用户关掉） |
 | POST | `/clients/:id/reset` | 清零已用流量 |
 | POST | `/clients/:id/token` | 轮换订阅 token |
 | POST | `/clients/:id/kick` | 断开该用户全部连接 |
 | GET | `/clients/:id/link` | 分享链接与订阅路径 |
-| GET | `/clients/:id/usage?days=30` | 每日流量（`days` 取 1–365） |
+| GET | `/clients/:id/usage?days=30` | 每日流量（`days` 取 1–365，返回恰好 N 天） |
 
 用户请求体：
 
@@ -330,12 +331,13 @@ curl -b cookies.txt -X PUT http://127.0.0.1:2096/api/v1/inbounds/1 \
 ```
 
 数据来自已落库的 `traffic_daily`，随落库周期（默认 10 秒）更新，因此最多滞后一个周期。
+窗口按有效时区计算，`days=N` 返回恰好 N 个日桶（含今天）；`days` 非法或越界返回 `400 invalid_request`。仪表盘的 `traffic_30d` 同一语义。
 
 ### 导入 / 导出
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/export/clients?inbound_id=` | 导出用户 CSV（`inbound_id` 省略时导出全部） |
+| GET | `/export/clients?inbound_id=` | 导出用户 CSV（`inbound_id` 省略时导出全部；非数字或负数返回 `400 invalid_request`，不会退化成导出全部凭据） |
 | POST | `/inbounds/:id/clients/import` | 从 CSV 或 `ss://` 链接批量导入 |
 
 > 导出接口位于 `/export/clients` 而不是 `/clients/export`：与 `/clients/:id` 的路径通配同层会产生路由冲突。
@@ -403,15 +405,17 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 |---|---|
 | `auth.login` / `auth.login.failed` / `auth.logout` | 登录成功、失败（含尝试的用户名；第二步失败带 `stage=totp`）与退出 |
 | `admin.password` | 修改管理员密码 |
+| `admin.reauth.failed` | 重认证（改密、两步验证相关操作）输入了错误的当前密码或验证码 |
 | `admin.totp.enable` / `.disable` / `.recovery` | 启用/关闭两步验证、重生成恢复码 |
 | `inbound.create` / `.update` / `.delete` / `.toggle` / `.restart` | 入站变更 |
 | `client.create` / `.update` / `.delete` / `.toggle` / `.reset` / `.token` / `.kick` | 用户变更 |
 | `client.import` / `client.export` | 导入导出 |
 | `settings.update` | 系统设置变更 |
 
-- 只记录**成功**的操作；失败的登录例外（记 `auth.login.failed`）。
+- 只记录**成功**的操作；两个例外：登录失败记 `auth.login.failed`，重认证失败记 `admin.reauth.failed`（连续失败达到阈值后返回 429）。
 - `detail` 为固定的 `key=value` 摘要，**不包含**密码、用户 PSK、服务器 PSK、订阅 token、TOTP 密钥、验证码与恢复码。
 - 保留策略：90 天，且最多 5 万条（超出按时间删除最旧记录）。
+- 查询参数 `limit`（1–500）与 `offset`、`since`/`until`（Unix 秒，左闭右开）非法时返回 `400 invalid_request`，与用户列表和访问明细一致，不会静默回退到默认页。
 
 ## 设置
 
@@ -427,13 +431,96 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
   "subscription_enabled": true,
   "allow_private_targets": false,
   "reset_day": 1,
-  "timezone": "Asia/Shanghai"
+  "timezone": "Asia/Shanghai",
+  "access_log_enabled": false
 }
 ```
 
-- `public_host` / `public_port` 用于生成分享链接；留空/0 时回退到入站监听地址与端口。
+- `public_host` / `public_port` 用于生成分享链接；留空/0 时回退到入站监听地址与端口。写入前会规范化（去首尾空白、小写、去掉一个末尾点），因此 `" Example.COM. "` 存成 `example.com`。
 - `allow_private_targets` 立即生效；云元数据地址始终拒绝。
-- `timezone` 必须是 IANA 时区名或 `Local`。
+- `timezone` **必填**，必须是 IANA 时区名或 `Local`；空串返回 `400 invalid_request`（否则 `time.LoadLocation("")` 会静默切到 UTC）。
+- `access_log_enabled` 控制是否记录代理访问目标，默认 `false`；改动立即生效、无需重启。
+- **`PUT /settings` 是整体替换而非部分更新**：请求体必须带上全部字段。缺少字段会被解码为零值（例如漏掉 `subscription_enabled` 会让订阅链接全部 404），因此客户端应先 `GET` 再整体提交。`public_port` 0–65535、`reset_day` 0–28 越界同样返回 400。
+
+## 访问分析
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/access/summary` | 窗口汇总、Top 目标、Top 用户与每日趋势 |
+| GET | `/access/events` | 原始访问明细（分页、可筛选） |
+
+`/access/summary` 参数：
+
+| 参数 | 说明 |
+|---|---|
+| `days` | 1–90，默认 7；窗口按有效时区换算 |
+| `client_id` | 可选，只看一个用户 |
+| `inbound_id` | 可选，只看一个入站 |
+
+```json
+{
+  "enabled": true,
+  "days": 7,
+  "raw_retention_days": 7,
+  "aggregate_retention_days": 90,
+  "dropped_records": 0,
+  "total_hits": 12,
+  "allowed_hits": 10,
+  "blocked_hits": 1,
+  "failed_hits": 1,
+  "unique_hosts": 4,
+  "up_bytes": 1234,
+  "down_bytes": 5678,
+  "daily": [{ "day": "2026-11-15", "hits": 12, "allowed_hits": 10, "blocked_hits": 1, "failed_hits": 1, "up_bytes": 1234, "down_bytes": 5678 }],
+  "top_hosts": [{ "host": "example.com", "hits": 8, "blocked_hits": 0, "up_bytes": 100, "down_bytes": 200 }],
+  "top_clients": [{ "client_id": 1, "name": "alice", "inbound_id": 1, "inbound_remark": "main", "hits": 8, "up_bytes": 100, "down_bytes": 200 }]
+}
+```
+
+`/access/events` 参数：`limit`（1–500，默认 100）、`offset`（0–100000）、`client_id`、`inbound_id`、`outcome`（`all`/`allowed`/`blocked`/`failed`）、`network`（`all`/`tcp`/`udp`）、`q`（目标子串，≤128 字符）、`since`/`until`（Unix 秒，左闭右开）、`since_day`/`until_day`（`YYYY-MM-DD`，按有效时区换算成秒，含首含尾；与 `since`/`until` 同时出现时以此为准）。
+
+```json
+{
+  "items": [{
+    "id": 1,
+    "started_at": 1794714231,
+    "duration_ms": 40,
+    "client_id": 1,
+    "client_name": "alice",
+    "inbound_id": 1,
+    "inbound_remark": "main",
+    "network": "tcp",
+    "host": "example.com",
+    "port": 443,
+    "ip": "93.184.216.34",
+    "outcome": "allowed",
+    "reason": "",
+    "up_bytes": 100,
+    "down_bytes": 200
+  }],
+  "total": 1,
+  "limit": 100,
+  "offset": 0
+}
+```
+
+- `host` 是客户端请求的目标（域名或 IP 字面量），`ip` 是实际拨号的地址；被拦截或解析失败时 `ip` 为空。
+- `daily` 恒为窗口内**每天一行**（没有流量的天补 0），因此图表横轴不会跳过安静的日子；`allowed_hits` / `blocked_hits` / `failed_hits` 与顶层的三个总数同源，因此趋势线和卡片不会互相矛盾。
+- 聚合表每个 `(天, 用户, 入站)` 最多保留 **256** 个不同目标（`internal/model.AccessMaxHostsPerKey`），溢出部分折叠为一行 `host = "<other>"`；因此 `unique_hosts` 是折叠后的计数，成交与字节总数不受影响。明细列表里不会出现这一行。
+- `outcome`：`allowed`（已连接）、`blocked`（门禁或策略拒绝，未拨号）、`failed`（已尝试但失败）。
+- `reason`：`disabled`、`expired`、`quota`、`ip_limit`、`sessions`（用户侧门禁）；`policy`（内网/元数据/面板地址等目标限制）；`resolve`（域名解析失败，含域名不存在与解析超时）；`dial`（连接目标失败）。
+- `client_name` / `inbound_remark` 为空表示该用户或入站已被删除，历史仍保留到保留期结束。
+- TCP：每条连接一条记录（含被拒绝的连接）。UDP：按 NAT 会话中的目标聚合，一个活跃目标在安静 2 秒后或最长 10 秒窗口结束时写一条记录，会话结束时不再重复已上报的字节；被策略拒绝的 UDP 目标每个会话只记一条。
+- UDP 的上行字节是**已提交给内核**的字节数（`WriteToUDPAddrPort` 成功返回），不是对端确认收到的字节数；发送失败的数据报不计入。
+- 记录尽力而为：写入队列有界（8192），队列满、UDP 单会话目标数超过上限（256）、落库失败或进程退出时队列里残留的记录都会丢弃并计入 `dropped_records`，**不会阻塞转发或计费**。
+- 明细保留 7 天、按天聚合保留 90 天，由面板后台任务**每分钟**清理一次（单次最多约 500 ms 工作量，积压分摊到后续 tick；不再是一小时一次，否则清理速度跟不上写入速度）。聚合直接从 `access_daily` 读取，因此 90 天窗口不需要扫描明细。
+- 关闭 `access_log_enabled` 后不再产生新记录：**已建立的 TCP 连接与正在进行的 UDP 会话**会先冲刷已计数的字节再停止计数，关闭后传输的字节不再归属到访问记录。关闭前的历史仍可读取（`enabled=false` 供前端提示）。
+- 记录**不含**载荷内容、URL 路径和客户端来源 IP。
+
+- `total` 在匹配行超过 100001 条时是下界（等于 `offset` 上限加一），因为更靠后的页已经取不到；窗口内小于该值时是精确值。
+- 目标名会规范化（去空白、小写、去掉一个末尾点、截断到 255 字节），因为它是客户端可控的字符串。
+
+参数非法（`days`/`limit`/`offset` 越界、未知 `outcome`/`network`、`q` 过长、`until<=since`、`since_day`/`until_day` 不是合法日期或顺序颠倒）返回 `400 invalid_request`；未登录返回 `401`。
 
 ## 备份
 
@@ -453,7 +540,7 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 
 - UA 含 `clash`/`meta`/`mihomo`，或查询参数 `format=clash` 时返回 YAML。
 - 用户被禁用、已到期、超配额，或订阅功能关闭时返回 `404`。
-- 响应头包含 `Profile-Update-Interval: 12`。
+- 响应头包含 `Profile-Update-Interval: 12` 与 `Cache-Control: no-store`（响应体含用户 PSK，404 也带同样的头，避免中间缓存留存）。
 
 ## 健康检查
 

@@ -78,6 +78,9 @@ log "creating client"
 CLIENT=$(api POST "/api/v1/inbounds/$INBOUND_ID/clients" '{"name":"smoke-user","enabled":true,"quota_bytes":0,"ip_limit":0}')
 CLIENT_ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$CLIENT")
 CLIENT_PSK=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["psk"])' <<<"$CLIENT")
+# The subscription token is only returned by the detail endpoint, and the
+# subscription cache-header check below needs the real URL.
+CLIENT_SUB_TOKEN=$(api GET "/api/v1/clients/$CLIENT_ID" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sub_token"])')
 
 log "checking inbound domain in share links"
 # The inbound created above now carries a domain, so every link the panel renders
@@ -216,6 +219,166 @@ PY
 
 api GET /api/v1/dashboard >/dev/null
 
+log "checking access analytics"
+# Recording is off by default; the summary still answers and says so.
+SUMMARY_DISABLED=$(api GET /api/v1/access/summary)
+SUMMARY_DISABLED="$SUMMARY_DISABLED" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["SUMMARY_DISABLED"])
+assert payload["enabled"] is False, payload
+assert payload["raw_retention_days"] == 7, payload
+assert payload["aggregate_retention_days"] == 90, payload
+PY
+
+# Turn it on through the API exactly as the settings page does.
+SETTINGS_JSON=$(api GET /api/v1/settings)
+SETTINGS_ON=$(SETTINGS_JSON="$SETTINGS_JSON" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["SETTINGS_JSON"])
+payload["access_log_enabled"] = True
+print(json.dumps(payload))
+PY
+)
+api PUT /api/v1/settings "$SETTINGS_ON" >/dev/null
+
+summary_enabled() {
+  api GET /api/v1/access/summary | python3 -c 'import json,sys; print(json.load(sys.stdin)["enabled"])'
+}
+[[ "$(summary_enabled)" == "True" ]] || fail "enabling access analytics was not applied"
+
+# Generate one recorded TCP and one recorded UDP access.
+"$PROBE" -server "127.0.0.1:$SS_PORT" -method 2022-blake3-aes-128-gcm \
+  -server-psk "$SERVER_PSK" -client-psk "$CLIENT_PSK" -target echo >/dev/null
+"$PROBE" -server "127.0.0.1:$SS_PORT" -method 2022-blake3-aes-128-gcm \
+  -server-psk "$SERVER_PSK" -client-psk "$CLIENT_PSK" -target udp-echo >/dev/null
+
+ACCESS_JSON=""
+for _ in $(seq 1 80); do
+  ACCESS_JSON=$(api GET /api/v1/access/summary)
+  if grep -q '"total_hits": *[1-9]' <<<"$ACCESS_JSON"; then break; fi
+  sleep 0.25
+done
+ACCESS_JSON="$ACCESS_JSON" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["ACCESS_JSON"])
+assert payload["enabled"] is True, payload
+assert payload["total_hits"] > 0, "no access record after a recorded round trip"
+assert payload["allowed_hits"] > 0, payload
+assert payload["unique_hosts"] > 0, payload
+assert payload["top_hosts"], payload
+assert payload["top_clients"], payload
+assert payload["top_clients"][0]["name"] == "smoke-user", payload
+# The trend has one point per day of the window, so a quiet day cannot be
+# compressed out of the chart.
+assert len(payload["daily"]) == 7, payload["daily"]
+PY
+
+# The day form of the window is what the date picker sends, and it is resolved
+# server-side in the configured zone.
+TODAY=$(date +%Y-%m-%d)
+DAY_TOTAL=$(api GET "/api/v1/access/events?since_day=$TODAY&until_day=$TODAY" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"])')
+[[ "$DAY_TOTAL" -gt 0 ]] || fail "the picked day returned no access records"
+for bad in "since_day=yesterday" "since_day=2026-13-01" \
+  "since_day=$TODAY&until_day=2000-01-01"; do
+  status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+    "http://127.0.0.1:$PANEL_PORT/api/v1/access/events?$bad")
+  [[ "$status" == "400" ]] || fail "access events $bad was accepted (status $status)"
+done
+
+# A UDP destination is flushed once its burst is quiet, so wait for both
+# transports rather than for the first record (which is the TCP one).
+ACCESS_EVENTS=""
+for _ in $(seq 1 80); do
+  ACCESS_EVENTS=$(api GET "/api/v1/access/events?limit=20")
+  if ACCESS_EVENTS="$ACCESS_EVENTS" python3 - <<'PY'
+import json, os, sys
+items = json.loads(os.environ["ACCESS_EVENTS"]).get("items", [])
+sys.exit(0 if {"tcp", "udp"} <= {item["network"] for item in items} else 1)
+PY
+  then break; fi
+  sleep 0.25
+done
+ACCESS_EVENTS="$ACCESS_EVENTS" CLIENT_PSK="$CLIENT_PSK" SERVER_PSK="$SERVER_PSK" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["ACCESS_EVENTS"])
+items = payload["items"]
+assert items, "access event list is empty"
+assert any(item["host"] == "127.0.0.1" for item in items), items
+assert any(item["outcome"] == "allowed" for item in items), items
+assert any(item["network"] == "tcp" for item in items), "TCP access was not recorded"
+assert any(item["network"] == "udp" for item in items), "UDP access was not recorded"
+body = json.dumps(payload)
+for name in ("CLIENT_PSK", "SERVER_PSK"):
+    secret = os.environ.get(name, "")
+    assert secret and secret not in body, f"access events leaked {name}"
+PY
+
+# The user filter narrows the event list.
+ACCESS_BY_CLIENT=$(api GET "/api/v1/access/events?client_id=$CLIENT_ID")
+ACCESS_BY_CLIENT="$ACCESS_BY_CLIENT" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["ACCESS_BY_CLIENT"])
+assert payload["total"] > 0, payload
+assert all(item["client_id"] for item in payload["items"]), payload
+PY
+
+# Bad parameters are rejected instead of being silently clamped.
+for bad in "summary?days=0" "summary?days=91" "events?outcome=weird" \
+  "events?network=icmp" "events?limit=0" "events?offset=-1"; do
+  status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+    "http://127.0.0.1:$PANEL_PORT/api/v1/access/$bad")
+  [[ "$status" == "400" ]] || fail "access $bad was accepted (status $status)"
+done
+
+# Turning it off stops collection but keeps the history readable.
+SETTINGS_OFF=$(SETTINGS_ON="$SETTINGS_ON" python3 - <<'PY'
+import json, os
+payload = json.loads(os.environ["SETTINGS_ON"])
+payload["access_log_enabled"] = False
+print(json.dumps(payload))
+PY
+)
+api PUT /api/v1/settings "$SETTINGS_OFF" >/dev/null
+[[ "$(summary_enabled)" == "False" ]] || fail "disabling access analytics was not applied"
+HISTORY_TOTAL=$(api GET /api/v1/access/events | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"])')
+[[ "$HISTORY_TOTAL" -gt 0 ]] || fail "history disappeared after disabling access analytics"
+
+log "checking stricter request validation"
+# PUT /settings replaces the whole object: a partial body must be rejected, not
+# silently zeroed (an empty timezone would move accounting to UTC and switch
+# subscriptions off).
+status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+  -X PUT -H 'Content-Type: application/json' \
+  -d '{"access_log_enabled":true}' "http://127.0.0.1:$PANEL_PORT/api/v1/settings")
+[[ "$status" == "400" ]] || fail "settings accepted a partial body (status $status)"
+
+# A toggle that does not say what the new state is must not be read as "off".
+status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+  -X POST -H 'Content-Type: application/json' -d '{}' \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/clients/$CLIENT_ID/toggle")
+[[ "$status" == "400" ]] || fail "toggle without enabled was accepted (status $status)"
+CLIENT_STILL=$(api GET "/api/v1/clients/$CLIENT_ID" | python3 -c 'import json,sys; print(json.load(sys.stdin)["enabled"])')
+[[ "$CLIENT_STILL" == "True" ]] || fail "a rejected toggle still changed the client"
+
+# A malformed export filter must not degrade into "export every PSK".
+for bad in "inbound_id=abc" "inbound_id=-1"; do
+  status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+    "http://127.0.0.1:$PANEL_PORT/api/v1/export/clients?$bad")
+  [[ "$status" == "400" ]] || fail "export $bad was accepted (status $status)"
+done
+
+# The audit list rejects bad paging like every other list endpoint.
+for bad in "limit=abc" "limit=0" "offset=-1" "since=abc"; do
+  status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+    "http://127.0.0.1:$PANEL_PORT/api/v1/audit?$bad")
+  [[ "$status" == "400" ]] || fail "audit $bad was accepted (status $status)"
+done
+
+# The subscription body carries a PSK, so no cache may keep it.
+SUB_HEADERS=$(curl -s -D - -o /dev/null "http://127.0.0.1:$PANEL_PORT/sub/$CLIENT_SUB_TOKEN" | tr -d '\r')
+grep -qi '^Cache-Control: no-store' <<<"$SUB_HEADERS" || fail "subscription is cacheable"
+
 log "checking audit log"
 AUDIT_JSON=$(api GET /api/v1/audit?limit=50)
 AUDIT_JSON="$AUDIT_JSON" CLIENT_PSK="$CLIENT_PSK" SERVER_PSK="$SERVER_PSK" python3 - <<'PY'
@@ -344,6 +507,25 @@ TOTP_DISABLE=$(curl -fsS -b "$TOTP_JAR" -X POST -H 'Content-Type: application/js
 grep -q '"totp_enabled":false' <<<"$TOTP_DISABLE" || fail "disabling two-step verification did not report success"
 api POST /api/v1/auth/login "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" >/dev/null
 log "two-step verification: challenge, code, replay and recovery code all behave"
+
+log "checking re-authentication throttling"
+# The password confirmation on sensitive endpoints is a place to guess the
+# password, so it has a failure budget instead of being unlimited.
+for _ in 1 2 3 4 5; do
+  curl -s -o /dev/null -b "$COOKIE_JAR" -X PUT \
+    -H 'Content-Type: application/json' \
+    -d '{"current_password":"wrong-password","new_password":"another-password-456"}' \
+    "http://127.0.0.1:$PANEL_PORT/api/v1/auth/password"
+done
+status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -X PUT \
+  -H 'Content-Type: application/json' \
+  -d "{\"current_password\":\"$ADMIN_PASSWORD\",\"new_password\":\"another-password-456\"}" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/auth/password")
+[[ "$status" == "429" ]] || fail "password re-authentication was not throttled (status $status)"
+REAUTH_AUDIT=$(api GET "/api/v1/audit?action=admin.reauth.failed&limit=50" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"])')
+[[ "$REAUTH_AUDIT" -eq 5 ]] || fail "failed re-authentications were not audited (total $REAUTH_AUDIT)"
+
 
 log "checking client export"
 api GET /api/v1/export/clients >"$WORK/clients.csv"

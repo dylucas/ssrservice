@@ -194,7 +194,7 @@ sudo chown sspanel:sspanel /var/lib/sspanel/sspanel.db
 sudo systemctl start sspanel
 ```
 
-备份文件包含管理员密码哈希和全部用户 PSK，请按敏感数据保管。
+备份文件包含管理员密码哈希、全部用户 PSK；若开启「访问分析」，还包含访问目标历史（明细 7 天 / 聚合 90 天，后台自动清理）。请按敏感数据保管。
 
 数据库文件本身由程序在打开时收紧到 `0600`（`-wal` / `-shm` 同），程序创建的数据目录为 `0700`，进程 umask 为 `0077`；systemd 单元也设置了 `UMask=0077`。如果数据目录是手工创建的，请确认它是 `0700`。用 `stat -c '%a %n' /var/lib/sspanel/sspanel.db` 可以确认。
 
