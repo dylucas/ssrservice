@@ -115,6 +115,7 @@ const actionLabels: Record<string, string> = {
   'auth.login.failed': '登录失败',
   'auth.logout': '退出登录',
   'admin.password': '修改密码',
+  'admin.reauth.failed': '重认证失败',
   'admin.totp.enable': '启用两步验证',
   'admin.totp.disable': '关闭两步验证',
   'admin.totp.recovery': '重生成恢复码',
@@ -140,7 +141,9 @@ function actionLabel(action: string): string {
 }
 
 function actionTagType(action: string): 'success' | 'warning' | 'danger' | 'info' {
-  if (action.endsWith('.delete') || action === 'auth.login.failed') return 'danger'
+  if (action.endsWith('.delete') || action === 'auth.login.failed' || action === 'admin.reauth.failed') {
+    return 'danger'
+  }
   if (action === 'auth.login' || action.endsWith('.create') || action.endsWith('.enable')) {
     return 'success'
   }

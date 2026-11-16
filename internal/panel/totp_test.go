@@ -480,3 +480,29 @@ func mustTOTPCode(t *testing.T, secret string, at time.Time) string {
 	}
 	return code
 }
+
+// TestTOTPChangeEvictsOtherSessions covers the eviction rule: enabling or
+// removing the second factor invalidates sessions issued before the change, so a
+// cookie stolen while the account had one factor stops working once the operator
+// adds the second. The session that performs the change survives it.
+func TestTOTPChangeEvictsOtherSessions(t *testing.T) {
+	tp := newTestPanel(t)
+	freezeClock(t, time.Now())
+	tp.login()
+	// A second session for the same administrator, standing in for a stolen
+	// cookie: it is issued before two-step verification exists.
+	stolen := append([]*http.Cookie(nil), tp.cookies...)
+
+	enableTOTPForTest(t, tp, "test-password-123")
+	if rec := tp.do(http.MethodGet, "/api/v1/auth/me", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("the session that enabled two-step verification should survive: %d %s",
+			rec.Code, rec.Body.String())
+	}
+
+	original := tp.cookies
+	tp.cookies = stolen
+	if rec := tp.do(http.MethodGet, "/api/v1/auth/me", nil, nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a session issued before enrollment survived it: %d %s", rec.Code, rec.Body.String())
+	}
+	tp.cookies = original
+}

@@ -51,20 +51,30 @@ func NewSessions(secret []byte, ttl time.Duration) (*Sessions, error) {
 	return &Sessions{secret: secret, ttl: ttl}, nil
 }
 
-// SessionVersion derives a short value from the password hash so that changing
-// the password invalidates existing sessions.
-func SessionVersion(passwordHash string) string {
-	sum := sha256.Sum256([]byte("sspanel-session-version:" + passwordHash))
+// SessionVersion derives a short value from everything that must invalidate an
+// existing session when it changes.
+//
+// The password hash covers a password change. The two-step verification state is
+// included as well: enrolling or removing the second factor has to evict
+// sessions issued before it, otherwise a cookie stolen while the account had one
+// factor keeps working after the operator adds the second, and one stolen while
+// it had two keeps working after they remove it.
+func SessionVersion(passwordHash string, totpEnabled bool) string {
+	state := "off"
+	if totpEnabled {
+		state = "on"
+	}
+	sum := sha256.Sum256([]byte("sspanel-session-version:" + passwordHash + "\x00" + state))
 	return base64.RawURLEncoding.EncodeToString(sum[:8])
 }
 
 // Issue creates a signed cookie value for the administrator.
-func (s *Sessions) Issue(adminID int64, passwordHash string, now time.Time) (value string, expires time.Time, err error) {
+func (s *Sessions) Issue(adminID int64, passwordHash string, totpEnabled bool, now time.Time) (value string, expires time.Time, err error) {
 	expires = now.Add(s.ttl)
 	payload := sessionPayload{
 		AdminID: adminID,
 		Expires: expires.Unix(),
-		Version: SessionVersion(passwordHash),
+		Version: SessionVersion(passwordHash, totpEnabled),
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -128,12 +138,12 @@ type challengePayload struct {
 // IssueChallenge signs a short lived token proving that the password step for
 // adminID succeeded. The token is not a session: it grants nothing until a valid
 // TOTP code or recovery code is supplied with it.
-func (s *Sessions) IssueChallenge(adminID int64, passwordHash string, now time.Time) (value string, expires time.Time, err error) {
+func (s *Sessions) IssueChallenge(adminID int64, passwordHash string, totpEnabled bool, now time.Time) (value string, expires time.Time, err error) {
 	expires = now.Add(challengeTTL)
 	payload := challengePayload{
 		AdminID: adminID,
 		Expires: expires.Unix(),
-		Version: SessionVersion(passwordHash),
+		Version: SessionVersion(passwordHash, totpEnabled),
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

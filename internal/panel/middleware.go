@@ -147,7 +147,7 @@ func (s *Server) requireAuth() gin.HandlerFunc {
 			writeError(c, http.StatusForbidden, "password_change_required", "password change required")
 			return
 		}
-		if !auth.ConstantTimeEqual(version, auth.SessionVersion(admin.PasswordHash)) {
+		if !auth.ConstantTimeEqual(version, auth.SessionVersion(admin.PasswordHash, admin.TOTPEnabled)) {
 			s.clearSessionCookie(c)
 			writeError(c, http.StatusUnauthorized, "unauthorized", "session invalidated")
 			return

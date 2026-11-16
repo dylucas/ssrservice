@@ -31,7 +31,7 @@ func TestSessions(t *testing.T) {
 		t.Fatalf("new sessions: %v", err)
 	}
 	now := time.Now()
-	value, expires, err := sessions.Issue(7, "hash-a", now)
+	value, expires, err := sessions.Issue(7, "hash-a", false, now)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if id != 7 || version != SessionVersion("hash-a") {
+	if id != 7 || version != SessionVersion("hash-a", false) {
 		t.Fatalf("unexpected payload id=%d version=%q", id, version)
 	}
 
@@ -105,7 +105,7 @@ func TestChallengeTokens(t *testing.T) {
 		t.Fatalf("new sessions: %v", err)
 	}
 	now := time.Now()
-	value, expires, err := sessions.IssueChallenge(9, "hash-a", now)
+	value, expires, err := sessions.IssueChallenge(9, "hash-a", false, now)
 	if err != nil {
 		t.Fatalf("issue challenge: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestChallengeTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse challenge: %v", err)
 	}
-	if id != 9 || version != SessionVersion("hash-a") {
+	if id != 9 || version != SessionVersion("hash-a", false) {
 		t.Fatalf("unexpected challenge payload id=%d version=%q", id, version)
 	}
 
@@ -129,7 +129,7 @@ func TestChallengeTokens(t *testing.T) {
 	if _, _, err := sessions.Parse(value, now); err == nil {
 		t.Fatal("challenge accepted as a session")
 	}
-	session, _, err := sessions.Issue(9, "hash-a", now)
+	session, _, err := sessions.Issue(9, "hash-a", false, now)
 	if err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
@@ -153,7 +153,30 @@ func TestChallengeTokens(t *testing.T) {
 	}
 
 	// The session version ties the challenge to the password it was issued for.
-	if version == SessionVersion("hash-b") {
+	if version == SessionVersion("hash-b", false) {
 		t.Fatal("session version must depend on the password hash")
+	}
+}
+
+// TestSessionVersionTracksTwoStepVerification guards the eviction rule: enabling
+// or removing the second factor has to invalidate sessions issued before the
+// change, otherwise a cookie stolen while the account had one factor keeps
+// working after the operator adds the second.
+func TestSessionVersionTracksTwoStepVerification(t *testing.T) {
+	withPassword := SessionVersion("hash-a", false)
+	withTOTP := SessionVersion("hash-a", true)
+	if withPassword == withTOTP {
+		t.Fatal("session version must change when two-step verification changes")
+	}
+	if SessionVersion("hash-b", true) == withTOTP {
+		t.Fatal("session version must still change when the password changes")
+	}
+	// The value is stable for the same inputs, and short enough to ride in a
+	// cookie payload.
+	if SessionVersion("hash-a", true) != withTOTP {
+		t.Fatal("session version is not deterministic")
+	}
+	if len(withTOTP) > 16 {
+		t.Fatalf("session version is %d characters", len(withTOTP))
 	}
 }

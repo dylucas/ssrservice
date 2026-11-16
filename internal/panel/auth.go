@@ -3,6 +3,7 @@ package panel
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -36,7 +37,7 @@ func adminJSON(admin *model.Admin) gin.H {
 func (s *Server) completeLogin(c *gin.Context, admin *model.Admin, now time.Time) {
 	_ = s.svc.TouchAdminLogin(admin.ID)
 	s.auditLogin(c, admin.Username, admin, model.AuditAuthLogin, "")
-	cookie, expires, err := s.sessions.Issue(admin.ID, admin.PasswordHash, now)
+	cookie, expires, err := s.sessions.Issue(admin.ID, admin.PasswordHash, admin.TOTPEnabled, now)
 	if err != nil {
 		s.writeServiceError(c, err)
 		return
@@ -88,7 +89,7 @@ func (s *Server) handleLogin(c *gin.Context) {
 	// would then fall within reach. The budget is cleared once a login completes
 	// (completeLogin's callers), so a normal operator never carries old failures
 	// past a successful sign in.
-	challenge, expires, err := s.sessions.IssueChallenge(admin.ID, admin.PasswordHash, now)
+	challenge, expires, err := s.sessions.IssueChallenge(admin.ID, admin.PasswordHash, admin.TOTPEnabled, now)
 	if err != nil {
 		s.writeServiceError(c, err)
 		return
@@ -134,7 +135,7 @@ func (s *Server) handleTOTPLogin(c *gin.Context) {
 	// the two steps invalidates it instead of letting the old password's proof
 	// complete a login against the new one.
 	admin, err := s.svc.AdminByID(adminID)
-	if err != nil || !auth.ConstantTimeEqual(version, auth.SessionVersion(admin.PasswordHash)) {
+	if err != nil || !auth.ConstantTimeEqual(version, auth.SessionVersion(admin.PasswordHash, admin.TOTPEnabled)) {
 		writeError(c, http.StatusUnauthorized, "totp_challenge_invalid", "invalid verification challenge, sign in again")
 		return
 	}
@@ -194,6 +195,47 @@ func (s *Server) handleMe(c *gin.Context) {
 	})
 }
 
+// reauthKey namespaces the re-authentication failure counter inside the login
+// limiter. It is keyed by administrator rather than by address so a stolen
+// session cannot spray password guesses from many addresses, and so a failure
+// budget spent on password confirmation does not lock out a login from the same
+// address (and the other way round).
+func reauthKey(admin *model.Admin) string {
+	return "reauth:" + strconv.FormatInt(admin.ID, 10)
+}
+
+// guardReauth refuses a password confirmation once the administrator's failure
+// budget for the window is spent.
+//
+// Every endpoint that asks for the current password is a place to guess it, and
+// the login limiter alone does not cover them: an attacker holding a session
+// could try passwords as fast as bcrypt allows, then rotate the password or
+// remove the second factor and survive a password change.
+func (s *Server) guardReauth(c *gin.Context, admin *model.Admin) bool {
+	if admin == nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized", "login required")
+		return false
+	}
+	if !s.limiter.Allow(reauthKey(admin), nowFunc()) {
+		writeError(c, http.StatusTooManyRequests, "too_many_attempts",
+			"too many failed attempts, try again later")
+		return false
+	}
+	return true
+}
+
+// noteReauthFailure charges a failed confirmation to the administrator's budget
+// and records it: an operator needs to see someone guessing.
+func (s *Server) noteReauthFailure(c *gin.Context, admin *model.Admin) {
+	s.limiter.Fail(reauthKey(admin), nowFunc())
+	s.audit(c, auditEntry{Action: model.AuditAdminReauthFailed, TargetType: "admin", TargetID: admin.ID})
+}
+
+// clearReauthFailures forgets the budget after a successful confirmation.
+func (s *Server) clearReauthFailures(admin *model.Admin) {
+	s.limiter.Reset(reauthKey(admin))
+}
+
 type changePasswordRequest struct {
 	CurrentPassword string `json:"current_password" binding:"required"`
 	NewPassword     string `json:"new_password" binding:"required"`
@@ -209,9 +251,13 @@ func (s *Server) handleChangePassword(c *gin.Context) {
 	if !bindJSONMessage(c, &req, "current_password and new_password are required") {
 		return
 	}
+	if !s.guardReauth(c, admin) {
+		return
+	}
 	hash, err := s.svc.ChangeAdminPassword(admin.ID, req.CurrentPassword, req.NewPassword)
 	switch {
 	case errors.Is(err, service.ErrInvalidPassword):
+		s.noteReauthFailure(c, admin)
 		writeError(c, http.StatusBadRequest, "invalid_password", "current password is incorrect")
 		return
 	case service.IsValidation(err):
@@ -221,11 +267,12 @@ func (s *Server) handleChangePassword(c *gin.Context) {
 		s.writeServiceError(c, err)
 		return
 	}
+	s.clearReauthFailures(admin)
 	// Neither the old nor the new password is recorded.
 	s.audit(c, auditEntry{Action: model.AuditAdminPassword, TargetType: "admin", TargetID: admin.ID})
 	// Re-issue the cookie so the current session survives the version change.
 	now := nowFunc()
-	cookie, expires, err := s.sessions.Issue(admin.ID, hash, now)
+	cookie, expires, err := s.sessions.Issue(admin.ID, hash, admin.TOTPEnabled, now)
 	if err == nil {
 		s.setSessionCookie(c, cookie, expires)
 	}
@@ -271,9 +318,17 @@ func (s *Server) handleTOTPSetup(c *gin.Context) {
 	if !bindJSONMessage(c, &req, "password is required") {
 		return
 	}
+	if !s.guardReauth(c, admin) {
+		return
+	}
 	secret, uri, err := s.svc.TOTPSetup(admin.ID, req.Password, nowFunc())
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidPassword) || errors.Is(err, service.ErrTOTPAlreadyEnabled) {
+		if errors.Is(err, service.ErrInvalidPassword) {
+			s.noteReauthFailure(c, admin)
+			writeTOTPError(c, err)
+			return
+		}
+		if errors.Is(err, service.ErrTOTPAlreadyEnabled) {
 			writeTOTPError(c, err)
 			return
 		}
@@ -281,6 +336,7 @@ func (s *Server) handleTOTPSetup(c *gin.Context) {
 		writeTOTPError(c, err)
 		return
 	}
+	s.clearReauthFailures(admin)
 	// The secret is part of the response by necessity; it is never audited.
 	c.JSON(http.StatusOK, gin.H{"secret": secret, "otpauth_url": uri})
 }
@@ -317,6 +373,9 @@ func (s *Server) handleTOTPEnable(c *gin.Context) {
 		Detail: auditFields("recovery_codes", len(codes)),
 	})
 	admin.TOTPEnabled = true
+	// Enabling the second factor changes the session version, which would sign
+	// this very request's session out; re-issue it so the operator stays in.
+	s.reissueSession(c, admin)
 	c.JSON(http.StatusOK, gin.H{
 		"totp_enabled":   true,
 		"recovery_codes": codes,
@@ -340,8 +399,12 @@ func (s *Server) handleTOTPDisable(c *gin.Context) {
 	if !bindJSONMessage(c, &req, "password and code are required") {
 		return
 	}
+	if !s.guardReauth(c, admin) {
+		return
+	}
 	err := s.svc.TOTPDisable(admin.ID, req.Password, req.Code, nowFunc())
 	if err != nil {
+		s.noteTOTPFailure(c, admin, err)
 		if isTOTPDomainError(err) {
 			writeTOTPError(c, err)
 			return
@@ -350,8 +413,10 @@ func (s *Server) handleTOTPDisable(c *gin.Context) {
 		writeTOTPError(c, err)
 		return
 	}
+	s.clearReauthFailures(admin)
 	s.audit(c, auditEntry{Action: model.AuditAdminTOTPDisable, TargetType: "admin", TargetID: admin.ID})
 	admin.TOTPEnabled = false
+	s.reissueSession(c, admin)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "totp_enabled": false})
 }
 
@@ -367,8 +432,12 @@ func (s *Server) handleTOTPRecoveryCodes(c *gin.Context) {
 	if !bindJSONMessage(c, &req, "password and code are required") {
 		return
 	}
+	if !s.guardReauth(c, admin) {
+		return
+	}
 	codes, err := s.svc.TOTPRegenerateRecovery(admin.ID, req.Password, req.Code, nowFunc())
 	if err != nil {
+		s.noteTOTPFailure(c, admin, err)
 		if isTOTPDomainError(err) {
 			writeTOTPError(c, err)
 			return
@@ -377,11 +446,32 @@ func (s *Server) handleTOTPRecoveryCodes(c *gin.Context) {
 		writeTOTPError(c, err)
 		return
 	}
+	s.clearReauthFailures(admin)
 	s.audit(c, auditEntry{
 		Action: model.AuditAdminTOTPRecovery, TargetType: "admin", TargetID: admin.ID,
 		Detail: auditFields("recovery_codes", len(codes)),
 	})
 	c.JSON(http.StatusOK, gin.H{"recovery_codes": codes})
+}
+
+// noteTOTPFailure charges a failed password or code confirmation to the
+// administrator's re-authentication budget. Both factors are part of the same
+// gate: a six digit code is as guessable as a short password without a limit.
+func (s *Server) noteTOTPFailure(c *gin.Context, admin *model.Admin, err error) {
+	if errors.Is(err, service.ErrInvalidPassword) || errors.Is(err, service.ErrInvalidTOTPCode) {
+		s.noteReauthFailure(c, admin)
+	}
+}
+
+// reissueSession refreshes the caller's cookie after a change that moves the
+// session version, so the administrator who just made the change is not signed
+// out by their own action.
+func (s *Server) reissueSession(c *gin.Context, admin *model.Admin) {
+	now := nowFunc()
+	cookie, expires, err := s.sessions.Issue(admin.ID, admin.PasswordHash, admin.TOTPEnabled, now)
+	if err == nil {
+		s.setSessionCookie(c, cookie, expires)
+	}
 }
 
 // isTOTPDomainError reports whether err is one of the expected two-step
