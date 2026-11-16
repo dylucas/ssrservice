@@ -5,6 +5,19 @@
         <el-select :model-value="days" class="w-control-sm" @change="onWindowChange">
           <el-option v-for="option in ACCESS_WINDOWS" :key="option" :label="`最近 ${option} 天`" :value="option" />
         </el-select>
+        <el-select
+          :model-value="inboundFilter ?? 0"
+          class="w-control-md"
+          @change="(value: number) => setInbound(value || null)"
+        >
+          <el-option label="全部入站" :value="0" />
+          <el-option
+            v-for="inbound in inbounds"
+            :key="inbound.id"
+            :label="inbound.remark || `入站 #${inbound.id}`"
+            :value="inbound.id"
+          />
+        </el-select>
         <el-button :icon="Refresh" :loading="loading" @click="reload">刷新</el-button>
       </template>
     </PageHeader>
@@ -205,6 +218,10 @@
             <span>用户：{{ scope.name || '已删除用户' }}<template v-if="scope.inboundRemark || scope.inboundId"> @ {{ scope.inboundRemark || `入站 #${scope.inboundId}` }}</template></span>
             <el-button size="small" text @click="clearScope">清除</el-button>
           </span>
+          <span v-else-if="inboundFilter" class="access-filter-chip">
+            <span>入站：{{ inboundName }}</span>
+            <el-button size="small" text @click="setInbound(null)">清除</el-button>
+          </span>
         </div>
         <div class="toolbar-group">
           <el-button :icon="Download" @click="exportCSV">导出 CSV</el-button>
@@ -295,7 +312,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 // Page-specific Element Plus components; see src/element-parts.ts.
 import {
   ElAlert,
@@ -347,6 +364,11 @@ function topClientKey(row: AccessTopClient): string {
 }
 
 const router = useRouter()
+const route = useRoute()
+// A detail page links here with ?inbound_id=; validate before it becomes state.
+const inboundParam = Number(route.query.inbound_id)
+const initialInboundId = Number.isInteger(inboundParam) && inboundParam > 0 ? inboundParam : undefined
+
 const {
   pageSize,
   days,
@@ -362,16 +384,22 @@ const {
   eventsError,
   range,
   scope,
+  inbounds,
+  inboundFilter,
+  inboundName,
+  effectiveInbound,
   filters,
   loading,
   hasFilters,
   scopeLabel,
+  loadInbounds,
   loadSummary,
   loadEvents,
   reload,
   applyFilters,
   clearFilters,
   filterByClient,
+  setInbound,
   clearScope,
   setDays,
   retry,
@@ -379,8 +407,10 @@ const {
   api: {
     summary: (window, clientId, inboundId) => api.accessSummary(window, clientId, inboundId),
     events: (params) => api.accessEvents(params),
+    inbounds: async () => (await api.inbounds()).items || [],
   },
   onError: (message) => ElMessage.error(message),
+  initialInboundId,
 })
 
 /** exportCSV downloads the filtered detail list without paging. */
@@ -436,6 +466,7 @@ function goSettings() {
 }
 
 onMounted(() => {
+  void loadInbounds()
   void loadSummary()
   void loadEvents()
 })

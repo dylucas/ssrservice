@@ -11,6 +11,7 @@ import {
   formatElapsed,
   formatHostPort,
   hasAccessFilter,
+  inboundScopeLabel,
   networkLabel,
   outcomeLabel,
   outcomeTagType,
@@ -202,5 +203,18 @@ describe('axisGutterWidth', () => {
     expect(axisGutterWidth(['20,000 次'])).toBeGreaterThan(56)
     // A wide (CJK) glyph counts double, an ASCII one about 6.2px.
     expect(axisGutterWidth(['0000000000 次'])).toBeGreaterThan(axisGutterWidth(['0000000000X']))
+  })
+})
+
+describe('inbound scope label', () => {
+  it('names the node when the view is narrowed to one inbound', () => {
+    expect(inboundScopeLabel(7, 'hk-node')).toBe('最近 7 天 · 仅入站 hk-node')
+    expect(inboundScopeLabel(30, '')).toBe('最近 30 天 · 仅入站 未知入站')
+  })
+
+  it('an inbound selection alone counts as a filter', () => {
+    expect(hasAccessFilter({ inboundId: 7 })).toBe(true)
+    expect(hasAccessFilter({ inboundId: 0 })).toBe(false)
+    expect(hasAccessFilter({})).toBe(false)
   })
 })

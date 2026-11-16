@@ -199,6 +199,17 @@ export function formatCount(value: number): string {
   return `${Math.round(Number(value) || 0).toLocaleString()} 次`
 }
 
+/**
+ * inboundScopeLabel describes a view narrowed to one inbound but not to a user.
+ *
+ * The client scope already names an inbound, so the page uses scopeLabel when a
+ * user is selected; this variant covers the "show me this node" case, where
+ * naming a user would be wrong.
+ */
+export function inboundScopeLabel(days: number, inboundName: string): string {
+  return `${windowLabel(days)} · 仅入站 ${inboundName || '未知入站'}`
+}
+
 /** scopeLabel says what a set of figures covers, including a client filter. */
 export function scopeLabel(days: number, clientName?: string, inboundName?: string): string {
   const window = windowLabel(days)

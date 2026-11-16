@@ -69,6 +69,7 @@ function fakeApi(overrides: Partial<AccessDataSource> = {}): FakeSources {
       eventCalls.push(params)
       return { items: [eventOf(1)], total: 1, limit: params.limit, offset: params.offset }
     },
+    inbounds: async () => [],
     ...overrides,
   }
   return { api, summaryCalls, eventCalls }
@@ -364,5 +365,102 @@ describe('first load', () => {
     // the very first load; the flag has to stay false until a real answer.
     expect(page.eventsLoaded.value).toBe(false)
     expect(page.summaryLoaded.value).toBe(false)
+  })
+})
+
+describe('inbound scope', () => {
+  it('scopes both requests to the selected inbound', async () => {
+    const { api, summaryCalls, eventCalls } = fakeApi()
+    const page = useAccessPage({ api })
+    page.setInbound(7)
+    await nextTick()
+    expect(summaryCalls[summaryCalls.length - 1].inboundId).toBe(7)
+    expect(eventCalls[eventCalls.length - 1].inbound_id).toBe(7)
+    // A selected inbound is a filter: the "clear" button has to be offered.
+    expect(page.hasFilters.value).toBe(true)
+    expect(page.scopeLabel.value).toBe('最近 7 天 · 仅入站 入站 #7')
+  })
+
+  it('uses the inbound name from the loaded list in the label', async () => {
+    const { api } = fakeApi({
+      inbounds: async () => [
+        { id: 7, remark: 'hk-node' } as any,
+      ],
+    })
+    const page = useAccessPage({ api, initialInboundId: 7 })
+    await page.loadInbounds()
+    await nextTick()
+    expect(page.scopeLabel.value).toBe('最近 7 天 · 仅入站 hk-node')
+    expect(page.inboundName.value).toBe('hk-node')
+  })
+
+  it('falls back to an id for a deleted inbound', async () => {
+    const { api } = fakeApi({ inbounds: async () => [] })
+    const page = useAccessPage({ api, initialInboundId: 99 })
+    await page.loadInbounds()
+    await nextTick()
+    expect(page.inboundName.value).toBe('入站 #99')
+    expect(page.scopeLabel.value).toContain('入站 #99')
+  })
+
+  it('keeps the inbound when the client scope is cleared', async () => {
+    const { api, summaryCalls } = fakeApi()
+    const page = useAccessPage({ api })
+    page.setInbound(7)
+    await nextTick()
+    page.filterByClient({ client_id: 4, name: 'carol', inbound_id: 7, inbound_remark: 'hk', hits: 1, up_bytes: 0, down_bytes: 0 })
+    await nextTick()
+    expect(summaryCalls[summaryCalls.length - 1].clientId).toBe(4)
+    page.clearScope()
+    await nextTick()
+    expect(page.scope.value).toBeNull()
+    expect(page.inboundFilter.value).toBe(7)
+    expect(summaryCalls[summaryCalls.length - 1].clientId).toBeUndefined()
+    expect(summaryCalls[summaryCalls.length - 1].inboundId).toBe(7)
+  })
+
+  it('syncs the selector when a top client from another inbound is clicked', async () => {
+    const { api, summaryCalls } = fakeApi()
+    const page = useAccessPage({ api })
+    page.setInbound(7)
+    await nextTick()
+    page.filterByClient({ client_id: 4, name: 'carol', inbound_id: 9, inbound_remark: 'jp', hits: 1, up_bytes: 0, down_bytes: 0 })
+    await nextTick()
+    expect(page.inboundFilter.value).toBe(9)
+    expect(summaryCalls[summaryCalls.length - 1].inboundId).toBe(9)
+    expect(page.scopeLabel.value).toContain('carol')
+    expect(page.scopeLabel.value).toContain('jp')
+  })
+
+  it('clearing all filters drops the inbound too', async () => {
+    const { api, summaryCalls } = fakeApi()
+    const page = useAccessPage({ api })
+    page.setInbound(7)
+    await nextTick()
+    page.clearFilters()
+    await nextTick()
+    expect(page.inboundFilter.value).toBeNull()
+    expect(page.hasFilters.value).toBe(false)
+    expect(summaryCalls[summaryCalls.length - 1].inboundId).toBeUndefined()
+    expect(page.scopeLabel.value).toBe('最近 7 天')
+  })
+
+  it('reports a failed inbound list without breaking the page', async () => {
+    const errors: string[] = []
+    const { api } = fakeApi({
+      inbounds: async () => { throw new Error('offline') },
+    })
+    const page = useAccessPage({ api, onError: (m) => errors.push(m) })
+    await page.loadInbounds()
+    expect(errors).toEqual(['offline'])
+    expect(page.inbounds.value).toEqual([])
+  })
+
+  it('applies an initial inbound from a deep link before the first load', async () => {
+    const { api, summaryCalls, eventCalls } = fakeApi()
+    const page = useAccessPage({ api, initialInboundId: 12 })
+    await Promise.all([page.loadSummary(), page.loadEvents()])
+    expect(summaryCalls[0].inboundId).toBe(12)
+    expect(eventCalls[0].inbound_id).toBe(12)
   })
 })

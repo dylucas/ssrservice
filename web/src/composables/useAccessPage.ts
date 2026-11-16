@@ -1,11 +1,12 @@
 import { computed, reactive, ref } from 'vue'
-import { hasAccessFilter, scopeLabel as scopeLabelOf } from '@/utils/access'
+import { hasAccessFilter, inboundScopeLabel, scopeLabel as scopeLabelOf } from '@/utils/access'
 import type {
   AccessEvent,
   AccessEventParams,
   AccessEventsResponse,
   AccessSummary,
   AccessTopClient,
+  Inbound,
 } from '@/types'
 
 // The access page's state and behaviour, kept out of the component so it can be
@@ -21,6 +22,7 @@ import type {
 export interface AccessDataSource {
   summary(days: number, clientId?: number, inboundId?: number): Promise<AccessSummary>
   events(params: AccessEventParams): Promise<AccessEventsResponse>
+  inbounds(): Promise<Inbound[]>
 }
 
 /** AccessScope is the client (and inbound) the page is narrowed to. */
@@ -40,6 +42,8 @@ export interface AccessPageOptions {
   onError?: (message: string) => void
   /** pageSize is the number of detail rows per page. */
   pageSize?: number
+  /** An inbound id from the URL, applied before the first load. */
+  initialInboundId?: number
 }
 
 /** emptySummary is what the cards show before the first successful load. */
@@ -97,6 +101,11 @@ export function useAccessPage(options: AccessPageOptions) {
   // and resolved there.
   const range = ref<[string, string] | null>(null)
   const scope = ref<AccessScope | null>(null)
+  // The inbound scope is independent of the client scope: the page can show one
+  // node without narrowing to a user. Clicking a Top client still carries both,
+  // so the two have a single derived "effective inbound" below.
+  const inbounds = ref<Inbound[]>([])
+  const inboundFilter = ref<number | null>(options.initialInboundId ?? null)
   const filters = reactive({ query: '', outcome: 'all', network: 'all' })
 
   // The last request wins: changing a filter can start a second request before
@@ -106,6 +115,10 @@ export function useAccessPage(options: AccessPageOptions) {
 
   const loading = computed(() => eventsLoading.value || summaryLoading.value)
 
+  // One source of truth for the inbound sent to the API: a client scope also
+  // names an inbound (the rollup groups by client+inbound), so it wins when set.
+  const effectiveInbound = computed(() => scope.value?.inboundId || inboundFilter.value || undefined)
+
   // The same predicate the empty states use, so "the filters are clear" and
   // "'clear filters' is enabled" cannot disagree.
   const hasFilters = computed(() =>
@@ -114,24 +127,54 @@ export function useAccessPage(options: AccessPageOptions) {
       network: filters.network,
       query: filters.query,
       clientId: scope.value?.clientId,
+      inboundId: effectiveInbound.value,
       since: range.value?.[0],
       until: range.value?.[1],
     }),
   )
 
+  /** The display name of the selected inbound, or a fallback for a deleted one. */
+  const inboundName = computed(() => {
+    const id = inboundFilter.value
+    if (!id) return ''
+    return inbounds.value.find((item) => item.id === id)?.remark || `入站 #${id}`
+  })
+
   /** scopeLabel says what the cards and the trend describe. */
   const scopeLabel = computed(() => {
     const current = scope.value
-    if (!current) return scopeLabelOf(days.value)
+    if (!current) {
+      return inboundFilter.value
+        ? inboundScopeLabel(days.value, inboundName.value)
+        : scopeLabelOf(days.value)
+    }
     const where = current.inboundRemark || (current.inboundId ? `入站 #${current.inboundId}` : '')
     return scopeLabelOf(days.value, current.name || '已删除用户', where)
   })
+
+  /** loadInbounds fills the selector. A failure is reported but not fatal: the
+   * page still works, and a deep-linked numeric id can be requested by itself. */
+  async function loadInbounds(): Promise<void> {
+    try {
+      inbounds.value = await api.inbounds()
+    } catch (error) {
+      onError?.(errorMessage(error, '加载入站列表失败'))
+    }
+  }
+
+  /** setInbound scopes both halves to one inbound, or to all when id is null. */
+  function setInbound(id: number | null): void {
+    // A client scope from another inbound would contradict the new selection.
+    scope.value = null
+    inboundFilter.value = id && id > 0 ? id : null
+    reload()
+  }
 
   async function loadSummary(): Promise<void> {
     const seq = ++summarySeq
     summaryLoading.value = true
     try {
-      const result = await api.summary(days.value, scope.value?.clientId, scope.value?.inboundId)
+      const result = await api.summary(days.value, scope.value?.clientId, effectiveInbound.value)
       if (seq !== summarySeq) return
       summary.value = result
       summaryLoaded.value = true
@@ -153,7 +196,7 @@ export function useAccessPage(options: AccessPageOptions) {
     try {
       const result = await api.events({
         client_id: scope.value?.clientId,
-        inbound_id: scope.value?.inboundId,
+        inbound_id: effectiveInbound.value,
         outcome: filters.outcome === 'all' ? undefined : filters.outcome,
         network: filters.network === 'all' ? undefined : filters.network,
         q: filters.query.trim() || undefined,
@@ -200,6 +243,7 @@ export function useAccessPage(options: AccessPageOptions) {
     filters.network = 'all'
     range.value = null
     scope.value = null
+    inboundFilter.value = null
     reload()
   }
 
@@ -211,6 +255,8 @@ export function useAccessPage(options: AccessPageOptions) {
       inboundId: row.inbound_id,
       inboundRemark: row.inbound_remark,
     }
+    // Keep the selector in step with the row that was clicked.
+    inboundFilter.value = row.inbound_id || null
     reload()
   }
 
@@ -247,16 +293,22 @@ export function useAccessPage(options: AccessPageOptions) {
     eventsLoaded,
     range,
     scope,
+    inbounds,
+    inboundFilter,
+    inboundName,
+    effectiveInbound,
     filters,
     loading,
     hasFilters,
     scopeLabel,
+    loadInbounds,
     loadSummary,
     loadEvents,
     reload,
     applyFilters,
     clearFilters,
     filterByClient,
+    setInbound,
     clearScope,
     setDays,
     retry,
