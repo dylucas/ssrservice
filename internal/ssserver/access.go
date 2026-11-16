@@ -413,6 +413,11 @@ type accessEntry struct {
 	// set when recording is switched off, so bytes moved after the switch are
 	// not attributed to a row the operator already saw.
 	muted atomic.Bool
+	// named reports whether host already holds the name the client asked for,
+	// which is the case for every entry created from a domain. It is read on
+	// every UDP packet so the upgrade path below can return before formatting a
+	// string: with it, a destination that has been labelled costs nothing.
+	named atomic.Bool
 
 	// mu guards the fields that are written once while the connection is being
 	// set up (and re-written when a UDP destination's requested name arrives)
@@ -505,8 +510,12 @@ func (e *accessEntry) fail(reason string) {
 // relabel upgrades a destination that was first seen as a resolved address to
 // the name the client asked for. A reply can create the entry before the send
 // path reports the request, and the panel has to show the name, not the address.
+//
+// It is called for every UDP packet, so it returns before allocating anything:
+// an entry that already carries a name never needs this, and a packet without a
+// name has nothing to offer.
 func (e *accessEntry) relabel(destination M.Socksaddr) {
-	if e == nil {
+	if e == nil || e.named.Load() {
 		return
 	}
 	destination = destination.Unwrap()
@@ -522,6 +531,7 @@ func (e *accessEntry) relabel(destination M.Socksaddr) {
 		e.host = host
 		e.port = int(destination.Port)
 	}
+	e.named.Store(true)
 	e.mu.Unlock()
 }
 
@@ -761,6 +771,7 @@ func (u *udpAccess) observe(target netip.AddrPort, requested M.Socksaddr) *acces
 	if entry == nil {
 		return nil
 	}
+	entry.named.Store(requested.Fqdn != "")
 	entry.allow(target.Addr().Unmap().String())
 	u.targets[target] = entry
 	return entry

@@ -888,3 +888,66 @@ func TestUDPReplyBeforeSendKeepsRequestedHost(t *testing.T) {
 		t.Fatalf("ip = %q, want the resolved address", records[0].IP)
 	}
 }
+
+// TestEnabledUDPPacketPathStopsAllocatingAfterFirstPacket covers the hot path
+// while recording is ON: a destination is created once, and every later packet
+// of the same NAT target must only touch counters. The upgrade path that labels
+// a destination with the requested name is the one thing that could allocate per
+// packet, so it returns before formatting once the entry carries a name.
+func TestEnabledUDPPacketPathStopsAllocatingAfterFirstPacket(t *testing.T) {
+	env := newTestEnv(t)
+	env.mgr.SetAccessEnabled(true)
+	tracker := env.mgr.newUDPAccess(1, 1)
+	t.Cleanup(tracker.finishAll)
+	target := netipAddrPort(t, "127.0.0.1:53")
+	requested := udpTarget("dns.example.com", 53)
+
+	// The first packet creates the entry and normalizes the name.
+	tracker.addUp(target, requested, 1)
+	if entry := tracker.targets[target]; entry == nil || entry.host != "dns.example.com" {
+		t.Fatalf("first packet did not create a named entry: %+v", tracker.targets[target])
+	}
+
+	allocs := testing.AllocsPerRun(200, func() {
+		tracker.addUp(target, requested, 1)
+	})
+	if allocs != 0 {
+		t.Fatalf("a recorded UDP packet allocates %v times after the first one", allocs)
+	}
+	allocs = testing.AllocsPerRun(200, func() {
+		tracker.addDown(target, 1)
+	})
+	if allocs != 0 {
+		t.Fatalf("a recorded UDP reply allocates %v times", allocs)
+	}
+}
+
+// TestUDPObserveStillUpgradesAnAddressFirstEntry checks the other side of that
+// fast path: an entry created from a resolved address before the send path
+// reports the request is upgraded exactly once, and stays named afterwards.
+func TestUDPObserveStillUpgradesAnAddressFirstEntry(t *testing.T) {
+	env := newTestEnv(t)
+	env.mgr.SetAccessEnabled(true)
+	tracker := env.mgr.newUDPAccess(1, 1)
+	t.Cleanup(tracker.finishAll)
+	target := netipAddrPort(t, "127.0.0.1:53")
+
+	tracker.addDown(target, 5)
+	entry := tracker.targets[target]
+	if entry == nil || entry.host != "127.0.0.1" {
+		t.Fatalf("reply-first entry = %+v, want the address", entry)
+	}
+	if entry.named.Load() {
+		t.Fatal("an entry created from an address must not claim a name")
+	}
+	tracker.addUp(target, udpTarget("dns.example.com", 53), 5)
+	if entry.host != "dns.example.com" || !entry.named.Load() {
+		t.Fatalf("entry after the request arrived = host %q named %v", entry.host, entry.named.Load())
+	}
+	// A later packet with a different name does not rewrite it: the first
+	// request for a NAT destination is what the client meant.
+	tracker.addUp(target, udpTarget("other.example", 53), 5)
+	if entry.host != "dns.example.com" {
+		t.Fatalf("host was rewritten to %q", entry.host)
+	}
+}
