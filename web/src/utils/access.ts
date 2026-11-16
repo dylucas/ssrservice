@@ -150,8 +150,9 @@ export function hasAccessFilter(input: {
   query?: string
   clientId?: number | null
   inboundId?: number | null
-  since?: number | null
-  until?: number | null
+  /** Either bound of the window: an absolute instant or a YYYY-MM-DD day. */
+  since?: number | string | null
+  until?: number | string | null
 }): boolean {
   return Boolean(
     (input.outcome && input.outcome !== 'all') ||

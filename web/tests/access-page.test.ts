@@ -335,3 +335,23 @@ describe('drop-in for the view', () => {
     expect(onError).not.toHaveBeenCalled()
   })
 })
+
+describe('filter predicate', () => {
+  it('treats a picked day range and a client scope as filters', async () => {
+    const { api } = fakeApi()
+    const page = useAccessPage({ api })
+    expect(page.hasFilters.value).toBe(false)
+    page.range.value = ['2026-11-10', '2026-11-16']
+    await nextTick()
+    expect(page.hasFilters.value).toBe(true)
+    page.range.value = null
+    page.filterByClient({ client_id: 2, name: 'bob', inbound_id: 1, inbound_remark: '', hits: 1, up_bytes: 0, down_bytes: 0 })
+    await nextTick()
+    expect(page.hasFilters.value).toBe(true)
+    // The shared predicate is what the template asks, so clearing it has to be
+    // enough to re-enable the empty state's way out.
+    page.clearFilters()
+    await nextTick()
+    expect(page.hasFilters.value).toBe(false)
+  })
+})

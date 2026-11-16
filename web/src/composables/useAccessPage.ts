@@ -1,4 +1,5 @@
 import { computed, reactive, ref } from 'vue'
+import { hasAccessFilter } from '@/utils/access'
 import type {
   AccessEvent,
   AccessEventParams,
@@ -105,15 +106,17 @@ export function useAccessPage(options: AccessPageOptions) {
 
   const loading = computed(() => eventsLoading.value || summaryLoading.value)
 
-  const hasFilters = computed(
-    () =>
-      Boolean(
-        (filters.outcome && filters.outcome !== 'all') ||
-          (filters.network && filters.network !== 'all') ||
-          filters.query.trim() !== '' ||
-          scope.value ||
-          (range.value && range.value.length === 2),
-      ),
+  // The same predicate the empty states use, so "the filters are clear" and
+  // "'clear filters' is enabled" cannot disagree.
+  const hasFilters = computed(() =>
+    hasAccessFilter({
+      outcome: filters.outcome,
+      network: filters.network,
+      query: filters.query,
+      clientId: scope.value?.clientId,
+      since: range.value?.[0],
+      until: range.value?.[1],
+    }),
   )
 
   /** scopeLabel says what the cards and the trend describe. */
