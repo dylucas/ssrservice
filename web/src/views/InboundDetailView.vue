@@ -6,6 +6,7 @@
           <el-option v-for="option in ACCESS_WINDOWS" :key="option" :label="`最近 ${option} 天`" :value="option" />
         </el-select>
         <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" @click="goAccess">访问分析</el-button>
         <el-button @click="router.back()">返回</el-button>
       </template>
     </PageHeader>
@@ -91,7 +92,7 @@
           <h3 class="card-title">最近拦截与失败</h3>
           <span class="muted">最多 20 条 · 按时间倒序</span>
         </div>
-        <el-table :data="detail?.recent_failures || []" v-loading="loading" row-key="id">
+        <el-table :data="recentFailures" v-loading="failuresLoading" row-key="id">
           <template #empty>
             <EmptyState
               v-if="!detail?.access_recording"
@@ -100,7 +101,10 @@
             >
               <el-button size="small" @click="router.push('/settings')">去设置</el-button>
             </EmptyState>
-            <EmptyState v-else text="该入站最近没有拦截或失败的访问" :icon="Aim" />
+            <EmptyState v-else-if="failuresError" :text="`加载失败：${failuresError}`" :icon="Aim">
+            <el-button size="small" @click="loadFailures">重试</el-button>
+          </EmptyState>
+          <EmptyState v-else text="该入站最近没有拦截或失败的访问" :icon="Aim" />
           </template>
           <el-table-column label="时间" width="170">
             <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
@@ -140,7 +144,7 @@ import {
   reasonText,
 } from '@/utils/access'
 import { formatBytes, formatDateTime } from '@/utils/format'
-import { inboundChart, inboundStatusItems, inboundUserTotal } from '@/utils/inbound'
+import { inboundAccessLink, inboundChart, inboundStatusItems, inboundUserTotal, mergeRecentFailures } from '@/utils/inbound'
 import EmptyState from '@/components/EmptyState.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import StatCard from '@/components/StatCard.vue'
@@ -157,6 +161,9 @@ const days = ref(30)
 const detail = ref<InboundDetail | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+const recentFailures = ref<AccessEvent[]>([])
+const failuresLoading = ref(false)
+const failuresError = ref<string | null>(null)
 
 const counts = computed(() => detail.value?.status_counts || {
   active: 0, disabled: 0, expired: 0, quota_exceeded: 0,
@@ -171,6 +178,44 @@ const chart = computed(() => inboundChart(detail.value?.daily || []))
 const chartLabels = computed(() => chart.value.labels)
 const chartSeries = computed(() => chart.value.series)
 
+/**
+ * loadFailures asks for blocked and failed records separately, then merges them.
+ * Taking the newest 20 events of any outcome and filtering locally would show an
+ * empty section whenever the latest burst happened to be all allowed — which
+ * reads as "no failures" rather than "no recent failures".
+ */
+async function loadFailures(): Promise<void> {
+  if (!detail.value?.access_recording) {
+    recentFailures.value = []
+    return
+  }
+  const seq = ++loadSeq
+  failuresLoading.value = true
+  try {
+    const [blocked, failed] = await Promise.all([
+      api.accessEvents({ inbound_id: id, outcome: 'blocked', limit: 20, offset: 0 }),
+      api.accessEvents({ inbound_id: id, outcome: 'failed', limit: 20, offset: 0 }),
+    ])
+    if (seq !== loadSeq) return
+    const merged = mergeRecentFailures(blocked.items || [], failed.items || [], 20)
+    // Defensive: the endpoint already filters by outcome, but a row marked
+    // allowed must never appear under this heading.
+    recentFailures.value = merged.filter((event) => event.outcome !== 'allowed') as AccessEvent[]
+    failuresError.value = null
+  } catch (err: any) {
+    if (seq !== loadSeq) return
+    recentFailures.value = []
+    failuresError.value = err?.message || '加载失败'
+  } finally {
+    if (seq === loadSeq) failuresLoading.value = false
+  }
+}
+
+/** goAccess opens the full access page already scoped to this inbound. */
+function goAccess() {
+  void router.push(inboundAccessLink(id))
+}
+
 let loadSeq = 0
 async function load() {
   const seq = ++loadSeq
@@ -180,6 +225,7 @@ async function load() {
     if (seq !== loadSeq) return
     detail.value = result
     error.value = null
+    void loadFailures()
   } catch (err: any) {
     if (seq !== loadSeq) return
     error.value = err?.message || '加载入站详情失败'

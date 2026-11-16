@@ -47,3 +47,30 @@ export function inboundTopShare(
   if (total <= 0) return 0
   return Math.round(((client.up_bytes + client.down_bytes) / total) * 100)
 }
+
+/**
+ * inboundAccessLink builds the deep link from an inbound to its access page.
+ * The access page reads inbound_id on mount, so the link lands already scoped.
+ */
+export function inboundAccessLink(id: number): { path: string; query: { inbound_id: string } } {
+  return { path: '/access', query: { inbound_id: String(id) } }
+}
+
+/**
+ * mergeRecentFailures combines the blocked and failed pages of an inbound into
+ * one "most recent first" list capped at limit.
+ *
+ * The access endpoint filters one outcome at a time, so the detail page asks for
+ * both and merges them here. Just taking the newest 20 events and filtering out
+ * allowed rows would show nothing when the latest burst was all successful,
+ * which contradicts the section's title.
+ */
+export function mergeRecentFailures<T extends { started_at: number; id: number }>(
+  blocked: T[],
+  failed: T[],
+  limit = 20,
+): T[] {
+  return [...blocked, ...failed]
+    .sort((a, b) => b.started_at - a.started_at || b.id - a.id)
+    .slice(0, limit)
+}

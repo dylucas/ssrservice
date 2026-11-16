@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inboundChart, inboundStatusItems, inboundTopShare, inboundUserTotal } from '../src/utils/inbound'
+import { inboundAccessLink, inboundChart, inboundStatusItems, inboundTopShare, inboundUserTotal, mergeRecentFailures } from '../src/utils/inbound'
 import type { InboundDaily, InboundStatusCounts } from '../src/types'
 
 describe('inbound status summary', () => {
@@ -53,5 +53,42 @@ describe('inbound top share', () => {
 
   it('is zero when the inbound has no traffic', () => {
     expect(inboundTopShare({ up_bytes: 0, down_bytes: 0 }, 0, 0)).toBe(0)
+  })
+})
+
+describe('inbound access link', () => {
+  it('deep-links the access page with the inbound id', () => {
+    expect(inboundAccessLink(9)).toEqual({ path: '/access', query: { inbound_id: '9' } })
+  })
+})
+
+describe('mergeRecentFailures', () => {
+  const blocked = [
+    { id: 1, started_at: 100, outcome: 'blocked' },
+    { id: 3, started_at: 300, outcome: 'blocked' },
+  ]
+  const failed = [
+    { id: 2, started_at: 200, outcome: 'failed' },
+    { id: 4, started_at: 400, outcome: 'failed' },
+  ]
+
+  it('merges the two outcome pages newest first', () => {
+    expect(mergeRecentFailures(blocked, failed).map((e) => e.id)).toEqual([4, 3, 2, 1])
+  })
+
+  it('caps the list at 20', () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({ id: i, started_at: i }))
+    expect(mergeRecentFailures(many, [], 20)).toHaveLength(20)
+    // The newest ones survive, not the oldest.
+    expect(mergeRecentFailures(many, [], 20)[0].id).toBe(24)
+  })
+
+  it('breaks ties by id so the order is stable', () => {
+    const a = [{ id: 1, started_at: 100 }, { id: 2, started_at: 100 }]
+    expect(mergeRecentFailures(a, []).map((e) => e.id)).toEqual([2, 1])
+  })
+
+  it('handles empty pages', () => {
+    expect(mergeRecentFailures([], [])).toEqual([])
   })
 })
