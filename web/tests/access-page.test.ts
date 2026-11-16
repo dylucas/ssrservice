@@ -355,3 +355,14 @@ describe('filter predicate', () => {
     expect(page.hasFilters.value).toBe(false)
   })
 })
+
+describe('first load', () => {
+  it('does not report a state before the detail request answers', () => {
+    const { api } = fakeApi()
+    const page = useAccessPage({ api })
+    // The view uses eventsLoaded to avoid claiming "recording is off" during
+    // the very first load; the flag has to stay false until a real answer.
+    expect(page.eventsLoaded.value).toBe(false)
+    expect(page.summaryLoaded.value).toBe(false)
+  })
+})

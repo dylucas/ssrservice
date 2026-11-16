@@ -213,7 +213,10 @@
 
       <el-table :data="events" v-loading="eventsLoading" row-key="id">
         <template #empty>
-          <EmptyState v-if="eventsError" :text="`明细加载失败：${eventsError}`" :icon="Search">
+          <!-- Before the first answer there is nothing to say yet: without this
+               branch a fresh page briefly claims recording is off. -->
+          <EmptyState v-if="!eventsLoaded && !eventsError" text="正在加载访问明细…" :icon="Search" />
+          <EmptyState v-else-if="eventsError" :text="`明细加载失败：${eventsError}`" :icon="Search">
             <el-button size="small" @click="retry">重试</el-button>
           </EmptyState>
           <EmptyState v-else-if="hasFilters" text="没有符合条件的访问记录" :icon="Search">
@@ -354,6 +357,7 @@ const {
   events,
   total,
   eventsLoading,
+  eventsLoaded,
   eventsError,
   range,
   scope,
