@@ -735,6 +735,60 @@ status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
   "http://127.0.0.1:$PANEL_PORT/api/v1/inbounds/$INBOUND_ID/detail?days=0")
 [[ "$status" == "400" ]] || fail "inbound detail accepted days=0 (status $status)"
 
+log "checking configuration migration"
+api GET /api/v1/export/config >"$WORK/config.json"
+python3 - "$WORK/config.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["version"] == 1, d
+assert len(d["inbounds"]) >= 1, d
+assert d["admin"]["password_hash"].startswith("$2"), d
+assert "session_secret" not in json.dumps(d), "the snapshot leaked the session secret"
+assert "traffic_daily" not in json.dumps(d), "the snapshot carried history"
+# Every user in the snapshot carries the PSK and the subscription token.
+users = [c for i in d["inbounds"] for c in i.get("clients", [])]
+assert users and all(c.get("psk") and c.get("sub_token") for c in users), users
+PY
+# A file that claims a future version is refused without touching the config.
+python3 - "$WORK/config.json" "$WORK/bad-config.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["version"] = 999
+json.dump(d, open(sys.argv[2], "w"))
+PY
+BAD_CONFIG_BODY=$(python3 - "$WORK/bad-config.json" <<'PY'
+import json, sys
+print(json.dumps({"confirm": True, "config": json.load(open(sys.argv[1]))}))
+PY
+)
+status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -X POST \
+  -H 'Content-Type: application/json' -d "$BAD_CONFIG_BODY" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/import/config")
+[[ "$status" == "400" ]] || fail "a future config version was accepted (status $status)"
+# Changing a setting and importing the snapshot back must restore it.
+api PUT /api/v1/settings "{\"public_host\":\"drifted.example.com\",\"public_port\":9999,\"subscription_enabled\":true,\"allow_private_targets\":false,\"reset_day\":1,\"timezone\":\"UTC\",\"access_log_enabled\":false}" >/dev/null
+IMPORT_BODY=$(python3 - "$WORK/config.json" <<'PY'
+import json, sys
+print(json.dumps({"confirm": True, "config": json.load(open(sys.argv[1]))}))
+PY
+)
+IMPORT_RESULT=$(api POST /api/v1/import/config "$IMPORT_BODY")
+IMPORT_RESULT="$IMPORT_RESULT" python3 - <<'PY'
+import json, os
+r = json.loads(os.environ["IMPORT_RESULT"])
+assert r["inbounds"] >= 1 and r["clients"] >= 1, r
+PY
+# The import invalidated this session (the password hash was rewritten from the
+# snapshot), so log in again before reading the restored setting.
+api POST /api/v1/auth/login "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" >/dev/null
+RESTORED_HOST=$(api GET /api/v1/settings | python3 -c 'import json,sys; print(json.load(sys.stdin)["public_host"])')
+[[ "$RESTORED_HOST" != "drifted.example.com" ]] || fail "config import did not restore the settings"
+# The client still works: its PSK and subscription token survived the move.
+curl -fsS "http://127.0.0.1:$PANEL_PORT/sub/$CLIENT_SUB_TOKEN" >/dev/null || fail "subscription broke after config import"
+# Import recreates the inbound rows with new ids, so any later write must use
+# the new id rather than the one captured before the migration.
+IMPORT_INBOUND_ID=$(api GET /api/v1/inbounds | python3 -c 'import json,sys; print(json.load(sys.stdin)["items"][0]["id"])')
+
 log "checking online backup"
 # The backup must be a real SQLite file, and taking it must not stop the API: a
 # write issued right after it still has to succeed. BackupTo used to hold the

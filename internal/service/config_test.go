@@ -315,3 +315,43 @@ func errorsAs(err error, target **ValidationError) bool {
 	}
 	return false
 }
+
+// TestImportReplacesRuntimeListeners is the regression for a bug found by the
+// smoke test: applying the imported inbounds without first removing the old
+// listeners left the old ones holding the ports, so every import failed with
+// port_in_use (409). The import has to restore a working listener, not just rows.
+func TestImportReplacesRuntimeListeners(t *testing.T) {
+	svc, st, _ := newConfigEnv(t)
+	in := model.Inbound{Remark: "listener", Listen: "127.0.0.1", Port: 28330,
+		Method: model.Method2022AES128GCM, ServerPSK: configPSK(16), Enabled: true}
+	if _, err := svc.CreateInbound(InboundInput{
+		Remark: in.Remark, Listen: in.Listen, Port: in.Port, Method: in.Method,
+		ServerPSK: in.ServerPSK, Enabled: true,
+	}); err != nil {
+		t.Fatalf("create inbound: %v", err)
+	}
+	// Change a field so the imported snapshot differs from the running set.
+	snapshot, err := svc.ExportConfig()
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	snapshot.Inbounds[0].Remark = "renamed after export"
+	snapshot.Inbounds[0].Port = 28331
+
+	result, err := svc.ImportConfig(snapshot, true)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if result.Reloads != 1 || len(result.Warnings) != 0 {
+		t.Fatalf("listener did not restart cleanly: %+v", result)
+	}
+	// The import recreates rows, so the id changes; find the listener by its
+	// new port, which is what the runtime actually bound.
+	all, err := st.ListInbounds()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 || all[0].Port != 28331 || all[0].Remark != "renamed after export" {
+		t.Fatalf("inbound not replaced: %+v", all)
+	}
+}

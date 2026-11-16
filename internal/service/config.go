@@ -143,16 +143,15 @@ func (s *Service) ImportConfig(snapshot model.ConfigSnapshot, confirm bool) (*mo
 	}
 
 	result := &model.ImportConfigResult{Warnings: []string{}}
-	// Replace the runtime listeners with the imported set. Each inbound is
-	// applied once, not once per client.
+	// Replace the runtime listeners with the imported set. Clear the old ones
+	// first: they still hold the ports the imported inbounds want to bind.
+	// Each new inbound is applied once, not once per client.
+	s.mgr.RemoveAllInbounds()
 	inbounds, err := s.store.ListInbounds()
 	if err != nil {
 		return nil, err
 	}
 	for _, in := range inbounds {
-		// RemoveInbound is safe when the listener was never started. It also
-		// reclaims the accounting accounts of the previous configuration.
-		s.mgr.RemoveInbound(in.ID)
 		clients, err := s.store.ListClients(in.ID)
 		if err != nil {
 			return nil, err

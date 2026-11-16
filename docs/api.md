@@ -454,6 +454,7 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 | `client.import` / `client.export` | 导入导出 |
 | `client.batch` | 批量用户操作（动作、选中/成功/失败数、前 20 个 id） |
 | `export.audit` / `export.access` | 导出审计日志 / 访问明细（只记字节数与是否截断） |
+| `export.config` / `import.config` | 导出 / 导入配置快照（只记数量与字节数，不记凭据） |
 | `settings.update` | 系统设置变更 |
 
 - 只记录**成功**的操作；两个例外：登录失败记 `auth.login.failed`，重认证失败记 `admin.reauth.failed`（连续失败达到阈值后返回 429）。
@@ -628,6 +629,47 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 - `created_at_local` / `started_at_local` 按**有效时区**格式化为 `YYYY-MM-DD HH:MM:SS`，同时保留原始 Unix 秒，避免导出文件需要额外的时区知识才能读。
 - 两个导出都会写一条审计记录（`export.audit` / `export.access`），只记字节数与是否截断，不记录筛选内容里的敏感值。
 - 访问明细导出与页面同样受保留期限制（明细 7 天）；**开关关闭时导出的是开启期间的历史**，不是错误。文件含访问目标与解析后的 IP，属敏感数据。
+
+## 配置迁移
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/export/config` | 下载版本化的 JSON 配置快照 |
+| POST | `/import/config` | 校验并整体替换配置 |
+
+配置快照用于跨机器、跨版本迁移**配置**，不用于备份历史数据（那是 `/backup` 的事）：
+
+```json
+{
+  "version": 1,
+  "exported_at": 1794879944,
+  "settings": { "public_host": "node.example.com", "public_port": 0, "subscription_enabled": true, "allow_private_targets": false, "reset_day": 1, "timezone": "Asia/Shanghai", "access_log_enabled": false },
+  "admin": { "username": "admin", "password_hash": "$2a$12$...", "must_change_password": false, "totp_enabled": false },
+  "inbounds": [{
+    "remark": "main", "listen": "0.0.0.0", "port": 8388,
+    "method": "2022-blake3-aes-128-gcm", "server_psk": "...",
+    "domain": "", "domain_port": 0, "udp_enabled": true, "enabled": true,
+    "clients": [{ "name": "alice", "psk": "...", "enabled": true, "quota_bytes": 0,
+      "expires_at": 0, "ip_limit": 0, "reset_policy": "none", "reset_day": 0,
+      "sub_token": "...", "note": "" }]
+  }]
+}
+```
+
+- **快照包含**：面板设置、管理员用户名/密码哈希/两步验证状态与恢复码哈希（开启时）、全部入站（含服务器 PSK）与用户（含用户 PSK、订阅 token、已用流量）。
+- **快照不含**：session secret、流量日明细与汇总、审计日志、访问分析记录。**不要用它做整机备份**。
+- GET 响应带 `Content-Disposition: attachment` 与 `Cache-Control: no-store`，并写审计 `export.config`（只记入站数与字节数）。
+- POST 请求体：
+
+```json
+{ "confirm": true, "config": { "...": "上面导出的对象" } }
+```
+
+  `confirm` 必须为 `true`，否则 `400 invalid_request`：导入会覆盖当前**全部**配置，并要求显式确认。
+- **全有全无**：先校验整个文件，任一问题返回 `400 invalid_request`，`error.fields` 用 `settings.timezone`、`inbounds[2].port`、`inbounds[0].clients[1].sub_token` 这样的路径指出每一处错误；当前配置不变。校验覆盖时区、端口唯一与范围、方法合法、PSK 长度、单用户方法的启用用户数、订阅 token 唯一、管理员凭据完整性。
+- 校验通过后在一个事务里写入，然后每个入站重建一次监听；若某入站启动失败，配置仍已保存，响应里带 `warnings` 说明需重启该入站，不谎称整体失败。
+- **导入会让所有会话失效**：保留目标实例原有的 session secret，但密码哈希与两步验证状态来自文件，会话版本因此变化；导入后需用快照里的凭据重新登录。
+- 成功响应：`{ "inbounds": 2, "clients": 5, "reloads": 2, "warnings": [] }`，并写审计 `import.config`（只记数量与警告数，不记凭据）。
 
 ## 备份
 

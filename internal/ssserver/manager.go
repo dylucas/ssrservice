@@ -807,3 +807,21 @@ func (m *Manager) Start() {
 		m.access.start()
 	}
 }
+
+// RemoveAllInbounds stops every listener and discards every runtime account.
+//
+// A configuration import replaces the whole set of inbounds at once; removing
+// them one id at a time from the caller would miss the old ones, whose ports
+// would then be occupied when the imported set is applied.
+func (m *Manager) RemoveAllInbounds() {
+	m.applyMu.Lock()
+	defer m.applyMu.Unlock()
+	m.mu.Lock()
+	inbounds := m.inbounds
+	m.inbounds = make(map[int64]*inboundRuntime)
+	m.mu.Unlock()
+	for _, rt := range inbounds {
+		rt.close()
+	}
+	m.registry.closeAll()
+}
