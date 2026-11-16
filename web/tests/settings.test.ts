@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath, URL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   SETTINGS_FIELDS,
@@ -91,5 +93,35 @@ describe('endpointSource', () => {
   it('explains whether the port is explicit or a fallback', () => {
     expect(endpointSource(443)).toBe('使用上面填写的公共端口')
     expect(endpointSource(0)).toBe('留空时回退到各入站自己的端口')
+  })
+})
+
+describe('configuration migration hookup', () => {
+  it('exports the config endpoint and exposes both import and export', () => {
+    const apiSource = readFileSync(fileURLToPath(new URL('../src/api.ts', import.meta.url)), 'utf8')
+    expect(apiSource).toContain('exportConfigURL:')
+    expect(apiSource).toContain("'/export/config'")
+    expect(apiSource).toContain('importConfig:')
+    expect(apiSource).toContain("'/import/config'")
+  })
+
+  it('renders the migration card with an explicit warning and a file input', () => {
+    const view = readFileSync(
+      fileURLToPath(new URL('../src/views/SettingsView.vue', import.meta.url)), 'utf8')
+    expect(view).toContain('配置迁移')
+    expect(view).toContain('下载备份')
+    // The import must not happen silently: the confirm is in the handler, and
+    // the file input is hidden behind a button rather than shown as a widget.
+    expect(view).toContain('ElMessageBox.confirm')
+    expect(view).toContain('type="file"')
+    expect(view).toContain('config-file-input')
+    expect(view).toContain('importConfig(config, true)')
+  })
+
+  it('guards the save button in the forced password-change state', () => {
+    const view = readFileSync(
+      fileURLToPath(new URL('../src/views/SettingsView.vue', import.meta.url)), 'utf8')
+    expect(view).toContain('v-if="!forced" class="form-actions settings-actions"')
+    expect(view).toContain(':disabled="!loaded || !dirty"')
   })
 })

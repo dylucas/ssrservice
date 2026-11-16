@@ -162,6 +162,34 @@
           <span class="muted">备份含 PSK 与密码哈希，请妥善保管</span>
         </div>
       </div>
+
+      <!-- Configuration migration: settings + listeners + users + admin, but
+           no history. Kept separate from the database backup because the two
+           solve different problems (cross-version moves vs. full restore). -->
+      <div v-if="!forced" class="card">
+        <div class="card-head">
+          <h3 class="card-title">配置迁移</h3>
+          <el-tag type="warning" size="small">含全部凭据</el-tag>
+        </div>
+        <p class="muted">
+          导出 JSON 配置（设置、入站、用户与管理员凭据），用于在不同机器或版本间迁移；不含流量、审计与访问历史——那些请用上方的数据库备份。导入会覆盖当前全部配置并使所有会话失效。
+        </p>
+        <div class="settings-actions">
+          <el-button :icon="Download" @click="downloadConfig">导出配置 JSON</el-button>
+          <el-button :icon="Upload" :loading="importing" @click="pickConfigFile">导入配置</el-button>
+          <input
+            ref="configFileInput"
+            type="file"
+            :accept="CONFIG_FILE_ACCEPT"
+            class="config-file-input"
+            @change="onConfigFile"
+          />
+        </div>
+        <ul v-if="importErrors.length" class="config-import-errors">
+          <li v-for="(message, index) in importErrors" :key="index">{{ message }}</li>
+        </ul>
+        <p v-if="importSummary" class="config-import-summary">{{ importSummary }}</p>
+      </div>
     </div>
 
     <PasswordDialog v-model="passwordVisible" @saved="onPasswordSaved" />
@@ -179,13 +207,20 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 // Page-specific Element Plus components; see src/element-parts.ts.
 import { ElAlert, ElInputNumber, ElOption, ElSelect, ElSwitch } from '@/element-parts'
-import { ElMessage } from 'element-plus'
-import { Download, Refresh } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Download, Refresh, Upload } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import type { Settings } from '@/types'
 import { describeEndpoint, endpointSource, isSettingsDirty } from '@/utils/settings'
 import { ACCESS_AGGREGATE_DAYS, ACCESS_RAW_DAYS } from '@/utils/access'
+import {
+  CONFIG_FILE_ACCEPT,
+  IMPORT_CONFIRM_MESSAGE,
+  configImportError,
+  configImportSummary,
+  parseConfigFile,
+} from '@/utils/config-migration'
 import PageHeader from '@/components/PageHeader.vue'
 import PasswordDialog from '@/components/PasswordDialog.vue'
 import TOTPSetupDialog from '@/components/TOTPSetupDialog.vue'
@@ -205,6 +240,10 @@ const totpSetupVisible = ref(false)
 const totpVerifyVisible = ref(false)
 const totpVerifyAction = ref<'disable' | 'recovery'>('disable')
 const totpEnabled = computed(() => auth.admin?.totp_enabled === true)
+const configFileInput = ref<HTMLInputElement | null>(null)
+const importing = ref(false)
+const importErrors = ref<string[]>([])
+const importSummary = ref('')
 
 // must_change_password is the authoritative state. The query flag only covers
 // the moment right after login, before the admin object is filled; once the
@@ -308,6 +347,63 @@ async function onPasswordSaved() {
 
 function downloadBackup() {
   window.location.href = api.backupURL()
+}
+
+/** downloadConfig streams the JSON snapshot as a browser attachment. */
+function downloadConfig() {
+  window.location.href = api.exportConfigURL()
+}
+
+/** pickConfigFile opens the native file picker through the hidden input. */
+function pickConfigFile() {
+  importErrors.value = []
+  importSummary.value = ''
+  configFileInput.value?.click()
+}
+
+/**
+ * onConfigFile reads and imports the chosen file.
+ *
+ * The confirmation is explicit and comes before the request: the endpoint's
+ * `confirm` flag is only set after the operator has acknowledged the overwrite.
+ */
+async function onConfigFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  // Reset the value so selecting the same file twice still fires change.
+  input.value = ''
+  if (!file) return
+  let config
+  try {
+    config = parseConfigFile(await file.text())
+  } catch (error: any) {
+    importErrors.value = [error?.message || '读取配置文件失败']
+    return
+  }
+  try {
+    await ElMessageBox.confirm(IMPORT_CONFIRM_MESSAGE, '确认导入配置', {
+      type: 'warning',
+      confirmButtonText: '确认覆盖',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  importing.value = true
+  try {
+    const result = await api.importConfig(config, true)
+    importSummary.value = configImportSummary(result)
+    importErrors.value = result.warnings || []
+    ElMessage.success('配置已导入，请重新登录')
+    // The password hash and TOTP state may have changed: refresh the session so
+    // the page does not keep showing the old admin identity.
+    await auth.fetchMe()
+  } catch (error: any) {
+    importErrors.value = configImportError(error)
+    importSummary.value = ''
+  } finally {
+    importing.value = false
+  }
 }
 
 /** openTOTPVerify picks the re-auth action before the dialog opens. */

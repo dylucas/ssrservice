@@ -1389,3 +1389,24 @@ html .el-alert {
 .ml-1 {
   margin-left: var(--sspanel-space-1);
 }
+
+/* Config migration card ---------------------------------------------------- */
+
+/* The file input stays hidden behind the button; a visible default input would
+ * dominate a card that is otherwise two buttons and a warning. */
+.config-file-input {
+  display: none;
+}
+
+.config-import-errors {
+  margin: var(--sspanel-space-3) 0 0;
+  padding-left: var(--sspanel-space-5);
+  color: var(--sspanel-danger);
+  font-size: var(--sspanel-fs-sm);
+}
+
+.config-import-summary {
+  margin: var(--sspanel-space-3) 0 0;
+  color: var(--sspanel-success);
+  font-size: var(--sspanel-fs-sm);
+}

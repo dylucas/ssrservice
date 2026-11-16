@@ -452,3 +452,64 @@ export interface InboundDetail {
   /** False means the failure list is empty because nothing is recorded. */
   access_recording: boolean
 }
+
+/**
+ * A portable configuration snapshot. It carries credentials (PSKs, password
+ * hash, TOTP secrets), so it is as sensitive as the database itself.
+ */
+export interface ConfigSnapshot {
+  version: number
+  exported_at: number
+  settings: {
+    public_host: string
+    public_port: number
+    subscription_enabled: boolean
+    allow_private_targets: boolean
+    reset_day: number
+    timezone: string
+    access_log_enabled: boolean
+  }
+  admin: {
+    username: string
+    password_hash: string
+    must_change_password: boolean
+    totp_enabled: boolean
+    totp_secret?: string
+    totp_last_step?: number
+    recovery_code_hashes?: string[]
+  }
+  inbounds: Array<{
+    remark: string
+    listen: string
+    port: number
+    method: string
+    server_psk?: string
+    domain: string
+    domain_port: number
+    udp_enabled: boolean
+    enabled: boolean
+    clients: Array<{
+      name: string
+      psk: string
+      enabled: boolean
+      quota_bytes: number
+      up_bytes: number
+      down_bytes: number
+      expires_at: number
+      ip_limit: number
+      reset_policy: string
+      reset_day: number
+      last_reset_at: number
+      sub_token: string
+      note: string
+    }>
+  }>
+}
+
+/** The response of a successful config import. */
+export interface ImportConfigResult {
+  inbounds: number
+  clients: number
+  reloads: number
+  warnings?: string[]
+}

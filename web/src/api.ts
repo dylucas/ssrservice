@@ -13,6 +13,8 @@ import type {
   ClientListResponse,
   Dashboard,
   ImportResult,
+  ConfigSnapshot,
+  ImportConfigResult,
   Inbound,
   InboundInput,
   InboundDetail,
@@ -217,6 +219,9 @@ export const api = {
     const suffix = query.toString()
     return apiURL('/export/access' + (suffix ? '?' + suffix : ''))
   },
+  exportConfigURL: () => apiURL('/export/config'),
+  importConfig: (config: ConfigSnapshot, confirm: boolean) =>
+    request<ImportConfigResult>('POST', '/import/config', { confirm, config }),
   accessSummary: (days: number, clientId?: number, inboundId?: number) => {
     const search = new URLSearchParams()
     search.set('days', String(days))
