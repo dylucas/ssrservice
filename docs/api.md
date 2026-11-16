@@ -523,6 +523,31 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 
 参数非法（`days`/`limit`/`offset` 越界、未知 `outcome`/`network`、`q` 过长、`until<=since`、`since_day`/`until_day` 不是合法日期或顺序颠倒）返回 `400 invalid_request`；未登录返回 `401`。
 
+## 导出
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/export/clients?inbound_id=` | 用户 CSV（含 PSK），见上文 |
+| GET | `/export/audit` | 审计日志 CSV |
+| GET | `/export/access` | 访问分析明细 CSV |
+
+两个新导出复用各自列表端点的筛选参数，因此**同样的查询导出的行与页面显示的行一致**：
+
+| 端点 | 支持参数 |
+|---|---|
+| `/export/audit` | `action`、`username`、`since`/`until`（Unix 秒，左闭右开） |
+| `/export/access` | `client_id`、`inbound_id`、`outcome`、`network`、`q`、`since`/`until`、`since_day`/`until_day` |
+
+- **不接受 `limit` / `offset`**：导出的是筛选结果的整体，不是某一页；带上它们返回 `400 invalid_request`，避免文件只是第 3 页而调用方以为拿到了全部。
+- 响应 `text/csv; charset=utf-8`、`Content-Disposition: attachment`、`Cache-Control: no-store`。
+- 行数上限：审计 `50000`（等于审计表行数上限，实际不会触发）、访问明细 `100000`。**触发上限时**响应头带 `X-Export-Truncated: true`，文件本身仍是干净 CSV（不插入说明行）。超过上限的部分按时间**由新到旧**截断，即保留最近的记录。
+- 列：
+  - 审计：`created_at,created_at_local,username,action,target_type,target_id,detail,ip`
+  - 访问：`started_at,started_at_local,client_id,client_name,inbound_id,inbound_remark,network,host,port,ip,outcome,reason,up_bytes,down_bytes,duration_ms`
+- `created_at_local` / `started_at_local` 按**有效时区**格式化为 `YYYY-MM-DD HH:MM:SS`，同时保留原始 Unix 秒，避免导出文件需要额外的时区知识才能读。
+- 两个导出都会写一条审计记录（`export.audit` / `export.access`），只记字节数与是否截断，不记录筛选内容里的敏感值。
+- 访问明细导出与页面同样受保留期限制（明细 7 天）；**开关关闭时导出的是开启期间的历史**，不是错误。文件含访问目标与解析后的 IP，属敏感数据。
+
 ## 备份
 
 | 方法 | 路径 | 说明 |

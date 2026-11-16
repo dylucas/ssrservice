@@ -247,6 +247,8 @@ func (s *Server) buildHandler() http.Handler {
 	// The export lives outside /clients so it cannot collide with the /clients/:id
 	// wildcard (gin panics when a static segment and a wildcard share a position).
 	api.GET("/export/clients", s.handleExportClients)
+	api.GET("/export/audit", s.handleExportAudit)
+	api.GET("/export/access", s.handleExportAccess)
 	api.POST("/inbounds/:id/clients/import", s.handleImportClients)
 
 	// Public subscriptions.

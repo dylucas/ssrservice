@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
@@ -162,19 +161,8 @@ func (s *Server) handleAccessEvents(c *gin.Context) {
 	}
 	// The day form exists because the picker picks days, and only the server
 	// knows which zone those days are in. It takes precedence when present.
-	sinceDay := strings.TrimSpace(c.Query("since_day"))
-	untilDay := strings.TrimSpace(c.Query("until_day"))
-	for _, day := range []string{sinceDay, untilDay} {
-		if day == "" {
-			continue
-		}
-		if _, err := time.Parse("2006-01-02", day); err != nil {
-			writeBadRequest(c, "since_day and until_day must be dates in YYYY-MM-DD form")
-			return
-		}
-	}
-	if sinceDay != "" && untilDay != "" && untilDay < sinceDay {
-		writeBadRequest(c, "until_day must not be before since_day")
+	sinceDay, untilDay, ok := parseDayWindow(c)
+	if !ok {
 		return
 	}
 	filter.ClientID = clientID

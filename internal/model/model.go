@@ -371,6 +371,8 @@ const (
 	AuditClientKick        = "client.kick"
 	AuditClientImport      = "client.import"
 	AuditClientExport      = "client.export"
+	AuditExportAudit       = "export.audit"
+	AuditExportAccess      = "export.access"
 )
 
 // AuditActions lists every recorded action in display order.
@@ -397,6 +399,8 @@ var AuditActions = []string{
 	AuditClientKick,
 	AuditClientImport,
 	AuditClientExport,
+	AuditExportAudit,
+	AuditExportAccess,
 	AuditSettingsUpdate,
 }
 

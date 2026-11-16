@@ -333,6 +333,53 @@ func (s *Store) ListAccessEvents(filter AccessEventFilter) ([]model.AccessEvent,
 	return events, total, rows.Err()
 }
 
+// ExportAccessMaxRows bounds one access-history export. The raw list keeps a
+// week of records, which a busy instance can fill with millions of rows; the cap
+// keeps one request from reading all of them into memory.
+const ExportAccessMaxRows = 100000
+
+// ListAccessEventsForExport returns the raw access records matching filter,
+// newest first, up to max rows, reusing the list predicate so an export
+// describes exactly what the page shows for the same filters.
+func (s *Store) ListAccessEventsForExport(filter AccessEventFilter, max int) ([]model.AccessEvent, bool, error) {
+	if max <= 0 {
+		max = ExportAccessMaxRows
+	}
+	where, args := filter.where()
+	queryArgs := append(append([]any{}, args...), max+1)
+	rows, err := s.db.Query(`SELECT e.id, e.started_at, e.duration_ms, e.client_id,
+		COALESCE(c.name, ''), e.inbound_id, COALESCE(i.remark, ''),
+		e.network, e.host, e.port, e.ip, e.outcome, e.reason,
+		e.up_bytes, e.down_bytes
+		FROM access_events e
+		LEFT JOIN clients c ON c.id = e.client_id
+		LEFT JOIN inbounds i ON i.id = e.inbound_id`+where+`
+		ORDER BY e.started_at DESC, e.id DESC LIMIT ?`, queryArgs...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	events := make([]model.AccessEvent, 0, max)
+	for rows.Next() {
+		var event model.AccessEvent
+		if err := rows.Scan(&event.ID, &event.StartedAt, &event.DurationMS,
+			&event.ClientID, &event.ClientName, &event.InboundID, &event.InboundRemark,
+			&event.Network, &event.Host, &event.Port, &event.IP, &event.Outcome,
+			&event.Reason, &event.UpBytes, &event.DownBytes); err != nil {
+			return nil, false, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	truncated := len(events) > max
+	if truncated {
+		events = events[:max]
+	}
+	return events, truncated, nil
+}
+
 // AccessSummary builds the overview of a window from the daily rollup.
 //
 // The scans run concurrently. WAL allows several readers at once and the pool

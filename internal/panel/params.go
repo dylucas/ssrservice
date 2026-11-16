@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -38,4 +39,29 @@ func parseOptionalUnix(c *gin.Context, name string) (int64, bool) {
 		return 0, false
 	}
 	return value, true
+}
+
+// parseDayWindow reads the optional since_day/until_day pair.
+//
+// The date picker picks days and only the server knows which zone they belong
+// to, so the day form is what the panel sends. Both endpoints that accept a
+// window (the list and the export) share this validation: a typo in one must not
+// be accepted by the other.
+func parseDayWindow(c *gin.Context) (sinceDay, untilDay string, ok bool) {
+	sinceDay = strings.TrimSpace(c.Query("since_day"))
+	untilDay = strings.TrimSpace(c.Query("until_day"))
+	for _, day := range []string{sinceDay, untilDay} {
+		if day == "" {
+			continue
+		}
+		if _, err := time.Parse("2006-01-02", day); err != nil {
+			writeBadRequest(c, "since_day and until_day must be dates in YYYY-MM-DD form")
+			return "", "", false
+		}
+	}
+	if sinceDay != "" && untilDay != "" && untilDay < sinceDay {
+		writeBadRequest(c, "until_day must not be before since_day")
+		return "", "", false
+	}
+	return sinceDay, untilDay, true
 }

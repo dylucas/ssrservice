@@ -119,6 +119,50 @@ func (s *Store) ListAudit(filter AuditFilter) ([]model.AuditLog, int64, error) {
 	return logs, total, rows.Err()
 }
 
+// ExportAuditMaxRows bounds one audit export. The audit table itself is capped
+// at 50000 rows, so a full export is reachable; the bound exists so a raised cap
+// cannot turn one request into an unbounded read.
+const ExportAuditMaxRows = 50000
+
+// ListAuditForExport returns the audit rows matching filter, newest first, up to
+// max rows. It reuses the list filter, so an export describes exactly what the
+// page shows for the same filters.
+//
+// A truncated result reports it, which lets the handler say so in a header
+// instead of silently handing over a partial file.
+func (s *Store) ListAuditForExport(filter AuditFilter, max int) ([]model.AuditLog, bool, error) {
+	if max <= 0 {
+		max = ExportAuditMaxRows
+	}
+	where, args := filter.where()
+	// One extra row tells us whether anything was left behind.
+	queryArgs := append(append([]any{}, args...), max+1)
+	rows, err := s.db.Query(`SELECT id, created_at, admin_id, username, action,
+		target_type, target_id, detail, ip FROM audit_logs`+where+
+		` ORDER BY created_at DESC, id DESC LIMIT ?`, queryArgs...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	logs := make([]model.AuditLog, 0, max)
+	for rows.Next() {
+		var entry model.AuditLog
+		if err := rows.Scan(&entry.ID, &entry.CreatedAt, &entry.AdminID, &entry.Username,
+			&entry.Action, &entry.TargetType, &entry.TargetID, &entry.Detail, &entry.IP); err != nil {
+			return nil, false, err
+		}
+		logs = append(logs, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	truncated := len(logs) > max
+	if truncated {
+		logs = logs[:max]
+	}
+	return logs, truncated, nil
+}
+
 // PruneAudit deletes rows older than before and returns how many were removed.
 func (s *Store) PruneAudit(before int64) (int64, error) {
 	var removed int64

@@ -704,3 +704,72 @@ func TestPruneAccessBatchesAreBoundedByRows(t *testing.T) {
 		t.Fatalf("the rollup batch removed %d rows, over the bound %d", got, accessPruneBatch)
 	}
 }
+
+// TestExportQueriesRespectTheRowCap covers the cap the CSV exports rely on: the
+// query returns at most max rows and reports that it cut the result short, so the
+// handler can say so instead of handing over a silently partial file.
+func TestExportQueriesRespectTheRowCap(t *testing.T) {
+	st := newTestStore(t)
+	in, alice, _ := seedAccessFixture(t, st)
+	day := time.Now().Format("2006-01-02")
+	const rows = 12
+	records := make([]model.AccessRecord, 0, rows)
+	for i := 0; i < rows; i++ {
+		record := accessRecord(alice.ID, in.ID, "h"+strconv.Itoa(i)+".example", 443,
+			model.AccessAllowed, "", day)
+		record.StartedAt = time.Now().Unix() - int64(i)
+		records = append(records, record)
+	}
+	if err := st.SaveAccess(records); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	events, truncated, err := st.ListAccessEventsForExport(AccessEventFilter{}, 5)
+	if err != nil {
+		t.Fatalf("export events: %v", err)
+	}
+	if len(events) != 5 || !truncated {
+		t.Fatalf("export returned %d rows (truncated %v), want 5 and true", len(events), truncated)
+	}
+	// The newest rows come first, like the list endpoint.
+	if events[0].StartedAt < events[len(events)-1].StartedAt {
+		t.Fatalf("export is not newest first: %+v", events)
+	}
+	// Asking for more than exists is not a truncation.
+	all, truncated, err := st.ListAccessEventsForExport(AccessEventFilter{}, 100)
+	if err != nil {
+		t.Fatalf("export all: %v", err)
+	}
+	if len(all) != rows || truncated {
+		t.Fatalf("export returned %d rows (truncated %v), want %d and false", len(all), truncated, rows)
+	}
+}
+
+// TestListAuditForExportRespectsTheRowCap mirrors the access case for the audit
+// trail, which uses the same one-extra-row trick.
+func TestListAuditForExportRespectsTheRowCap(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().Unix()
+	for i := 0; i < 8; i++ {
+		if err := st.InsertAudit(model.AuditLog{
+			CreatedAt: now - int64(i), Username: "admin",
+			Action: model.AuditAuthLogin, TargetType: "admin",
+		}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	logs, truncated, err := st.ListAuditForExport(AuditFilter{Action: model.AuditAuthLogin}, 3)
+	if err != nil {
+		t.Fatalf("export audit: %v", err)
+	}
+	if len(logs) != 3 || !truncated {
+		t.Fatalf("export returned %d rows (truncated %v), want 3 and true", len(logs), truncated)
+	}
+	all, truncated, err := st.ListAuditForExport(AuditFilter{}, 100)
+	if err != nil {
+		t.Fatalf("export all: %v", err)
+	}
+	if len(all) != 8 || truncated {
+		t.Fatalf("export returned %d rows (truncated %v), want 8 and false", len(all), truncated)
+	}
+}
