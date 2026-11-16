@@ -104,10 +104,13 @@ onBeforeUnmount(() => window.removeEventListener('resize', onResize))
 const passwordVisible = ref(false)
 
 // nav.ts holds the menu; the icons stay here so that module remains plain data.
+// Every name used by nav.ts must appear here as well as in the import above: an
+// imported icon that is missing from this map renders an empty menu row.
 const icons: Record<string, Component> = {
   Odometer,
   Connection,
   User,
+  DataAnalysis,
   Document,
   Setting,
 }
