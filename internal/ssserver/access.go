@@ -71,9 +71,14 @@ type accessRecorder struct {
 	started   atomic.Bool
 	// stopping is set before the loop leaves: at that point a submission would
 	// vanish without a trace, so it is counted as a drop instead.
-	stopping   atomic.Bool
-	warnMu     sync.Mutex
-	lastWarnAt time.Time
+	stopping atomic.Bool
+	// lastWarnNano is unix nanoseconds of the last drop warning. It is atomic
+	// because the drop path runs on every data-plane goroutine: a stalled
+	// recorder drops thousands of records per second, and taking a mutex per
+	// dropped record would put analytics contention back on the hot path it is
+	// supposed to stay off.
+	lastWarnNano atomic.Int64
+	warnMu       sync.Mutex
 }
 
 func newAccessRecorder(logger *slog.Logger, sink AccessSink, loc *time.Location) *accessRecorder {
@@ -328,14 +333,24 @@ func (r *accessRecorder) submit(record model.AccessRecord) {
 // warnDropped logs at most one warning per accessWarnEvery. The interval is the
 // whole rate limit: a full queue drops thousands of records per second, and a
 // per-record modulo would either flood the log or hide a real incident.
+//
+// The common case returns after one atomic load: a drop storm must not turn
+// every dropped record into a lock acquisition.
 func (r *accessRecorder) warnDropped(total uint64) {
-	r.warnMu.Lock()
-	defer r.warnMu.Unlock()
-	now := time.Now()
-	if now.Sub(r.lastWarnAt) < accessWarnEvery {
+	now := time.Now().UnixNano()
+	last := r.lastWarnNano.Load()
+	if last != 0 && now-last < int64(accessWarnEvery) {
 		return
 	}
-	r.lastWarnAt = now
+	r.warnMu.Lock()
+	defer r.warnMu.Unlock()
+	// Re-check under the lock: two goroutines can pass the fast path together,
+	// and only one of them may log.
+	last = r.lastWarnNano.Load()
+	if last != 0 && now-last < int64(accessWarnEvery) {
+		return
+	}
+	r.lastWarnNano.Store(now)
 	if r.logger != nil {
 		r.logger.Warn("access records dropped (queue full or storage failing)",
 			"dropped", total, "queue", accessQueueSize)

@@ -3,9 +3,11 @@ package ssserver
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -949,5 +951,27 @@ func TestUDPObserveStillUpgradesAnAddressFirstEntry(t *testing.T) {
 	tracker.addUp(target, udpTarget("other.example", 53), 5)
 	if entry.host != "dns.example.com" {
 		t.Fatalf("host was rewritten to %q", entry.host)
+	}
+}
+
+// TestDropWarningIsRateLimitedOnce checks the shape of the drop warning: a burst
+// of drops logs once, and the counter still sees every record. The rate limit is
+// what keeps a stalled recorder from turning analytics into a log flood.
+func TestDropWarningIsRateLimitedOnce(t *testing.T) {
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	recorder := newAccessRecorder(logger, &captureSink{}, time.UTC)
+	recorder.setEnabled(true)
+	// No start(): the queue stays undrained, so every record past its capacity
+	// is dropped.
+	for i := 0; i < accessQueueSize+500; i++ {
+		recorder.submit(model.AccessRecord{ClientID: int64(i + 1), Host: "example.com"})
+	}
+	if got := recorder.droppedCount(); got != 500 {
+		t.Fatalf("dropped = %d, want 500", got)
+	}
+	warnings := strings.Count(buf.String(), "access records dropped")
+	if warnings != 1 {
+		t.Fatalf("logged %d drop warnings in one burst, want 1", warnings)
 	}
 }
