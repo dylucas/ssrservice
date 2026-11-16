@@ -27,7 +27,7 @@ func newImportEnv(t *testing.T, method string) (*Service, *store.Store, model.In
 	t.Cleanup(func() { st.Close() })
 	cfg := config.Default()
 	mgr := ssserver.New(ssserver.Options{
-		Sink: st, Location: time.UTC,
+		Sink: st, AccessSink: st, Location: time.UTC,
 		FlushInterval: time.Hour, EnforceInterval: time.Hour, UDPTimeout: 10 * time.Second,
 		Policy: ssserver.PolicyConfig{AllowPrivateTargets: true},
 	})

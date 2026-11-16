@@ -242,6 +242,8 @@ func (s *Server) buildHandler() http.Handler {
 	api.PUT("/settings", s.handleUpdateSettings)
 	api.GET("/backup", s.handleBackup)
 	api.GET("/audit", s.handleListAudit)
+	api.GET("/access/summary", s.handleAccessSummary)
+	api.GET("/access/events", s.handleAccessEvents)
 	// The export lives outside /clients so it cannot collide with the /clients/:id
 	// wildcard (gin panics when a static segment and a wildcard share a position).
 	api.GET("/export/clients", s.handleExportClients)

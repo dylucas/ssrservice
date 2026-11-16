@@ -68,6 +68,7 @@ func newTestPanelWith(t *testing.T, mutate func(*config.Config)) *testPanel {
 	}
 	mgr := ssserver.New(ssserver.Options{
 		Sink:            st,
+		AccessSink:      st,
 		Location:        time.UTC,
 		FlushInterval:   time.Hour,
 		EnforceInterval: time.Hour,

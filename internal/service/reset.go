@@ -7,8 +7,8 @@ import (
 )
 
 // startResetLoop launches the scheduled monthly traffic reset worker. The same
-// one minute tick also drives the (much rarer) audit retention sweep, so no
-// extra goroutine is needed for it.
+// one minute tick also drives the (much rarer) audit and access retention
+// sweeps, so no extra goroutine is needed for them.
 func (s *Service) startResetLoop() {
 	s.resetWG.Add(1)
 	go func() {
@@ -17,6 +17,7 @@ func (s *Service) startResetLoop() {
 		defer timer.Stop()
 		s.runScheduledResets(time.Now())
 		s.pruneAudit()
+		s.pruneAccess(true)
 		ticks := 0
 		for {
 			select {
@@ -27,6 +28,9 @@ func (s *Service) startResetLoop() {
 				ticks++
 				if ticks%auditPruneInterval == 0 {
 					s.pruneAudit()
+				}
+				if ticks%accessPruneInterval == 0 {
+					s.pruneAccess(ticks%accessFoldBackstopTicks == 0)
 				}
 				timer.Reset(time.Minute)
 			}

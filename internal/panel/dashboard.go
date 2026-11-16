@@ -125,7 +125,8 @@ func (s *Server) handleUpdateSettings(c *gin.Context) {
 		Detail: auditFields("public_host", input.PublicHost, "public_port", input.PublicPort,
 			"subscription_enabled", input.SubscriptionOn,
 			"allow_private_targets", input.AllowPrivate,
-			"reset_day", input.ResetDay, "timezone", input.Timezone),
+			"reset_day", input.ResetDay, "timezone", input.Timezone,
+			"access_log_enabled", input.AccessLog),
 	})
 	c.JSON(http.StatusOK, s.svc.Settings())
 }

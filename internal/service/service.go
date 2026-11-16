@@ -54,6 +54,7 @@ type Service struct {
 	subEnabled   bool
 	allowPrivate bool
 	resetDay     int
+	accessLog    bool
 	sessionTTL   time.Duration
 
 	resetStop chan struct{}
@@ -152,6 +153,11 @@ func (s *Service) seedSettings() error {
 	if _, err := s.store.GetSetting(model.SettingTimezone); errors.Is(err, store.ErrNotFound) {
 		defaults[model.SettingTimezone] = s.cfg.Traffic.Timezone
 	}
+	if _, err := s.store.GetSetting(model.SettingAccessLog); errors.Is(err, store.ErrNotFound) {
+		// Access history is browsing history; it stays off until the operator
+		// asks for it in the settings page.
+		defaults[model.SettingAccessLog] = "false"
+	}
 	if len(defaults) == 0 {
 		return nil
 	}
@@ -169,16 +175,19 @@ func (s *Service) loadSettings() error {
 	s.subEnabled = values[model.SettingSubscriptionEnabled] != "false"
 	s.allowPrivate = values[model.SettingAllowPrivate] == "true"
 	s.resetDay = parseInt(values[model.SettingResetDay])
+	s.accessLog = values[model.SettingAccessLog] == "true"
 	if tz := values[model.SettingTimezone]; tz != "" {
 		if loc, err := time.LoadLocation(tz); err == nil {
 			s.loc = loc
 		}
 	}
 	loc := s.loc
+	accessLog := s.accessLog
 	s.mu.Unlock()
 	// Keep the traffic accounting time zone in sync with the panel setting so
 	// daily buckets and monthly resets do not need a restart to follow it.
 	s.mgr.SetLocation(loc)
+	s.mgr.SetAccessEnabled(accessLog)
 	s.applyPolicy()
 	return nil
 }
@@ -259,6 +268,7 @@ type SettingsView struct {
 	AllowPrivate   bool   `json:"allow_private_targets"`
 	ResetDay       int    `json:"reset_day"`
 	Timezone       string `json:"timezone"`
+	AccessLog      bool   `json:"access_log_enabled"`
 }
 
 // Settings returns the current runtime settings.
@@ -272,6 +282,7 @@ func (s *Service) Settings() SettingsView {
 		AllowPrivate:   s.allowPrivate,
 		ResetDay:       s.resetDay,
 		Timezone:       s.loc.String(),
+		AccessLog:      s.accessLog,
 	}
 }
 
@@ -283,11 +294,19 @@ func (s *Service) UpdateSettings(in SettingsView) error {
 	if in.ResetDay < 0 || in.ResetDay > 28 {
 		return invalid("reset_day must be between 0 and 28")
 	}
+	// PUT /settings replaces the whole object, so an empty timezone is a client
+	// bug, not a request to use UTC: time.LoadLocation("") succeeds and would
+	// silently move every accounting day to UTC.
+	if strings.TrimSpace(in.Timezone) == "" {
+		return invalid("timezone is required")
+	}
 	loc, err := time.LoadLocation(in.Timezone)
 	if err != nil {
 		return invalid("invalid timezone: %v", err)
 	}
-	host := in.PublicHost
+	// Store the normalized form, not the raw field: " Example.COM. " passes
+	// validation but would end up inside every share link and Clash config.
+	host := normalizeHost(in.PublicHost)
 	if host != "" && !validHost(host) {
 		return invalid("public_host must be a hostname or IP address")
 	}
@@ -298,6 +317,7 @@ func (s *Service) UpdateSettings(in SettingsView) error {
 		model.SettingAllowPrivate:        strconv.FormatBool(in.AllowPrivate),
 		model.SettingResetDay:            strconv.Itoa(in.ResetDay),
 		model.SettingTimezone:            loc.String(),
+		model.SettingAccessLog:           strconv.FormatBool(in.AccessLog),
 	}
 	if err := s.store.SetSettings(values); err != nil {
 		return err
@@ -308,9 +328,11 @@ func (s *Service) UpdateSettings(in SettingsView) error {
 	s.subEnabled = in.SubscriptionOn
 	s.allowPrivate = in.AllowPrivate
 	s.resetDay = in.ResetDay
+	s.accessLog = in.AccessLog
 	s.loc = loc
 	s.mu.Unlock()
 	s.mgr.SetLocation(loc)
+	s.mgr.SetAccessEnabled(in.AccessLog)
 	s.applyPolicy()
 	return nil
 }
@@ -336,13 +358,17 @@ func (s *Service) location() *time.Location {
 // page could describe two different 30 day windows.
 func (s *Service) Location() *time.Location { return s.location() }
 
-// DailyTotalsSince returns the per-day traffic rollup starting at the day
-// `days` before now, evaluated in the effective time zone.
+// DailyTotalsSince returns the per-day traffic rollup of the last `days` days,
+// evaluated in the effective time zone.
+//
+// The lower bound is days-1 back because the query keeps every day from it
+// onward: counting back `days` would return one bucket more than the caller
+// asked for and make "the last 30 days" 31 points on the chart.
 func (s *Service) DailyTotalsSince(days int) ([]model.DailyUsage, error) {
 	if days <= 0 {
 		days = 30
 	}
-	since := time.Now().AddDate(0, 0, -days).In(s.location()).Format("2006-01-02")
+	since := time.Now().AddDate(0, 0, -(days - 1)).In(s.location()).Format("2006-01-02")
 	return s.store.DailyTotals(since)
 }
 

@@ -117,6 +117,7 @@ func runServer(args []string) error {
 	mgr := ssserver.New(ssserver.Options{
 		Logger:          logger,
 		Sink:            st,
+		AccessSink:      st,
 		Location:        cfg.Location(),
 		FlushInterval:   cfg.Traffic.FlushInterval.Duration(),
 		EnforceInterval: cfg.Traffic.EnforceInterval.Duration(),
