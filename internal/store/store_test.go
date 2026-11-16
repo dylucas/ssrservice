@@ -998,3 +998,99 @@ func TestAttentionCountsMatchTheListFilters(t *testing.T) {
 		}
 	}
 }
+
+// TestInboundDetailQueriesScopeToOneInbound covers the reads behind the inbound
+// detail page: the traffic series, the busiest users and the status breakdown all
+// have to describe one inbound and nothing else.
+func TestInboundDetailQueriesScopeToOneInbound(t *testing.T) {
+	st := newTestStore(t)
+	first := model.Inbound{Remark: "first", Listen: "127.0.0.1", Port: 9202,
+		Method: model.Method2022AES128GCM, Enabled: true}
+	second := model.Inbound{Remark: "second", Listen: "127.0.0.1", Port: 9203,
+		Method: model.Method2022AES128GCM, Enabled: true}
+	for _, in := range []*model.Inbound{&first, &second} {
+		if err := st.CreateInbound(in); err != nil {
+			t.Fatalf("inbound: %v", err)
+		}
+	}
+	now := time.Now()
+	day := now.Format("2006-01-02")
+	mk := func(in model.Inbound, name string, psk string, up, down int64) model.Client {
+		c := model.Client{InboundID: in.ID, Name: name, PSK: psk, Enabled: true,
+			SubToken: "tok-" + name, UpBytes: up, DownBytes: down, QuotaBytes: 100000}
+		if err := st.CreateClient(&c); err != nil {
+			t.Fatalf("client %s: %v", name, err)
+		}
+		return c
+	}
+	busy := mk(first, "busy", "psk", 900, 100)
+	mk(first, "idle", "psk", 0, 0)
+	mk(second, "other", "psk", 5000, 5000)
+	if err := st.SetClientEnabled(first.ID, true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	// Traffic for both inbounds on the same day.
+	snaps := []model.UsageSnapshot{
+		{ClientID: busy.ID, UpBytes: 400, DownBytes: 600, Day: day, DayUpBytes: 400, DayDownBytes: 600},
+	}
+	if err := st.SaveUsage(snaps); err != nil {
+		t.Fatalf("save usage: %v", err)
+	}
+
+	daily, err := st.InboundDailyTotals(first.ID, day)
+	if err != nil {
+		t.Fatalf("daily: %v", err)
+	}
+	if len(daily) != 1 || daily[0].UpBytes != 400 || daily[0].DownBytes != 600 {
+		t.Fatalf("daily = %+v, want only the first inbound's traffic", daily)
+	}
+
+	otherDaily, err := st.InboundDailyTotals(second.ID, day)
+	if err != nil {
+		t.Fatalf("daily: %v", err)
+	}
+	if len(otherDaily) != 0 {
+		t.Fatalf("the second inbound has %d rows but no traffic: %+v", len(otherDaily), otherDaily)
+	}
+
+	top, err := st.InboundTopClients(first.ID, 2)
+	if err != nil {
+		t.Fatalf("top: %v", err)
+	}
+	// SaveUsage stores absolute totals, so the snapshot above is what the row
+	// holds now; the busiest client is still the one with traffic.
+	if len(top) != 2 || top[0].ID != busy.ID || top[0].UpBytes != 400 {
+		t.Fatalf("top = %+v, want the busiest client of the first inbound first", top)
+	}
+	for _, client := range top {
+		if client.ID == 0 {
+			t.Fatalf("unexpected row %+v", client)
+		}
+	}
+
+	counts, err := st.InboundStatusBreakdown(first.ID, now.Unix())
+	if err != nil {
+		t.Fatalf("breakdown: %v", err)
+	}
+	if counts.Active != 2 {
+		t.Fatalf("active = %d, want the two clients of the first inbound", counts.Active)
+	}
+	if counts.Disabled+counts.Expired+counts.QuotaExceeded != 0 {
+		t.Fatalf("unexpected non-active rows: %+v", counts)
+	}
+
+	// An inbound with no clients still answers, with zeroes rather than NULL.
+	empty := model.Inbound{Remark: "empty", Listen: "127.0.0.1", Port: 9204,
+		Method: model.Method2022AES128GCM, Enabled: true}
+	if err := st.CreateInbound(&empty); err != nil {
+		t.Fatalf("inbound: %v", err)
+	}
+	emptyCounts, err := st.InboundStatusBreakdown(empty.ID, now.Unix())
+	if err != nil {
+		t.Fatalf("breakdown of an empty inbound: %v", err)
+	}
+	if emptyCounts != (InboundStatusCounts{}) {
+		t.Fatalf("empty inbound counts = %+v", emptyCounts)
+	}
+}

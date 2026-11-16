@@ -226,6 +226,7 @@ func (s *Server) buildHandler() http.Handler {
 	api.DELETE("/inbounds/:id", s.handleDeleteInbound)
 	api.POST("/inbounds/:id/toggle", s.handleToggleInbound)
 	api.POST("/inbounds/:id/restart", s.handleRestartInbound)
+	api.GET("/inbounds/:id/detail", s.handleInboundDetail)
 	api.GET("/inbounds/:id/clients", s.handleListInboundClients)
 	api.POST("/inbounds/:id/clients", s.handleCreateClient)
 	api.GET("/clients", s.handleListClients)

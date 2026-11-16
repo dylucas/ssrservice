@@ -202,6 +202,32 @@
 - `domain` 与 `domain_port` 可选，用于让该入站使用独立的分享域名（见下节）。
 - 列表与详情在入站**已启用但未能启动**（端口被占用、权限不足等）时带 `last_error` 说明原因；字段缺省表示运行时与记录一致。
 
+### 入站详情
+
+`GET /inbounds/:id/detail?days=30` 返回单个入站的运行视图：流量趋势、最忙用户、状态分布与最近失败访问。
+
+| 参数 | 规则 |
+|---|---|
+| `days` | 1–90，默认 30；按有效时区计算，`daily` 恒为 N 天 |
+
+```json
+{
+  "inbound": { "id": 1, "remark": "main", "...": "完整 InboundView，含 client_count / up_bytes / online_ips / last_error" },
+  "days": 30,
+  "daily": [{ "day": "2026-01-01", "up_bytes": 1, "down_bytes": 2 }],
+  "top_clients": [{ "id": 1, "name": "alice", "up_bytes": 10, "down_bytes": 20, "enabled": true }],
+  "status_counts": { "active": 1, "disabled": 0, "expired": 0, "quota_exceeded": 0 },
+  "recent_failures": [],
+  "access_recording": false
+}
+```
+
+- `daily` 来自 `traffic_daily` 与 `clients` 的连接，**只统计该入站的用户**，并按 N 天补零（与仪表盘、访问分析一致的横轴语义）。
+- `top_clients` 最多 5 个，按累计字节降序。
+- `status_counts` 的四态与 `/clients?status=` 用同一段谓词，数字与筛选结果一致。
+- `recent_failures` 是该入站最近 20 条**拦截或失败**的访问记录（不含放行），按时间倒序；`access_recording` 为 `false` 时该数组恒为空，页面据此区分「没有失败」与「没有记录」。
+- 入站不存在返回 `404 not_found`；`days` 越界返回 `400 invalid_request`。
+
 ### 关联域名
 
 多入站部署过去只能通过全局 `public_host` 指定一个主机名，所有入站的分享链接都用它。现在每个入站可以单独关联域名：
