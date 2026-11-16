@@ -20,6 +20,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     allow_private_targets: false,
     reset_day: 1,
     timezone: 'Asia/Shanghai',
+    access_log_enabled: false,
     ...overrides,
   }
 }
@@ -37,6 +38,7 @@ describe('isSettingsDirty', () => {
       { allow_private_targets: true },
       { reset_day: 15 },
       { timezone: 'UTC' },
+      { access_log_enabled: true },
     ]
     for (const change of changes) {
       const form = { ...settings(), ...change }

@@ -63,6 +63,7 @@ import { ElMessage } from 'element-plus'
 import {
   ArrowDown,
   Connection,
+  DataAnalysis,
   Document,
   Expand,
   Fold,

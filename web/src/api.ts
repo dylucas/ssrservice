@@ -1,5 +1,8 @@
 import { readRuntimeConfig } from './runtime-config'
 import type {
+  AccessEventParams,
+  AccessEventsResponse,
+  AccessSummary,
   AuditResponse,
   Client,
   ClientInput,
@@ -128,6 +131,26 @@ function clientListQuery(params: ClientListParams): string {
   return search.toString()
 }
 
+/**
+ * accessEventQuery renders the access event query. Empty filters are left out so
+ * the URL only says what the operator actually selected.
+ */
+function accessEventQuery(params: AccessEventParams): string {
+  const search = new URLSearchParams()
+  if (params.client_id) search.set('client_id', String(params.client_id))
+  if (params.inbound_id) search.set('inbound_id', String(params.inbound_id))
+  if (params.outcome) search.set('outcome', params.outcome)
+  if (params.network) search.set('network', params.network)
+  if (params.q) search.set('q', params.q)
+  if (params.since) search.set('since', String(params.since))
+  if (params.until) search.set('until', String(params.until))
+  if (params.since_day) search.set('since_day', params.since_day)
+  if (params.until_day) search.set('until_day', params.until_day)
+  search.set('limit', String(params.limit))
+  search.set('offset', String(params.offset))
+  return search.toString()
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<LoginResult>('POST', '/auth/login', { username, password }),
@@ -175,6 +198,15 @@ export const api = {
     apiURL(inboundId ? `/export/clients?inbound_id=${inboundId}` : '/export/clients'),
   importClients: (inboundId: number, payload: unknown) =>
     request<ImportResult>('POST', `/inbounds/${inboundId}/clients/import`, payload),
+  accessSummary: (days: number, clientId?: number, inboundId?: number) => {
+    const search = new URLSearchParams()
+    search.set('days', String(days))
+    if (clientId) search.set('client_id', String(clientId))
+    if (inboundId) search.set('inbound_id', String(inboundId))
+    return request<AccessSummary>('GET', `/access/summary?${search.toString()}`)
+  },
+  accessEvents: (params: AccessEventParams) =>
+    request<AccessEventsResponse>('GET', `/access/events?${accessEventQuery(params)}`),
   audit: (params: Record<string, string | number>) => {
     const query = new URLSearchParams()
     for (const [key, value] of Object.entries(params)) query.set(key, String(value))

@@ -19,6 +19,7 @@ export const navItems: readonly NavItem[] = [
   { path: '/', title: '仪表盘', icon: 'Odometer' },
   { path: '/inbounds', title: '入站管理', icon: 'Connection' },
   { path: '/clients', title: '用户管理', icon: 'User' },
+  { path: '/access', title: '访问分析', icon: 'DataAnalysis' },
   { path: '/audit', title: '审计日志', icon: 'Document' },
   { path: '/settings', title: '系统设置', icon: 'Setting' },
 ]

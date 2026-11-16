@@ -147,6 +147,8 @@ export interface Settings {
   allow_private_targets: boolean
   reset_day: number
   timezone: string
+  /** Whether the data plane records proxy destinations. Off by default. */
+  access_log_enabled: boolean
 }
 
 export interface Admin {
@@ -267,4 +269,103 @@ export interface ImportFailure {
 export interface ImportResult {
   created: number
   failed: ImportFailure[]
+}
+
+/** One row of the most requested destinations (GET /access/summary). */
+export interface AccessTopHost {
+  host: string
+  hits: number
+  blocked_hits: number
+  up_bytes: number
+  down_bytes: number
+}
+
+/** One row of the most active clients (GET /access/summary). */
+export interface AccessTopClient {
+  client_id: number
+  name: string
+  inbound_id: number
+  inbound_remark: string
+  hits: number
+  up_bytes: number
+  down_bytes: number
+}
+
+/** One day of the access trend. */
+export interface AccessDaily {
+  day: string
+  hits: number
+  allowed_hits: number
+  blocked_hits: number
+  failed_hits: number
+  up_bytes: number
+  down_bytes: number
+}
+
+/** The overview returned by GET /access/summary. */
+export interface AccessSummary {
+  enabled: boolean
+  days: number
+  raw_retention_days: number
+  aggregate_retention_days: number
+  dropped_records: number
+  total_hits: number
+  allowed_hits: number
+  blocked_hits: number
+  failed_hits: number
+  unique_hosts: number
+  up_bytes: number
+  down_bytes: number
+  daily: AccessDaily[]
+  top_hosts: AccessTopHost[]
+  top_clients: AccessTopClient[]
+}
+
+/** One stored access record. */
+export interface AccessEvent {
+  id: number
+  started_at: number
+  duration_ms: number
+  client_id: number
+  /** Empty when the user has been deleted; the view renders a fallback. */
+  client_name: string
+  inbound_id: number
+  inbound_remark: string
+  network: 'tcp' | 'udp'
+  host: string
+  port: number
+  /** The address actually dialed; empty when the request was blocked. */
+  ip: string
+  outcome: 'allowed' | 'blocked' | 'failed'
+  reason: string
+  up_bytes: number
+  down_bytes: number
+}
+
+export interface AccessEventsResponse {
+  items: AccessEvent[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** The query of GET /access/events; empty fields are left out. */
+export interface AccessEventParams {
+  client_id?: number
+  inbound_id?: number
+  outcome?: string
+  network?: string
+  q?: string
+  /** Absolute instant bounds (unix seconds); the day form below takes precedence. */
+  since?: number
+  until?: number
+  /**
+   * Inclusive local days (YYYY-MM-DD), resolved by the server in the configured
+   * time zone. The picker picks days, and only the server knows which zone they
+   * are in, so the day form is what the page sends.
+   */
+  since_day?: string
+  until_day?: string
+  limit: number
+  offset: number
 }

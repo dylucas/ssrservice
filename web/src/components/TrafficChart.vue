@@ -14,7 +14,7 @@
       <!-- An empty series and an all-zero series both mean "no traffic in this
            window". Drawing an axis scaled 0..1 B for them would print nonsense
            labels like "256 B" per tick, so the empty state is the honest answer. -->
-      <div v-if="!hasTraffic" class="empty-state">该区间还没有流量记录</div>
+      <div v-if="!hasTraffic" class="empty-state">{{ emptyText || '该区间还没有流量记录' }}</div>
       <template v-else>
         <svg
           v-if="width > 0"
@@ -46,7 +46,7 @@
               text-anchor="end"
               dominant-baseline="middle"
             >
-              {{ formatBytes(tick.value) }}
+              {{ formatValue(tick.value) }}
             </text>
           </g>
 
@@ -106,7 +106,7 @@
           <div v-for="series in series" :key="series.name" class="chart-tooltip-row">
             <span :class="['chart-key', keyClass(series.variant)]" />
             <span class="chart-tooltip-name">{{ series.name }}</span>
-            <strong>{{ formatBytes(series.values[active] ?? 0) }}</strong>
+            <strong>{{ formatValue(series.values[active] ?? 0) }}</strong>
           </div>
         </div>
       </template>
@@ -119,6 +119,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { formatBytes } from '@/utils/format'
 import {
   areaPath,
+  axisGutterWidth,
   axisTicks,
   clampActive,
   labelIndices,
@@ -138,9 +139,29 @@ const props = defineProps<{
   labels: string[]
   series: ChartSeries[]
   ariaLabel?: string
+  /**
+   * format renders an axis tick and a tooltip value. It defaults to bytes
+   * because that is what every existing caller plots; the access page draws
+   * request counts through the same component, and a "1.4 KB" axis label there
+   * would be nonsense.
+   */
+  format?: (value: number) => string
+  /**
+   * emptyText overrides the "nothing in this range" line. The byte-specific
+   * wording would be wrong on a page that plots request counts through the same
+   * component.
+   */
+  emptyText?: string
 }>()
 
-/** Axis gutters: room for a byte label on the left and a date on the bottom. */
+/** formatValue is the prop with the byte formatter as the default. */
+function formatValue(value: number): string {
+  return props.format ? props.format(value) : formatBytes(value)
+}
+
+/** Axis gutters: room for a label on the left and a date on the bottom. The
+ * left width is measured from the widest tick label instead of being fixed at
+ * the byte-label width, which clipped count labels with thousands separators. */
 const GUTTERS: Omit<ChartBox, 'width' | 'height'> = { top: 12, right: 12, bottom: 24, left: 56 }
 /** Fallback height until the container has been measured. */
 const DEFAULT_HEIGHT = 240
@@ -153,9 +174,17 @@ let observer: ResizeObserver | null = null
 
 const hasTraffic = computed(() => props.labels.length > 0 && peakOf(props.series) > 0)
 
-const area = computed(() => plotArea({ ...GUTTERS, width: width.value, height: height.value }))
+const area = computed(() => {
+  const left = leftGutter.value
+  return plotArea({ ...GUTTERS, left, width: width.value, height: height.value })
+})
 
 const axisMax = computed(() => niceMax(peakOf(props.series)))
+
+// The tick labels are the widest at the maximum, so sizing from it covers the
+// whole axis. It is a computed rather than a constant because the formatter
+// ("20,000 次" vs "1.4 MB") is a prop.
+const leftGutter = computed(() => axisGutterWidth([formatValue(axisMax.value)], GUTTERS.left))
 
 const ticks = computed(() =>
   axisTicks(axisMax.value).map((value) => ({ value, y: yAt(value, axisMax.value, area.value) })),

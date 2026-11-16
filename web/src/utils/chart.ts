@@ -83,6 +83,28 @@ export function axisTicks(max: number, count = 4): number[] {
 }
 
 /**
+ * axisGutterWidth sizes the left gutter for a set of tick labels.
+ *
+ * The axis text is 12px (--sspanel-fs-xs). An ASCII glyph there is about 6.2px
+ * wide and a CJK one about 12.4px, so a label like "20,000 次" needs far more room
+ * than the 56px a byte label needs -- without this the leading digits were
+ * clipped by the viewBox. The estimate is deliberately a little generous: an
+ * axis label that overlaps the plot is a bug, one with slack is not.
+ */
+export function axisGutterWidth(labels: string[], minimum = 56): number {
+  let widest = 0
+  for (const label of labels) {
+    let width = 0
+    for (const rune of label) {
+      width += (rune.codePointAt(0) ?? 0) >= 0x2e80 ? 12.4 : 6.2
+    }
+    widest = Math.max(widest, width)
+  }
+  // 8px between the label and the plot, plus a few pixels of breathing room.
+  return Math.max(minimum, Math.ceil(widest) + 14)
+}
+
+/**
  * xAt maps a series index to its horizontal position. A single point sits in the
  * middle rather than at the left edge, so a one-day series is not a dot in the
  * corner.

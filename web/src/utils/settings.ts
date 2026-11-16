@@ -19,6 +19,7 @@ export const SETTINGS_FIELDS = [
   'allow_private_targets',
   'reset_day',
   'timezone',
+  'access_log_enabled',
 ] as const satisfies readonly (keyof Settings)[]
 
 /**

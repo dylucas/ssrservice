@@ -102,6 +102,14 @@
           </el-select>
           <div class="hint">用于到期判断、月度重置与流量按天归属；改动后立即生效。</div>
         </el-form-item>
+
+        <el-form-item label="访问分析">
+          <el-switch v-model="form.access_log_enabled" />
+          <div class="hint">
+            记录每个用户访问的目标域名/IP、端口、结果与字节数。原始明细保留 {{ ACCESS_RAW_DAYS }} 天、按天聚合保留
+            {{ ACCESS_AGGREGATE_DAYS }} 天；不记录页面内容或来源 IP。默认关闭，开启后数据库会增长。
+          </div>
+        </el-form-item>
       </div>
     </el-form>
 
@@ -177,6 +185,7 @@ import { api } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import type { Settings } from '@/types'
 import { describeEndpoint, endpointSource, isSettingsDirty } from '@/utils/settings'
+import { ACCESS_AGGREGATE_DAYS, ACCESS_RAW_DAYS } from '@/utils/access'
 import PageHeader from '@/components/PageHeader.vue'
 import PasswordDialog from '@/components/PasswordDialog.vue'
 import TOTPSetupDialog from '@/components/TOTPSetupDialog.vue'
@@ -213,6 +222,7 @@ const form = reactive<Settings>({
   allow_private_targets: false,
   reset_day: 1,
   timezone: 'Local',
+  access_log_enabled: false,
 })
 
 // saved mirrors the server's copy, so the page can tell an edit from a reload

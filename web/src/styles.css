@@ -913,6 +913,68 @@ html .el-date-editor.w-control-lg {
   min-width: 170px;
 }
 
+/* Access analytics ---------------------------------------------------------- */
+
+/* Top destinations and top users side by side, one column below 1200px. The
+ * two tables answer different questions about the same window, so reading them
+ * together is the point. */
+.access-lists {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sspanel-gap);
+  margin-bottom: var(--sspanel-space-7);
+}
+
+@media (min-width: 1200px) {
+  .access-lists {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* The gap above replaces the card's own bottom margin inside the grid. */
+.access-lists .card {
+  margin-bottom: 0;
+}
+
+/* A destination host: monospace (it is compared character by character) and
+ * clipped, with the full value in the title. */
+.access-target {
+  display: inline-block;
+  max-width: 100%;
+}
+
+/* A blocked count is only coloured when there is something to look at; a zero
+ * stays as quiet as the rest of the column. */
+.access-blocked-count {
+  color: var(--sspanel-warning);
+  font-weight: 600;
+}
+
+/* The "filtered by user" chip in the event toolbar. */
+.access-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sspanel-space-2);
+  padding: var(--sspanel-space-1) var(--sspanel-space-3);
+  border-radius: var(--sspanel-radius-chip);
+  background: var(--sspanel-primary-tint);
+  color: var(--sspanel-primary);
+  font-size: var(--sspanel-fs-xs);
+}
+
+/* Top-user rows are click targets: the cursor is the only affordance a table
+ * row can carry without adding a column of buttons. It is declared on the table
+ * itself because it inherits into the rows. */
+.access-clickable {
+  cursor: pointer;
+}
+
+/* The alert's inline action sits on the text baseline instead of starting a new
+ * block of its own. */
+.access-alert-action {
+  margin-left: var(--sspanel-space-4);
+}
+
 /* Table footers (clients, audit) share one alignment. */
 .pagination {
   display: flex;
