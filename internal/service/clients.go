@@ -589,37 +589,60 @@ func (s *Service) uniqueTokens(n int) ([]string, error) {
 	return nil, errors.New("could not generate unique subscription tokens")
 }
 
+// SubscriptionProfile is what a subscription token resolves to: the proxy the
+// document renders plus the account figures the client displays in its own UI.
+//
+// The usage numbers are part of the answer because Clash, mihomo, Stash and
+// sing-box all render "used / total, expires at" from the response headers, and
+// without them the subscriber has to open the panel to see the same numbers.
+type SubscriptionProfile struct {
+	Proxy      subscription.Proxy
+	UpBytes    int64
+	DownBytes  int64
+	QuotaBytes int64
+	ExpiresAt  int64
+}
+
+// Used returns the accounted traffic of the subscription's client.
+func (p SubscriptionProfile) Used() int64 { return p.UpBytes + p.DownBytes }
+
 // SubscriptionFor resolves a subscription token into the proxy record used to
-// render the subscription document.
+// render the subscription document, together with the account figures.
 //
 // The panel used to load the client and the inbound through Store() and decide
 // the enabled/active rule itself, which duplicated a domain rule outside the
 // layer that owns it. A token lookup, unlike an API call, must not reveal the
 // difference between "no such token", "subscription disabled" and "client not
 // active": all three return ErrNotFound and the handler answers a plain 404.
-func (s *Service) SubscriptionFor(token string) (subscription.Proxy, error) {
+func (s *Service) SubscriptionFor(token string) (SubscriptionProfile, error) {
 	if token == "" || !s.withinSubscription() {
-		return subscription.Proxy{}, store.ErrNotFound
+		return SubscriptionProfile{}, store.ErrNotFound
 	}
 	client, err := s.store.ClientBySubToken(token)
 	if err != nil {
-		return subscription.Proxy{}, err
+		return SubscriptionProfile{}, err
 	}
 	in, err := s.store.InboundByID(client.InboundID)
 	if err != nil {
-		return subscription.Proxy{}, err
+		return SubscriptionProfile{}, err
 	}
 	if !in.Enabled || client.StatusAt(time.Now().Unix()) != model.StatusActive {
-		return subscription.Proxy{}, store.ErrNotFound
+		return SubscriptionProfile{}, store.ErrNotFound
 	}
 	host, port := s.resolveHostPort(in, "")
-	return subscription.Proxy{
-		Name:      client.Name,
-		Method:    in.Method,
-		ServerPSK: in.ServerPSK,
-		ClientPSK: client.PSK,
-		Host:      host,
-		Port:      port,
-		UDP:       in.UDPEnabled,
+	return SubscriptionProfile{
+		Proxy: subscription.Proxy{
+			Name:      client.Name,
+			Method:    in.Method,
+			ServerPSK: in.ServerPSK,
+			ClientPSK: client.PSK,
+			Host:      host,
+			Port:      port,
+			UDP:       in.UDPEnabled,
+		},
+		UpBytes:    client.UpBytes,
+		DownBytes:  client.DownBytes,
+		QuotaBytes: client.QuotaBytes,
+		ExpiresAt:  client.ExpiresAt,
 	}, nil
 }

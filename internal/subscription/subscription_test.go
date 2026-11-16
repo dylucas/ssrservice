@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"strings"
 	"testing"
@@ -159,5 +160,93 @@ func TestParseLink(t *testing.T) {
 		if _, err := ParseLink(link); err == nil {
 			t.Fatalf("%s: expected an error for %q", name, link)
 		}
+	}
+}
+
+func TestSingBoxSubscription(t *testing.T) {
+	payload := SingBoxSubscription([]Proxy{
+		{
+			Name: "alice", Method: "2022-blake3-aes-128-gcm",
+			ServerPSK: "c2VydmVy", ClientPSK: "Y2xpZW50",
+			Host: "example.com", Port: 8388, UDP: true,
+		},
+		{
+			Name: "legacy", Method: "aes-256-gcm",
+			ClientPSK: "password123", Host: "1.2.3.4", Port: 9000,
+		},
+	})
+
+	var profile struct {
+		Outbounds []map[string]any `json:"outbounds"`
+	}
+	if err := json.Unmarshal([]byte(payload), &profile); err != nil {
+		t.Fatalf("sing-box payload is not valid JSON: %v\n%s", err, payload)
+	}
+	if len(profile.Outbounds) != 2 {
+		t.Fatalf("outbounds = %d, want 2: %+v", len(profile.Outbounds), profile.Outbounds)
+	}
+
+	first := profile.Outbounds[0]
+	if first["type"] != "shadowsocks" || first["tag"] != "alice" {
+		t.Fatalf("unexpected outbound %+v", first)
+	}
+	if first["server"] != "example.com" || first["server_port"] != float64(8388) {
+		t.Fatalf("unexpected endpoint %+v", first)
+	}
+	if first["method"] != "2022-blake3-aes-128-gcm" {
+		t.Fatalf("unexpected method %+v", first)
+	}
+	// Shadowsocks 2022 carries the server PSK in the password field, like the
+	// Clash mapping does.
+	if first["password"] != "c2VydmVy:Y2xpZW50" {
+		t.Fatalf("unexpected password %+v", first)
+	}
+
+	// A legacy cipher has no server PSK: the password is just the client key.
+	if profile.Outbounds[1]["password"] != "password123" {
+		t.Fatalf("legacy password = %v", profile.Outbounds[1]["password"])
+	}
+}
+
+func TestSingBoxSubscriptionTagsAreUnique(t *testing.T) {
+	// A client may share a name across inbounds, and sing-box rejects duplicate
+	// outbound tags, so the second one is disambiguated.
+	payload := SingBoxSubscription([]Proxy{
+		{Name: "alice", Method: "aes-128-gcm", ClientPSK: "a", Host: "h1", Port: 1},
+		{Name: "alice", Method: "aes-128-gcm", ClientPSK: "b", Host: "h2", Port: 2},
+		{Name: "", Method: "aes-128-gcm", ClientPSK: "c", Host: "h3", Port: 3},
+	})
+	var profile struct {
+		Outbounds []struct {
+			Tag string `json:"tag"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal([]byte(payload), &profile); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	tags := make([]string, 0, len(profile.Outbounds))
+	for _, outbound := range profile.Outbounds {
+		if outbound.Tag == "" {
+			t.Fatalf("an outbound has an empty tag: %s", payload)
+		}
+		tags = append(tags, outbound.Tag)
+	}
+	seen := map[string]bool{}
+	for _, tag := range tags {
+		if seen[tag] {
+			t.Fatalf("duplicate tag %q in %v", tag, tags)
+		}
+		seen[tag] = true
+	}
+	if tags[0] != "alice" || tags[1] != "alice (2)" || tags[2] != "sspanel" {
+		t.Fatalf("unexpected tags %v", tags)
+	}
+}
+
+func TestSingBoxSubscriptionEmpty(t *testing.T) {
+	// No proxies still has to be a valid profile rather than null.
+	payload := SingBoxSubscription(nil)
+	if !strings.Contains(payload, `"outbounds":[]`) {
+		t.Fatalf("empty profile = %s", payload)
 	}
 }

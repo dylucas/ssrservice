@@ -3,6 +3,7 @@ package subscription
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -225,4 +226,75 @@ func decodeUserinfo(userinfo string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// SingBoxSubscription renders a sing-box remote profile: a JSON object whose
+// "outbounds" array holds one Shadowsocks outbound per proxy.
+//
+// sing-box reads remote profiles as a partial configuration, so the object only
+// carries what the profile defines. The password field follows the same rule as
+// the Clash mapping: for Shadowsocks 2022 the client password is
+// "serverPSK:clientPSK", for the legacy AEAD ciphers it is just the client PSK.
+func SingBoxSubscription(proxies []Proxy) string {
+	outbounds := make([]singBoxOutbound, 0, len(proxies))
+	seen := make(map[string]int, len(proxies))
+	for _, p := range proxies {
+		host := p.Host
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		port := p.Port
+		if port <= 0 {
+			port = 8388
+		}
+		password := p.ClientPSK
+		if p.isSS2022() && p.ServerPSK != "" {
+			password = p.ServerPSK + ":" + p.ClientPSK
+		}
+		// A tag has to be unique: sing-box rejects a profile with two outbounds
+		// of the same name, and a client may legitimately share a name across
+		// inbounds.
+		tag := p.Name
+		if tag == "" {
+			tag = "sspanel"
+		}
+		if count := seen[tag]; count > 0 {
+			seen[tag] = count + 1
+			tag = fmt.Sprintf("%s (%d)", tag, count+1)
+		} else {
+			seen[tag] = 1
+		}
+		outbounds = append(outbounds, singBoxOutbound{
+			Type:       "shadowsocks",
+			Tag:        tag,
+			Server:     host,
+			ServerPort: port,
+			Method:     p.Method,
+			Password:   password,
+		})
+	}
+	payload, err := json.Marshal(singBoxProfile{Outbounds: outbounds})
+	if err != nil {
+		// Marshal only fails on unsupported types, and this struct is plain
+		// strings and ints, so a failure here would be a programming error. An
+		// empty profile keeps the endpoint honest instead of returning invalid
+		// JSON.
+		return `{"outbounds":[]}`
+	}
+	return string(payload)
+}
+
+// singBoxProfile is the subset of a sing-box configuration this server emits.
+type singBoxProfile struct {
+	Outbounds []singBoxOutbound `json:"outbounds"`
+}
+
+// singBoxOutbound is one Shadowsocks outbound in a sing-box profile.
+type singBoxOutbound struct {
+	Type       string `json:"type"`
+	Tag        string `json:"tag"`
+	Server     string `json:"server"`
+	ServerPort int    `json:"server_port"`
+	Method     string `json:"method"`
+	Password   string `json:"password"`
 }

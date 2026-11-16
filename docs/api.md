@@ -537,11 +537,31 @@ inbound_id,inbound_remark,name,psk,enabled,quota_bytes,expires_at,ip_limit,reset
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/sub/:token` | 无 Cookie；返回 base64 列表或 Clash YAML |
+| GET | `/sub/:token` | 无 Cookie；返回 base64 列表、Clash YAML 或 sing-box JSON |
 
-- UA 含 `clash`/`meta`/`mihomo`，或查询参数 `format=clash` 时返回 YAML。
-- 用户被禁用、已到期、超配额，或订阅功能关闭时返回 `404`。
-- 响应头包含 `Profile-Update-Interval: 12` 与 `Cache-Control: no-store`（响应体含用户 PSK，404 也带同样的头，避免中间缓存留存）。
+格式选择：
+
+| 方式 | 结果 |
+|---|---|
+| 默认 | base64 编码的 `ss://` 列表（每行一条） |
+| UA 含 `clash`/`meta`/`mihomo`，或 `format=clash` | Clash / mihomo YAML |
+| UA 含 `sing-box`，或 `format=singbox`（也接受 `sing-box`） | sing-box 远程配置 JSON |
+
+响应头：
+
+| 头 | 值 |
+|---|---|
+| `Subscription-Userinfo` | `upload=<已用上行>; download=<已用下行>; total=<配额>; expire=<到期 Unix 秒>` |
+| `Profile-Title` | `base64:<base64(用户名)>`（空名字时为 `sspanel`） |
+| `Profile-Update-Interval` | `12`（小时） |
+| `Cache-Control` / `Pragma` | `no-store` / `no-cache` |
+
+- `total=0` 表示**不限流量**，`expire=0` 表示**永不过期**，二者始终显式输出为 0 而不是省略字段；Clash、mihomo、Stash、sing-box 都按这个约定渲染「已用 / 总量、到期时间」。
+- `upload` / `download` 是**已落库**的累计值，随落库周期（默认 10 秒）更新，最多滞后一个周期。
+- `Profile-Title` 用 `base64:` 前缀是为了让中文节点名能完整穿过 HTTP 头；不识别该前缀的客户端会原样显示前缀后的串，不影响连接。
+- 用户被禁用、已到期、超配额，或订阅功能关闭时返回 `404`；**404 不携带上述账号头**，避免从响应头判断 token 是否存在。
+- 响应体与 `Subscription-Userinfo` 都含账号信息，因此响应一律 `no-store`（404 也带同样的头，避免中间缓存留存）。
+- sing-box 输出形如 `{"outbounds":[{"type":"shadowsocks","tag":"<用户名>","server":"...","server_port":8388,"method":"...","password":"..."}]}`；Shadowsocks 2022 的 `password` 为 `serverPSK:clientPSK`，传统 AEAD 为客户端 PSK。同名客户端会追加 ` (2)` 之类后缀，保证 tag 唯一（sing-box 拒绝重复 tag）。
 
 ## 健康检查
 
