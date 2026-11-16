@@ -163,6 +163,7 @@ sspanel version
 - Docker：[deploy/Dockerfile](deploy/Dockerfile)、[deploy/docker-compose.yml](deploy/docker-compose.yml)
 - 反向代理与 HTTPS：[deploy/Caddyfile](deploy/Caddyfile)、[deploy/nginx.conf](deploy/nginx.conf)
 - 安装脚本：[deploy/install.sh](deploy/install.sh)
+- 一键部署脚本（全新服务器）：[deploy/setup-server.sh](deploy/setup-server.sh)
 - 完整说明：[docs/deployment.md](docs/deployment.md)
 
 交叉编译 Linux 静态二进制：

@@ -12,6 +12,24 @@ sspanel 是一个单二进制程序：Web 面板、Shadowsocks 内核和 SQLite 
 
 ## 2. 安装方式
 
+### 2.0 一键部署（全新 Linux 服务器）
+
+`deploy/setup-server.sh` 把下面的安装步骤合并成一条命令。脚本自包含（可以单独下载运行），默认自动选择二进制来源：优先用仓库里的 `bin/sspanel`，其次在服务器上从源码编译，最后回退到下载 GitHub Release。脚本可重复运行，会保留已有的 `config.yaml` 与数据库。
+
+```bash
+# 下载后直接运行：自动获取二进制，面板只对回环开放（用 SSH 隧道访问）
+curl -fsSL https://raw.githubusercontent.com/ydong/ssrservice/main/deploy/setup-server.sh -o setup-server.sh
+sudo bash setup-server.sh -y
+
+# 安装已 scp 到服务器的二进制，并在防火墙放行一个 Shadowsocks 入站端口
+sudo bash setup-server.sh --binary /tmp/sspanel --port 8388 -y
+
+# 从源码编译，并通过 Caddy 自动申请证书对外提供 HTTPS
+sudo bash setup-server.sh --build --proxy caddy --domain panel.example.com --email me@example.com -y
+```
+
+脚本会创建 `sspanel` 系统用户、安装 `/usr/local/bin/sspanel`、写入 `/etc/sspanel/config.yaml`（已存在则保留）、安装 systemd 单元并做一次 `/healthz` 检查。完整参数见脚本顶部说明（`bash setup-server.sh --help`）。初始管理员密码的获取方式同 2.1。
+
 ### 2.1 二进制 + systemd（推荐）
 
 在开发机构建 Linux 静态二进制：
