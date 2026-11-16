@@ -28,6 +28,12 @@ func writeError(c *gin.Context, status int, code, message string) {
 	c.AbortWithStatusJSON(status, errorEnvelope{Error: apiError{Code: code, Message: message}})
 }
 
+// writeErrorWithFields is writeError with the invalid-field map, used by config
+// import so the page can point at the exact entry that failed validation.
+func writeErrorWithFields(c *gin.Context, status int, code, message string, fields map[string]string) {
+	c.AbortWithStatusJSON(status, errorEnvelope{Error: apiError{Code: code, Message: message, Fields: fields}})
+}
+
 // writeServiceError maps a domain error onto the HTTP error envelope.
 //
 // Only errors the caller can act on carry their message: validation problems,
@@ -59,6 +65,11 @@ func (s *Server) writeServiceError(c *gin.Context, err error) {
 	case errors.Is(err, ssserver.ErrInvalidAddr):
 		writeError(c, http.StatusBadRequest, "invalid_address", err.Error())
 	case service.IsValidation(err):
+		var validation *service.ValidationError
+		if errors.As(err, &validation) && len(validation.Fields) > 0 {
+			writeErrorWithFields(c, http.StatusBadRequest, "invalid_request", err.Error(), validation.Fields)
+			return
+		}
 		writeError(c, http.StatusBadRequest, "invalid_request", err.Error())
 	default:
 		s.recordInternalError(c, err)

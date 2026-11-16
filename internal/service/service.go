@@ -21,7 +21,13 @@ import (
 )
 
 // ValidationError marks user input errors.
-type ValidationError struct{ Message string }
+type ValidationError struct {
+	Message string
+	// Fields names the invalid inputs, when the caller can pinpoint them.
+	// The panel returns them in the error envelope so a config upload can show
+	// "inbounds[2].port" rather than a prose paragraph.
+	Fields map[string]string
+}
 
 func (e *ValidationError) Error() string { return e.Message }
 

@@ -231,3 +231,23 @@ func replaceRecoveryCodes(tx *sql.Tx, id int64, hashes []string) error {
 	}
 	return nil
 }
+
+// RecoveryCodeHashes returns the stored hashes of an administrator's unused
+// recovery codes. They travel in a configuration snapshot so a migrated TOTP
+// account keeps its backup codes instead of being locked out.
+func (s *Store) RecoveryCodeHashes(adminID int64) ([]string, error) {
+	rows, err := s.db.Query(`SELECT code_hash FROM admin_recovery_codes WHERE admin_id = ? ORDER BY code_hash`, adminID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	hashes := make([]string, 0, 10)
+	for rows.Next() {
+		var hash string
+		if err := rows.Scan(&hash); err != nil {
+			return nil, err
+		}
+		hashes = append(hashes, hash)
+	}
+	return hashes, rows.Err()
+}
