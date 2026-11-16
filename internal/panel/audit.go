@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -135,26 +136,39 @@ func (s *Server) handleListAudit(c *gin.Context) {
 		Action:   strings.TrimSpace(c.Query("action")),
 		Username: strings.TrimSpace(c.Query("username")),
 	}
-	if value := c.Query("limit"); value != "" {
-		if n, err := strconv.Atoi(value); err == nil {
-			filter.Limit = n
+	// A malformed paging or time parameter is rejected like the client and access
+	// lists do, instead of quietly falling back to the default page: a typo in a
+	// filter would otherwise look like "nothing matched".
+	if value := strings.TrimSpace(c.Query("limit")); value != "" {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > store.AuditMaxLimit {
+			writeBadRequest(c, fmt.Sprintf("limit must be between 1 and %d", store.AuditMaxLimit))
+			return
 		}
+		filter.Limit = n
 	}
-	if value := c.Query("offset"); value != "" {
-		if n, err := strconv.Atoi(value); err == nil {
-			filter.Offset = n
+	if value := strings.TrimSpace(c.Query("offset")); value != "" {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			writeBadRequest(c, "offset must be a non-negative integer")
+			return
 		}
+		filter.Offset = n
 	}
-	if value := c.Query("since"); value != "" {
-		if n, err := strconv.ParseInt(value, 10, 64); err == nil {
-			filter.Since = n
-		}
+	since, ok := parseOptionalUnix(c, "since")
+	if !ok {
+		return
 	}
-	if value := c.Query("until"); value != "" {
-		if n, err := strconv.ParseInt(value, 10, 64); err == nil {
-			filter.Until = n
-		}
+	until, ok := parseOptionalUnix(c, "until")
+	if !ok {
+		return
 	}
+	if since > 0 && until > 0 && until <= since {
+		writeBadRequest(c, "until must be greater than since")
+		return
+	}
+	filter.Since = since
+	filter.Until = until
 	items, total, err := s.svc.AuditLogs(filter)
 	if err != nil {
 		s.writeServiceError(c, err)

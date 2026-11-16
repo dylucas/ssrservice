@@ -10,6 +10,11 @@ import (
 )
 
 func (s *Server) handleSubscription(c *gin.Context) {
+	// The body embeds the client PSK, so it is a credential response like any
+	// other: no cache may keep a copy. Both branches and the 404 carry it, so it
+	// is set before the first possible write.
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
 	// Every "not available" case collapses into the same 404: an unknown
 	// token, a disabled subscription and an inactive client must not be
 	// distinguishable from outside.

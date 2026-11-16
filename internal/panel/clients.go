@@ -135,17 +135,17 @@ func (s *Server) handleToggleClient(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var req toggleRequest
-	if !bindJSONMessage(c, &req, "enabled is required") {
+	req, ok := bindToggle(c)
+	if !ok {
 		return
 	}
-	if err := s.svc.ToggleClient(id, req.Enabled); err != nil {
+	if err := s.svc.ToggleClient(id, *req.Enabled); err != nil {
 		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{
 		Action: model.AuditClientToggle, TargetType: "client", TargetID: id,
-		Detail: auditFields("enabled", req.Enabled),
+		Detail: auditFields("enabled", *req.Enabled),
 	})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -209,7 +209,15 @@ func (s *Server) handleClientUsage(c *gin.Context) {
 	if !ok {
 		return
 	}
-	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+	days := 30
+	if value := strings.TrimSpace(c.Query("days")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > service.UsageMaxDays {
+			writeBadRequest(c, fmt.Sprintf("days must be between 1 and %d", service.UsageMaxDays))
+			return
+		}
+		days = parsed
+	}
 	usage, err := s.svc.Usage(id, days)
 	if err != nil {
 		s.writeServiceError(c, err)

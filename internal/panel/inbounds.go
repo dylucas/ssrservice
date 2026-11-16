@@ -101,17 +101,17 @@ func (s *Server) handleToggleInbound(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var req toggleRequest
-	if !bindJSONMessage(c, &req, "enabled is required") {
+	req, ok := bindToggle(c)
+	if !ok {
 		return
 	}
-	if err := s.svc.ToggleInbound(id, req.Enabled); err != nil {
+	if err := s.svc.ToggleInbound(id, *req.Enabled); err != nil {
 		s.writeServiceError(c, err)
 		return
 	}
 	s.audit(c, auditEntry{
 		Action: model.AuditInboundToggle, TargetType: "inbound", TargetID: id,
-		Detail: auditFields("enabled", req.Enabled),
+		Detail: auditFields("enabled", *req.Enabled),
 	})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -172,6 +172,23 @@ func (s *Server) handleCreateClient(c *gin.Context) {
 	c.JSON(http.StatusCreated, client)
 }
 
+// toggleRequest requires the field explicitly: decoding a missing "enabled" into
+// a bool yields false, and a request that forgets it would silently disable the
+// inbound or client instead of being rejected.
 type toggleRequest struct {
-	Enabled bool `json:"enabled"`
+	Enabled *bool `json:"enabled"`
+}
+
+// bindToggle decodes a toggle request and rejects one that does not say what the
+// new state is.
+func bindToggle(c *gin.Context) (*toggleRequest, bool) {
+	var req toggleRequest
+	if !bindJSONMessage(c, &req, "enabled is required") {
+		return nil, false
+	}
+	if req.Enabled == nil {
+		writeBadRequest(c, "enabled is required")
+		return nil, false
+	}
+	return &req, true
 }

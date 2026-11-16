@@ -2,7 +2,6 @@ package panel
 
 import (
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -40,7 +39,12 @@ func (s *Server) handleImportClients(c *gin.Context) {
 
 // handleExportClients streams the clients of one inbound (or all) as CSV.
 func (s *Server) handleExportClients(c *gin.Context) {
-	inboundID, _ := strconv.ParseInt(c.Query("inbound_id"), 10, 64)
+	// A malformed id used to fall through as 0, which means "every client": a
+	// typo in the query would download every PSK in the deployment.
+	inboundID, ok := parseOptionalID(c, "inbound_id")
+	if !ok {
+		return
+	}
 	content, err := s.svc.ExportClientsCSV(inboundID)
 	if err != nil {
 		s.writeServiceError(c, err)

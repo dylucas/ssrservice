@@ -440,12 +440,19 @@ func (s *Service) ClientLink(id int64, fallbackHost string) (string, string, err
 	return link, s.subscriptionURL(c.SubToken), nil
 }
 
-// Usage returns daily traffic for a client.
+// UsageMaxDays bounds the per-client traffic window: the panel offers 7, 30 and
+// 90 days, and the rollup is not kept long enough to answer a year.
+const UsageMaxDays = 365
+
+// Usage returns the daily traffic of the last `days` days for a client.
+//
+// Like DailyTotalsSince, the lower bound is days-1 back: the query keeps every
+// day from it onward, so counting back `days` would answer N+1 buckets.
 func (s *Service) Usage(clientID int64, days int) ([]model.DailyUsage, error) {
-	if days <= 0 || days > 365 {
+	if days <= 0 || days > UsageMaxDays {
 		days = 30
 	}
-	since := time.Now().AddDate(0, 0, -days).In(s.location()).Format("2006-01-02")
+	since := time.Now().AddDate(0, 0, -(days - 1)).In(s.location()).Format("2006-01-02")
 	return s.store.DailyUsage(clientID, since)
 }
 
