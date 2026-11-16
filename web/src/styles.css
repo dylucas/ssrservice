@@ -1281,3 +1281,111 @@ html .el-alert {
     padding: var(--sspanel-space-9) var(--sspanel-space-8);
   }
 }
+
+/* Needs-attention tiles (dashboard) ---------------------------------------- */
+
+/* Four links that answer "what needs my attention" and lead straight to the
+ * matching filtered list. A whole tile is the link: a small number with a tiny
+ * separate "详情" button is too small a target to find. */
+.attention-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sspanel-space-3);
+}
+
+@media (min-width: 900px) {
+  .attention-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.attention-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sspanel-space-1);
+  padding: var(--sspanel-space-4);
+  border: 1px solid var(--sspanel-border);
+  border-radius: var(--sspanel-radius);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.attention-item:hover {
+  border-color: var(--sspanel-primary);
+  background: var(--sspanel-primary-tint);
+}
+
+.attention-value {
+  font-size: var(--sspanel-fs-xl);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.attention-label {
+  font-size: var(--sspanel-fs-sm);
+  font-weight: 500;
+}
+
+.attention-hint {
+  color: var(--sspanel-text-muted);
+  font-size: var(--sspanel-fs-xs);
+}
+
+/* Batch selection bar (clients) -------------------------------------------- */
+
+/* Appears only while rows are selected, so the normal list stays compact. */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sspanel-space-3);
+  padding: var(--sspanel-space-2) var(--sspanel-space-4);
+  margin-bottom: var(--sspanel-space-3);
+  border-radius: var(--sspanel-radius);
+  background: var(--sspanel-primary-tint);
+}
+
+.batch-count {
+  color: var(--sspanel-primary);
+  font-size: var(--sspanel-fs-sm);
+  font-weight: 500;
+}
+
+/* Inbound detail ----------------------------------------------------------- */
+
+.inbound-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.inbound-link:hover {
+  color: var(--sspanel-primary);
+}
+
+.status-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sspanel-space-2) var(--sspanel-space-3);
+  border-radius: var(--sspanel-radius-sm);
+  color: inherit;
+  text-decoration: none;
+}
+
+.status-row:hover {
+  background: var(--sspanel-primary-tint);
+}
+
+.status-label {
+  color: var(--sspanel-text-secondary);
+  font-size: var(--sspanel-fs-sm);
+}
+
+.ml-1 {
+  margin-left: var(--sspanel-space-1);
+}

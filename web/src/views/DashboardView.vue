@@ -33,6 +33,27 @@
       />
     </div>
 
+    <!-- Each number links to the client list filtered to those rows: the card
+         and the list share the same SQL predicate on the server. -->
+    <div class="card">
+      <div class="card-head">
+        <h3 class="card-title">需要关注</h3>
+        <span class="muted">点击任一数字查看对应用户</span>
+      </div>
+      <div class="attention-grid">
+        <router-link
+          v-for="item in attentionItems"
+          :key="item.status"
+          :to="{ path: '/clients', query: { status: item.status } }"
+          class="attention-item"
+        >
+          <span class="attention-value">{{ item.value }}</span>
+          <span class="attention-label">{{ item.label }}</span>
+          <span class="attention-hint">{{ item.hint }}</span>
+        </router-link>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-head">
         <h3 class="card-title">流量趋势（{{ windowLabel }}）</h3>
@@ -131,6 +152,13 @@ const data = reactive<Dashboard>({
   up_bytes: 0,
   down_bytes: 0,
   traffic_30d: [],
+  attention: {
+    expiring_soon: 0,
+    expired: 0,
+    quota_exceeded: 0,
+    idle: 0,
+    expiring_window_days: 7,
+  },
   system: {
     os: '',
     arch: '',
@@ -148,6 +176,21 @@ const data = reactive<Dashboard>({
 // daily average over the days actually returned, and the busiest day. They answer
 // "how much" without reading the axis, which the chart alone cannot.
 const traffic = computed(() => summarizeTraffic(data.traffic_30d))
+
+// Deep links for the four attention groups. The status values are the same
+// ones the server's list filter accepts; `expiring`/`idle` are filter-only
+// values the list renders as a tag with no matching computed row status.
+const attentionItems = computed(() => [
+  {
+    status: 'expiring',
+    label: '即将到期',
+    value: data.attention.expiring_soon,
+    hint: `${data.attention.expiring_window_days} 天内`,
+  },
+  { status: 'expired', label: '已过期', value: data.attention.expired, hint: '仍需处理' },
+  { status: 'quota_exceeded', label: '超出配额', value: data.attention.quota_exceeded, hint: '已被限速或拦截' },
+  { status: 'idle', label: '从未连接', value: data.attention.idle, hint: '启用但无流量' },
+])
 const windowLabel = computed(() =>
   data.traffic_30d.length > 0 && data.traffic_30d.length !== 30
     ? `${data.traffic_30d.length} 天`

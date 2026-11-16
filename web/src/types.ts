@@ -18,6 +18,8 @@ export interface Inbound {
   up_bytes: number
   down_bytes: number
   online_ips: number
+  /** Set when the row is enabled but the listener could not start. */
+  last_error?: string
 }
 
 /**
@@ -38,6 +40,10 @@ export interface ClientSummary {
   reset_policy: 'none' | 'monthly'
   reset_day: number
   note: string
+  /**
+   * The computed status of the row. It is never the list-only filter values
+   * `expiring` and `idle`: those exist only to narrow the list.
+   */
   status: 'active' | 'disabled' | 'expired' | 'quota_exceeded'
   used_bytes: number
   remaining_bytes: number
@@ -54,7 +60,8 @@ export interface ClientSummary {
  */
 export interface ClientListParams {
   inbound_id?: number
-  status?: ClientSummary['status']
+  /** The four computed statuses plus the two list-only filter values. */
+  status?: ClientSummary['status'] | 'expiring' | 'idle' 
   q?: string
   limit: number
   offset: number
@@ -117,7 +124,20 @@ export interface Dashboard {
   up_bytes: number
   down_bytes: number
   traffic_30d: DailyUsage[]
+  attention: Attention
   system: SystemInfo
+}
+
+/**
+ * Attention is the dashboard's "needs attention" summary. Each number links to
+ * the client list filtered to the same rows.
+ */
+export interface Attention {
+  expiring_soon: number
+  expired: number
+  quota_exceeded: number
+  idle: number
+  expiring_window_days: number
 }
 
 export interface SystemInfo {
@@ -368,4 +388,67 @@ export interface AccessEventParams {
   until_day?: string
   limit: number
   offset: number
+}
+
+/** One bulk action the panel can apply to a selection of users. */
+export type BatchAction = 'enable' | 'disable' | 'delete' | 'extend' | 'add_quota' | 'reset'
+
+/** The body of POST /batch/clients. */
+export interface BatchRequest {
+  action: BatchAction
+  ids: number[]
+  /** Used by "extend" only. */
+  days?: number
+  /** Used by "add_quota" only. */
+  bytes?: number
+}
+
+/** One id a batch left alone, with the reason. */
+export interface BatchFailure {
+  id: number
+  name: string
+  error: string
+}
+
+/** The reply of POST /batch/clients: partial success, like the import. */
+export interface BatchResult {
+  action: BatchAction
+  applied: number
+  failed: BatchFailure[]
+}
+
+/** One day of an inbound's traffic series. */
+export interface InboundDaily {
+  day: string
+  up_bytes: number
+  down_bytes: number
+}
+
+/** One row of an inbound's busiest users. */
+export interface InboundTopClient {
+  id: number
+  name: string
+  up_bytes: number
+  down_bytes: number
+  enabled: boolean
+}
+
+/** The status distribution of one inbound's users. */
+export interface InboundStatusCounts {
+  active: number
+  disabled: number
+  expired: number
+  quota_exceeded: number
+}
+
+/** The reply of GET /inbounds/:id/detail. */
+export interface InboundDetail {
+  inbound: Inbound
+  days: number
+  daily: InboundDaily[]
+  top_clients: InboundTopClient[]
+  status_counts: InboundStatusCounts
+  recent_failures: AccessEvent[]
+  /** False means the failure list is empty because nothing is recorded. */
+  access_recording: boolean
 }

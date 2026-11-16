@@ -39,6 +39,11 @@ export const statusMeta: Record<string, { label: string; type: 'success' | 'info
   disabled: { label: '已禁用', type: 'info' },
   expired: { label: '已到期', type: 'warning' },
   quota_exceeded: { label: '超配额', type: 'danger' },
+  // Filter-only values: the dashboard links here, and a row's own status is
+  // never one of these. They need labels so the filter dropdown and the chip in
+  // the table header can describe them.
+  expiring: { label: '即将到期', type: 'warning' },
+  idle: { label: '从未连接', type: 'info' },
 }
 
 export function quotaLabel(client: { quota_bytes: number; used_bytes: number }): string {

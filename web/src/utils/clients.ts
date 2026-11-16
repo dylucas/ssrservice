@@ -1,6 +1,6 @@
 import type { Client, ClientListParams, ClientSummary } from '@/types'
 
-export type ClientStatusFilter = 'all' | ClientSummary['status']
+export type ClientStatusFilter = 'all' | ClientSummary['status'] | 'expiring' | 'idle'
 
 /** Number of rows the client list requests per page. */
 export const CLIENT_PAGE_SIZE = 20

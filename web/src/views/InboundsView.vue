@@ -68,7 +68,9 @@
 
         <el-table-column label="入站" min-width="220">
           <template #default="{ row }">
-            <div class="cell-strong">{{ row.remark || '未命名入站' }}</div>
+            <router-link class="cell-strong inbound-link" :to="`/inbounds/${row.id}`">
+              {{ row.remark || '未命名入站' }}
+            </router-link>
             <!-- The method is what decides whether the port supports several
                  users or just one, so it belongs next to the name rather than in
                  a column of its own: that keeps the table to six columns. -->
@@ -122,9 +124,10 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="230" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" text type="primary" @click="goClients(asInbound(row))">用户</el-button>
+            <el-button size="small" text type="primary" @click="goDetail(asInbound(row))">详情</el-button>
+            <el-button size="small" text @click="goClients(asInbound(row))">用户</el-button>
             <el-button size="small" text @click="openEdit(asInbound(row))">编辑</el-button>
             <el-dropdown
               class="row-more"
@@ -259,6 +262,11 @@ function openEdit(row: Inbound) {
 
 function goClients(row: Inbound) {
   router.push({ name: 'clients', query: { inbound: String(row.id) } })
+}
+
+/** goDetail opens the per-inbound detail page. */
+function goDetail(row: Inbound) {
+  void router.push(`/inbounds/${row.id}`)
 }
 
 /** onRowCommand dispatches the "more" menu to the existing row handlers. */

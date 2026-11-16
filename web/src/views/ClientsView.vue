@@ -39,7 +39,33 @@
         </div>
       </div>
 
-      <el-table :data="clients" v-loading="loading" row-key="id">
+      <div v-if="selected.length" class="batch-bar">
+        <span class="batch-count">已选 {{ selected.length }} 个用户</span>
+        <el-dropdown trigger="click" @command="onBatchCommand">
+          <el-button size="small" type="primary">
+            批量操作<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="enable">启用</el-dropdown-item>
+              <el-dropdown-item command="disable">禁用</el-dropdown-item>
+              <el-dropdown-item command="extend">延长 30 天</el-dropdown-item>
+              <el-dropdown-item command="add_quota">增加 1 GB 流量</el-dropdown-item>
+              <el-dropdown-item command="reset">清零流量</el-dropdown-item>
+              <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-button size="small" text @click="clearSelection">取消选择</el-button>
+      </div>
+
+      <el-table
+        :data="clients"
+        v-loading="loading"
+        row-key="id"
+        @selection-change="onSelectionChange"
+      >
+        <el-table-column type="selection" width="42" />
         <template #empty>
           <EmptyState v-if="hasFilters" text="没有符合条件的用户" :icon="Search">
             <el-button size="small" @click="clearFilters">清除筛选条件</el-button>
@@ -204,8 +230,10 @@ import {
   User as UserIcon,
 } from '@element-plus/icons-vue'
 import { api } from '@/api'
-import type { ClientListParams, ClientSummary, Inbound } from '@/types'
+import type { BatchAction, ClientListParams, ClientSummary, Inbound } from '@/types'
+import { batchLabel, batchNeedsConfirm, buildBatchRequest } from '@/utils/batch'
 import { describeExpiry, formatDate, percent, quotaLabel, statusMeta } from '@/utils/format'
+import type { ClientStatusFilter } from '@/utils/clients'
 import {
   CLIENT_PAGE_SIZE,
   buildClientListParams,
@@ -238,7 +266,7 @@ const clients = ref<ClientSummary[]>([])
 const total = ref(0)
 const inboundFilter = ref(0)
 const search = ref('')
-const statusFilter = ref<'all' | ClientSummary['status']>('all')
+const statusFilter = ref<ClientStatusFilter>('all')
 const page = ref(1)
 const pageSize = CLIENT_PAGE_SIZE
 
@@ -254,6 +282,19 @@ const hasFilters = computed(
 // second request before the first one returns, and a late response must not
 // overwrite the newer page.
 let loadSeq = 0
+
+// The current page selection. It is intentionally cleared whenever the page
+// reloads: keeping ids selected after a filter change would let an operator act
+// on users they can no longer see.
+const selected = ref<ClientSummary[]>([])
+
+function onSelectionChange(rows: ClientSummary[]) {
+  selected.value = rows
+}
+
+function clearSelection() {
+  selected.value = []
+}
 
 const formVisible = ref(false)
 const formInboundId = ref(0)
@@ -318,6 +359,9 @@ async function loadInbounds(): Promise<boolean> {
 async function load(): Promise<boolean> {
   const seq = ++loadSeq
   loading.value = true
+  // The selection belongs to the previous page of results; ids that are no
+  // longer visible must not stay actionable.
+  clearSelection()
   try {
     const result = await api.clients(currentParams())
     if (seq !== loadSeq) return true
@@ -454,6 +498,44 @@ async function toggle(row: ClientSummary) {
   }
 }
 
+/** onBatchCommand applies one action to the current selection. */
+async function onBatchCommand(action: BatchAction) {
+  const ids = selected.value.map((row) => row.id)
+  if (!ids.length) return
+  if (batchNeedsConfirm(action)) {
+    const label = batchLabel(action)
+    try {
+      await ElMessageBox.confirm(
+        `确定对选中的 ${ids.length} 个用户执行${label}吗？此操作不可撤销。`,
+        `批量${label}`,
+        { type: 'warning', confirmButtonText: label, cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+  }
+  const payload = buildBatchRequest(action, ids)
+  try {
+    const result = await api.batchClients(payload)
+    if (result.failed.length) {
+      // Partial success is the normal case; the reasons are what the operator
+      // needs, so show the first few rather than a bare "部分失败".
+      const reasons = result.failed
+        .slice(0, 3)
+        .map((failure) => `${failure.name || '#' + failure.id}: ${failure.error}`)
+        .join('；')
+      const more = result.failed.length > 3 ? ` 等 ${result.failed.length} 个` : ''
+      ElMessage.warning(`已处理 ${result.applied} 个，${reasons}${more}`)
+    } else {
+      ElMessage.success(`已处理 ${result.applied} 个用户`)
+    }
+    clearSelection()
+    await load()
+  } catch (error: any) {
+    ElMessage.error(error?.message || '批量操作失败')
+  }
+}
+
 async function resetTraffic(row: ClientSummary) {
   try {
     await ElMessageBox.confirm(`确定将用户「${row.name}」的流量清零吗？`, '重置流量', {
@@ -558,6 +640,11 @@ onMounted(async () => {
   const inboundParam = Number(route.query.inbound)
   if (Number.isFinite(inboundParam) && inboundParam > 0) {
     inboundFilter.value = inboundParam
+  }
+  // The dashboard's attention cards deep link here with ?status=expiring etc.
+  const statusParam = String(route.query.status ?? '')
+  if (statusParam && statusParam in statusMeta) {
+    statusFilter.value = statusParam as ClientStatusFilter
   }
   await reload()
 })

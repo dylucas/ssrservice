@@ -118,6 +118,25 @@ python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["link"].startswith
 SUB_PATH=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["subscription_url"])' <<<"$LINK_JSON")
 curl -fsS "http://127.0.0.1:$PANEL_PORT$SUB_PATH" >/dev/null
 
+# The subscription carries the account figures clients display themselves.
+SUB_HEADERS=$(curl -s -D - -o /dev/null "http://127.0.0.1:$PANEL_PORT$SUB_PATH" | tr -d '\r')
+grep -qi '^Subscription-Userinfo: upload=.*; download=.*; total=.*; expire=' <<<"$SUB_HEADERS" \
+  || fail "subscription has no Subscription-Userinfo header"
+grep -qi '^Profile-Title: base64:' <<<"$SUB_HEADERS" || fail "subscription has no Profile-Title header"
+# sing-box is a third format the server has to serve as valid JSON.
+SINGBOX=$(curl -fsS "http://127.0.0.1:$PANEL_PORT$SUB_PATH?format=singbox")
+SINGBOX="$SINGBOX" python3 - <<'PY'
+import json, os
+profile = json.loads(os.environ["SINGBOX"])
+out = profile.get("outbounds")
+assert isinstance(out, list) and len(out) == 1, profile
+o = out[0]
+for key in ("type", "tag", "server", "server_port", "method", "password"):
+    assert key in o, (key, o)
+assert o["type"] == "shadowsocks", o
+assert o["tag"], "sing-box outbound tag must not be empty"
+PY
+
 log "verifying TCP round trip through the proxy"
 "$PROBE" -server "127.0.0.1:$SS_PORT" -method 2022-blake3-aes-128-gcm \
   -server-psk "$SERVER_PSK" -client-psk "$CLIENT_PSK" -target echo >/dev/null
@@ -604,6 +623,88 @@ STATUS=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
   "http://127.0.0.1:$PANEL_PORT/api/v1/clients?offset=999999999")
 [[ "$STATUS" == "400" ]] || fail "out-of-range offset returned $STATUS, want 400"
 log "client list paging: 5 users, 2 per page, filters and 400s verified"
+
+log "checking batch operations and attention"
+BATCH_IDS=$(python3 -c 'import json,sys; print(json.dumps([i["id"] for i in json.load(sys.stdin)["items"][:2]]))' <<<"$PAGE1")
+BATCH_RESULT=$(api POST /api/v1/batch/clients "{\"action\":\"disable\",\"ids\":$BATCH_IDS}")
+BATCH_RESULT="$BATCH_RESULT" python3 - <<'PY'
+import json, os
+r = json.loads(os.environ["BATCH_RESULT"])
+assert r["action"] == "disable", r
+assert r["applied"] == 2, r
+assert not r["failed"], r
+PY
+# Bad requests are rejected before anything is applied.
+for bad in '{"action":"explode","ids":[1]}' '{"action":"enable","ids":[]}' \
+  '{"action":"extend","ids":[1],"days":0}'; do
+  status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" -X POST \
+    -H 'Content-Type: application/json' -d "$bad" \
+    "http://127.0.0.1:$PANEL_PORT/api/v1/batch/clients")
+  [[ "$status" == "400" ]] || fail "bad batch $bad accepted (status $status)"
+done
+# An unknown id is reported per row instead of failing the whole batch.
+PARTIAL=$(api POST /api/v1/batch/clients "{\"action\":\"disable\",\"ids\":[999999]}")
+PARTIAL="$PARTIAL" python3 - <<'PY'
+import json, os
+r = json.loads(os.environ["PARTIAL"])
+assert r["applied"] == 0 and len(r["failed"]) == 1, r
+assert r["failed"][0]["id"] == 999999, r
+PY
+
+DASHBOARD=$(api GET /api/v1/dashboard)
+DASHBOARD="$DASHBOARD" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["DASHBOARD"])
+a = d["attention"]
+for key in ("expiring_soon", "expired", "quota_exceeded", "idle", "expiring_window_days"):
+    assert key in a, (key, a)
+assert a["expiring_window_days"] == 7, a
+PY
+# Each card links to a list with the same number of rows.
+for status in expiring expired quota_exceeded idle; do
+  ATTENTION=$(DASHBOARD="$DASHBOARD" STATUS="$status" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["DASHBOARD"])
+key = {"expiring":"expiring_soon", "quota_exceeded":"quota_exceeded"}.get(
+    os.environ["STATUS"], os.environ["STATUS"])
+print(d["attention"][key])
+PY
+)
+  LIST_TOTAL=$(api GET "/api/v1/clients?status=$status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"])')
+  [[ "$ATTENTION" == "$LIST_TOTAL" ]] || fail "attention $status = $ATTENTION but the list has $LIST_TOTAL rows"
+done
+
+log "checking audit and access CSV exports"
+api GET /api/v1/export/audit >"$WORK/audit.csv"
+head -1 "$WORK/audit.csv" | grep -q '^created_at,created_at_local,username,action' || fail "unexpected audit export header"
+AUDIT_LINES=$(($(wc -l <"$WORK/audit.csv") - 1))
+[[ "$AUDIT_LINES" -gt 0 ]] || fail "audit export has no rows"
+api GET /api/v1/export/access >"$WORK/access.csv"
+head -1 "$WORK/access.csv" | grep -q '^started_at,started_at_local,client_id' || fail "unexpected access export header"
+ACCESS_LINES=$(($(wc -l <"$WORK/access.csv") - 1))
+[[ "$ACCESS_LINES" -gt 0 ]] || fail "access export has no rows"
+# Paging is rejected on an export rather than silently exporting one page.
+for path in "/api/v1/export/audit?limit=10" "/api/v1/export/access?offset=1"; do
+  status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" "http://127.0.0.1:$PANEL_PORT$path")
+  [[ "$status" == "400" ]] || fail "$path was accepted (status $status)"
+done
+
+log "checking inbound detail"
+DETAIL=$(api GET "/api/v1/inbounds/$INBOUND_ID/detail?days=7")
+DETAIL="$DETAIL" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["DETAIL"])
+assert d["inbound"]["id"] == 1, d["inbound"]
+assert d["days"] == 7, d
+assert len(d["daily"]) == 7, "the trend must have one point per day"
+assert isinstance(d["top_clients"], list) and d["top_clients"], d
+for key in ("active", "disabled", "expired", "quota_exceeded"):
+    assert key in d["status_counts"], d["status_counts"]
+assert isinstance(d["recent_failures"], list), d
+PY
+status=$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" \
+  "http://127.0.0.1:$PANEL_PORT/api/v1/inbounds/$INBOUND_ID/detail?days=0")
+[[ "$status" == "400" ]] || fail "inbound detail accepted days=0 (status $status)"
 
 log "checking online backup"
 # The backup must be a real SQLite file, and taking it must not stop the API: a

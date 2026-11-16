@@ -1,6 +1,8 @@
 import { readRuntimeConfig } from './runtime-config'
 import type {
   AccessEventParams,
+  BatchResult,
+  BatchRequest,
   AccessEventsResponse,
   AccessSummary,
   AuditResponse,
@@ -13,6 +15,7 @@ import type {
   ImportResult,
   Inbound,
   InboundInput,
+  InboundDetail,
   InboundsResponse,
   LoginResponse,
   LoginResult,
@@ -198,6 +201,22 @@ export const api = {
     apiURL(inboundId ? `/export/clients?inbound_id=${inboundId}` : '/export/clients'),
   importClients: (inboundId: number, payload: unknown) =>
     request<ImportResult>('POST', `/inbounds/${inboundId}/clients/import`, payload),
+  batchClients: (payload: BatchRequest) =>
+    request<BatchResult>('POST', '/batch/clients', payload),
+  inboundDetail: (id: number, days = 30) =>
+    request<InboundDetail>('GET', `/inbounds/${id}/detail?days=${days}`),
+  exportAuditURL: (params: Record<string, string | number> = {}) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) query.set(key, String(value))
+    const suffix = query.toString()
+    return apiURL('/export/audit' + (suffix ? '?' + suffix : ''))
+  },
+  exportAccessURL: (params: Record<string, string | number> = {}) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) query.set(key, String(value))
+    const suffix = query.toString()
+    return apiURL('/export/access' + (suffix ? '?' + suffix : ''))
+  },
   accessSummary: (days: number, clientId?: number, inboundId?: number) => {
     const search = new URLSearchParams()
     search.set('days', String(days))

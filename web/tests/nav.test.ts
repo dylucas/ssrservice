@@ -88,6 +88,9 @@ describe('navigation data', () => {
     // The root path is only a prefix of itself; otherwise every page would
     // report 仪表盘.
     expect(titleOf('/inbounds')).toBe('入站管理')
+    // The detail page is not in the menu, but the sidebar must stay highlighted
+    // on 入站管理 while it is open (the longest-prefix rule).
+    expect(titleOf('/inbounds/7')).toBe('入站管理')
     expect(matchNav('/nope')).toBeUndefined()
   })
 

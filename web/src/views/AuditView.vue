@@ -3,6 +3,7 @@
     <PageHeader title="审计日志" subtitle="面板写操作与登录记录，保留 90 天（最多 5 万条）">
       <template #actions>
         <el-button :icon="Refresh" :loading="loading" @click="reload">刷新</el-button>
+        <el-button :icon="Download" @click="exportCSV">导出 CSV</el-button>
       </template>
     </PageHeader>
 
@@ -88,7 +89,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 // Page-specific Element Plus components; see src/element-parts.ts.
 import { ElDatePicker, ElOption, ElPagination, ElSelect, ElTable, ElTableColumn } from '@/element-parts'
 import { ElMessage } from 'element-plus'
-import { Document, Refresh, Search } from '@element-plus/icons-vue'
+import { Document, Download, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { AuditLog } from '@/types'
 import { formatDateTime } from '@/utils/format'
@@ -157,6 +158,24 @@ function actionTagType(action: string): 'success' | 'warning' | 'danger' | 'info
 // newer page.
 let loadSeq = 0
 
+/** exportFilters builds the filter part shared by the list and the export. */
+function exportFilters(): Record<string, string | number> {
+  const params: Record<string, string | number> = {}
+  if (filters.action) params.action = filters.action
+  if (filters.username) params.username = filters.username
+  if (range.value?.length === 2) {
+    // The picker yields millisecond timestamps; the API filters on seconds.
+    params.since = Math.floor(Number(range.value[0]) / 1000)
+    params.until = Math.floor(Number(range.value[1]) / 1000) + 86400
+  }
+  return params
+}
+
+/** exportCSV downloads the filtered trail without paging. */
+function exportCSV() {
+  window.location.href = api.exportAuditURL(exportFilters())
+}
+
 async function load() {
   const seq = ++loadSeq
   loading.value = true
@@ -164,13 +183,7 @@ async function load() {
     const params: Record<string, string | number> = {
       limit: pageSize,
       offset: (page.value - 1) * pageSize,
-    }
-    if (filters.action) params.action = filters.action
-    if (filters.username) params.username = filters.username
-    if (range.value?.length === 2) {
-      // The picker yields millisecond timestamps; the API filters on seconds.
-      params.since = Math.floor(Number(range.value[0]) / 1000)
-      params.until = Math.floor(Number(range.value[1]) / 1000) + 86400
+      ...exportFilters(),
     }
     const result = await api.audit(params)
     if (seq !== loadSeq) return

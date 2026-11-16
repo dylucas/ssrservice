@@ -207,6 +207,7 @@
           </span>
         </div>
         <div class="toolbar-group">
+          <el-button :icon="Download" @click="exportCSV">导出 CSV</el-button>
           <el-button :disabled="!hasFilters" @click="clearFilters">清除筛选</el-button>
         </div>
       </div>
@@ -306,7 +307,7 @@ import {
   ElTableColumn,
 } from '@/element-parts'
 import { ElMessage } from 'element-plus'
-import { Aim, DataAnalysis, DataLine, Refresh, Search, User, View } from '@element-plus/icons-vue'
+import { Aim, DataAnalysis, DataLine, Download, Refresh, Search, User, View } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { AccessEvent, AccessTopClient } from '@/types'
 import {
@@ -381,6 +382,25 @@ const {
   },
   onError: (message) => ElMessage.error(message),
 })
+
+/** exportCSV downloads the filtered detail list without paging. */
+function exportCSV() {
+  const params: Record<string, string | number> = {}
+  const current = scope.value
+  if (current) {
+    params.client_id = current.clientId
+    if (current.inboundId) params.inbound_id = current.inboundId
+  }
+  if (filters.outcome !== 'all') params.outcome = filters.outcome
+  if (filters.network !== 'all') params.network = filters.network
+  const query = filters.query.trim()
+  if (query) params.q = query
+  if (range.value?.length === 2) {
+    params.since_day = range.value[0]
+    params.until_day = range.value[1]
+  }
+  window.location.href = api.exportAccessURL(params)
+}
 
 const droppedHint = computed(() =>
   summary.value.dropped_records > 0
