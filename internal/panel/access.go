@@ -62,34 +62,6 @@ func validAccessNetwork(network string) bool {
 	return false
 }
 
-// parseOptionalID reads an optional positive id query parameter.
-func parseOptionalID(c *gin.Context, name string) (int64, bool) {
-	raw := strings.TrimSpace(c.Query(name))
-	if raw == "" {
-		return 0, true
-	}
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || id < 0 {
-		writeBadRequest(c, fmt.Sprintf("%s must be a non-negative integer", name))
-		return 0, false
-	}
-	return id, true
-}
-
-// parseOptionalUnix reads an optional unix-seconds query parameter.
-func parseOptionalUnix(c *gin.Context, name string) (int64, bool) {
-	raw := strings.TrimSpace(c.Query(name))
-	if raw == "" {
-		return 0, true
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value < 0 {
-		writeBadRequest(c, fmt.Sprintf("%s must be a non-negative unix timestamp", name))
-		return 0, false
-	}
-	return value, true
-}
-
 // handleAccessSummary serves GET /access/summary.
 func (s *Server) handleAccessSummary(c *gin.Context) {
 	days := service.AccessRawRetentionDays
