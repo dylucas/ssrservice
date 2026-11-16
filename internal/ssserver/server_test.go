@@ -838,7 +838,7 @@ func (c *stubPacketConn) SetWriteDeadline(time.Time) error           { return ni
 func TestUDPSessionSocketReuse(t *testing.T) {
 	env := newTestEnv(t)
 	client := &stubPacketConn{}
-	s := newUDPClientSession(context.Background(), env.mgr, client, 1)
+	s := newUDPClientSession(context.Background(), env.mgr, client, 1, 1)
 	defer s.close()
 
 	first, err := s.socket(true)

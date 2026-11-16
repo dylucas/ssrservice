@@ -96,6 +96,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	mgr := New(Options{
 		Sink:            st,
+		AccessSink:      st,
 		Location:        time.UTC,
 		FlushInterval:   time.Hour,
 		EnforceInterval: time.Hour,

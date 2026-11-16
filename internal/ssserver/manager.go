@@ -122,6 +122,7 @@ type Manager struct {
 
 	usage    *usageManager
 	registry *registry
+	access   *accessRecorder
 
 	policy atomic.Pointer[policy]
 	dialer atomic.Pointer[net.Dialer]
@@ -180,6 +181,7 @@ func New(opts Options) *Manager {
 		startedAt:   time.Now(),
 	}
 	m.usage = newUsageManager(opts.Sink, opts.Location, m.onClientExceeded)
+	m.access = newAccessRecorder(opts.Logger, opts.AccessSink, opts.Location)
 	m.SetPolicy(opts.Policy)
 	return m
 }
@@ -668,6 +670,38 @@ func (m *Manager) TotalTraffic() (up, down int64) {
 // monthly resets. It takes effect on the next accounting call.
 func (m *Manager) SetLocation(location *time.Location) {
 	m.usage.setLocation(location)
+	if m.access != nil {
+		m.access.setLocation(location)
+	}
+}
+
+// AccessEnabled reports whether proxy access recording is on.
+func (m *Manager) AccessEnabled() bool { return m.access != nil && m.access.isEnabled() }
+
+// SetAccessEnabled turns proxy access recording on or off at runtime. It is
+// driven by the panel setting and takes effect on the next connection.
+func (m *Manager) SetAccessEnabled(enabled bool) {
+	if m.access != nil {
+		m.access.setEnabled(enabled)
+	}
+}
+
+// AccessDropped returns how many records were dropped because the queue was
+// full (or a UDP session exceeded its destination cap) since the process
+// started. It is surfaced next to the overview so lossy data is visible.
+func (m *Manager) AccessDropped() uint64 {
+	if m.access == nil {
+		return 0
+	}
+	return m.access.droppedCount()
+}
+
+// FlushAccess persists the queued access records now. It is used by tests and
+// by shutdown; the panel never waits for analytics.
+func (m *Manager) FlushAccess() {
+	if m.access != nil {
+		m.access.flushNow()
+	}
 }
 
 // OnlineIPs returns the distinct source IPs currently connected per client.
@@ -701,6 +735,9 @@ func (m *Manager) Stop() {
 			m.logger.Warn("final flush failed", "error", err)
 		}
 		m.stopWG.Wait()
+		if m.access != nil {
+			m.access.shutdown()
+		}
 	})
 }
 
@@ -766,4 +803,7 @@ func (m *Manager) Start() {
 	m.stopWG.Add(2)
 	go m.flushLoop()
 	go m.enforceLoop()
+	if m.access != nil {
+		m.access.start()
+	}
 }

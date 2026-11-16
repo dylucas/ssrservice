@@ -208,7 +208,133 @@ const (
 	SettingAllowPrivate        = "allow_private_targets"
 	SettingResetDay            = "reset_day"
 	SettingTimezone            = "timezone"
+	SettingAccessLog           = "access_log_enabled"
 )
+
+// Access record outcomes. They are stable identifiers the panel filters and
+// labels, so treat them as part of the API surface.
+const (
+	AccessAllowed = "allowed"
+	AccessBlocked = "blocked"
+	AccessFailed  = "failed"
+)
+
+// Access record reasons explain a blocked or failed connection. See
+// docs/api.md for the meaning of each value.
+const (
+	AccessReasonDisabled = "disabled"
+	AccessReasonExpired  = "expired"
+	AccessReasonQuota    = "quota"
+	AccessReasonIPLimit  = "ip_limit"
+	AccessReasonSessions = "sessions"
+	AccessReasonPolicy   = "policy"
+	AccessReasonResolve  = "resolve"
+	AccessReasonDial     = "dial"
+)
+
+// AccessMaxHostsPerKey bounds how many distinct destinations one
+// (day, client, inbound) key keeps in the daily rollup. The host is whatever the
+// client asked for, so without a bound a client rotating subdomains could grow
+// the table for the whole retention window. Overflow is folded into
+// AccessOtherHost, which keeps the totals complete while bounding the key.
+const AccessMaxHostsPerKey = 256
+
+// AccessOtherHost is the rollup row that carries every destination folded away
+// by the cap above. It never appears in the raw event list, where the real
+// destination is still known.
+const AccessOtherHost = "<other>"
+
+// AccessRecord is one proxy access as recorded by the data plane: where a
+// client asked to connect, whether it was allowed, and how much it moved.
+//
+// It deliberately carries no payload, URL, DNS query or client source address.
+// Host is the destination the client requested (a domain name or an IP
+// literal), already normalized by the runtime; IP is the address actually
+// dialed and stays empty when the connection never got that far.
+type AccessRecord struct {
+	ClientID   int64  `json:"client_id"`
+	InboundID  int64  `json:"inbound_id"`
+	Network    string `json:"network"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	IP         string `json:"ip"`
+	Outcome    string `json:"outcome"`
+	Reason     string `json:"reason"`
+	UpBytes    int64  `json:"up_bytes"`
+	DownBytes  int64  `json:"down_bytes"`
+	StartedAt  int64  `json:"started_at"`
+	DurationMS int64  `json:"duration_ms"`
+	// Day is the accounting day (YYYY-MM-DD) in the effective time zone. The
+	// store buckets the daily aggregate with it; an empty value stores the raw
+	// event without updating the aggregate.
+	Day string `json:"day"`
+}
+
+// AccessEvent is one stored access record with the names the panel displays.
+type AccessEvent struct {
+	ID            int64  `json:"id"`
+	StartedAt     int64  `json:"started_at"`
+	DurationMS    int64  `json:"duration_ms"`
+	ClientID      int64  `json:"client_id"`
+	ClientName    string `json:"client_name"`
+	InboundID     int64  `json:"inbound_id"`
+	InboundRemark string `json:"inbound_remark"`
+	Network       string `json:"network"`
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	IP            string `json:"ip"`
+	Outcome       string `json:"outcome"`
+	Reason        string `json:"reason"`
+	UpBytes       int64  `json:"up_bytes"`
+	DownBytes     int64  `json:"down_bytes"`
+}
+
+// AccessHostTotal is one row of the most requested destinations.
+type AccessHostTotal struct {
+	Host        string `json:"host"`
+	Hits        int64  `json:"hits"`
+	BlockedHits int64  `json:"blocked_hits"`
+	UpBytes     int64  `json:"up_bytes"`
+	DownBytes   int64  `json:"down_bytes"`
+}
+
+// AccessClientTotal is one row of the most active clients.
+type AccessClientTotal struct {
+	ClientID      int64  `json:"client_id"`
+	Name          string `json:"name"`
+	InboundID     int64  `json:"inbound_id"`
+	InboundRemark string `json:"inbound_remark"`
+	Hits          int64  `json:"hits"`
+	UpBytes       int64  `json:"up_bytes"`
+	DownBytes     int64  `json:"down_bytes"`
+}
+
+// AccessDayTotal is one day of the access trend.
+type AccessDayTotal struct {
+	Day         string `json:"day"`
+	Hits        int64  `json:"hits"`
+	AllowedHits int64  `json:"allowed_hits"`
+	BlockedHits int64  `json:"blocked_hits"`
+	FailedHits  int64  `json:"failed_hits"`
+	UpBytes     int64  `json:"up_bytes"`
+	DownBytes   int64  `json:"down_bytes"`
+}
+
+// AccessSummary aggregates the access records of a window. It is read from the
+// daily rollup, never from the raw events, so the panel can show 90 days
+// without scanning millions of rows.
+type AccessSummary struct {
+	TotalHits   int64               `json:"total_hits"`
+	AllowedHits int64               `json:"allowed_hits"`
+	BlockedHits int64               `json:"blocked_hits"`
+	FailedHits  int64               `json:"failed_hits"`
+	UniqueHosts int64               `json:"unique_hosts"`
+	UpBytes     int64               `json:"up_bytes"`
+	DownBytes   int64               `json:"down_bytes"`
+	Daily       []AccessDayTotal    `json:"daily"`
+	TopHosts    []AccessHostTotal   `json:"top_hosts"`
+	TopClients  []AccessClientTotal `json:"top_clients"`
+}
 
 // Reset policy values.
 const (
@@ -226,6 +352,7 @@ const (
 	AuditAuthLoginFailed   = "auth.login.failed"
 	AuditAuthLogout        = "auth.logout"
 	AuditAdminPassword     = "admin.password"
+	AuditAdminReauthFailed = "admin.reauth.failed"
 	AuditAdminTOTPEnable   = "admin.totp.enable"
 	AuditAdminTOTPDisable  = "admin.totp.disable"
 	AuditAdminTOTPRecovery = "admin.totp.recovery"
@@ -252,6 +379,7 @@ var AuditActions = []string{
 	AuditAuthLoginFailed,
 	AuditAuthLogout,
 	AuditAdminPassword,
+	AuditAdminReauthFailed,
 	AuditAdminTOTPEnable,
 	AuditAdminTOTPDisable,
 	AuditAdminTOTPRecovery,

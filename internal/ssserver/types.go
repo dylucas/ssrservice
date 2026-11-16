@@ -79,10 +79,18 @@ type UsageSink interface {
 	SaveUsage(snaps []model.UsageSnapshot) error
 }
 
+// AccessSink receives batches of proxy access records. The runtime treats it as
+// best effort: a failing sink is only logged, never propagated to the data
+// plane.
+type AccessSink interface {
+	SaveAccess(records []model.AccessRecord) error
+}
+
 // Options configures a Manager.
 type Options struct {
 	Logger          *slog.Logger
 	Sink            UsageSink
+	AccessSink      AccessSink
 	Location        *time.Location
 	FlushInterval   time.Duration
 	EnforceInterval time.Duration

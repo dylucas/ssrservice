@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -15,6 +16,8 @@ import (
 	"github.com/sagernet/sing/common/buf"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+
+	"github.com/ydong/ssrservice/internal/model"
 )
 
 const (
@@ -67,12 +70,19 @@ func (h *handler) NewConnection(ctx context.Context, conn net.Conn, metadata M.M
 		return ErrNoUser
 	}
 	m := h.manager
+	// The destination is normalized inside beginAccess, not here: when
+	// recording is off it returns nil before touching the address, so the
+	// disabled data path allocates nothing for analytics.
+	access := m.beginAccess(clientID, h.inboundID, "tcp", metadata.Destination)
+	defer access.finish()
 	ipLimit, err := m.usage.authorize(clientID, time.Now())
 	if err != nil {
+		access.block(accessReasonFor(err))
 		return err
 	}
 	sess, err := m.registry.acquire(clientID, h.inboundID, sourceIP(metadata.Source), ipLimit, maxSessionsPerClient)
 	if err != nil {
+		access.block(accessReasonFor(err))
 		return err
 	}
 	defer m.registry.release(sess)
@@ -84,39 +94,49 @@ func (h *handler) NewConnection(ctx context.Context, conn net.Conn, metadata M.M
 
 	target, err := m.currentPolicy().resolve(ctx, metadata.Destination)
 	if err != nil {
+		access.block(policyReasonFor(err))
 		return err
 	}
 	remote, err := m.currentDialer().DialContext(ctx, "tcp", target.String())
 	if err != nil {
+		access.fail(model.AccessReasonDial)
 		return fmt.Errorf("dial %s: %w", target, err)
 	}
+	access.allowAddr(target.Addr())
 	defer remote.Close()
 	m.registry.onClose(sess, func() { remote.Close() })
 
-	h.relay(conn, remote, clientID)
+	h.relay(conn, remote, clientID, access)
 	return nil
 }
 
-func (h *handler) relay(client, remote net.Conn, clientID int64) {
+func (h *handler) relay(client, remote net.Conn, clientID int64, access *accessEntry) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		h.copyAndCount(remote, client, clientID, true)
+		h.copyAndCount(remote, client, clientID, true, access)
 	}()
 	go func() {
 		defer wg.Done()
-		h.copyAndCount(client, remote, clientID, false)
+		h.copyAndCount(client, remote, clientID, false, access)
 	}()
 	wg.Wait()
 }
 
-func (h *handler) copyAndCount(dst, src net.Conn, clientID int64, up bool) {
+func (h *handler) copyAndCount(dst, src net.Conn, clientID int64, up bool, access *accessEntry) {
 	bufp := relayBufferPool.Get().(*[]byte)
 	defer relayBufferPool.Put(bufp)
 	writer := &countingWriter{
-		w:   dst,
-		add: func(n int64) { h.manager.usage.add(clientID, up, n) },
+		w: dst,
+		add: func(n int64) {
+			h.manager.usage.add(clientID, up, n)
+			if up {
+				access.addUp(n)
+			} else {
+				access.addDown(n)
+			}
+		},
 	}
 	_, _ = io.CopyBuffer(writer, src, *bufp)
 	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
@@ -144,6 +164,8 @@ func (h *handler) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 		return ErrNoUser
 	}
 	m := h.manager
+	// The destinations are unknown until packets arrive, so the blocked gate
+	// reasons (disabled, expired, quota, IP limit) cannot name a record here.
 	ipLimit, err := m.usage.authorize(clientID, time.Now())
 	if err != nil {
 		return err
@@ -154,7 +176,7 @@ func (h *handler) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 	}
 	defer m.registry.release(sess)
 
-	s := newUDPClientSession(ctx, m, conn, clientID)
+	s := newUDPClientSession(ctx, m, conn, clientID, h.inboundID)
 	m.registry.onClose(sess, s.close)
 	defer s.close()
 
@@ -176,15 +198,20 @@ func (h *handler) NewPacketConnection(ctx context.Context, conn N.PacketConn, me
 		}
 		target, err := m.currentPolicy().resolve(ctx, dest)
 		if err != nil {
-			m.logger.Debug("udp destination rejected", "client_id", clientID,
-				"destination", dest.String(), "error", err)
+			s.access.recordBlocked(dest, policyReasonFor(err))
+			// dest.String() allocates, and a rejected stream can be one packet
+			// per microsecond: only format it when the line is actually emitted.
+			if m.logger.Enabled(ctx, slog.LevelDebug) {
+				m.logger.DebugContext(ctx, "udp destination rejected", "client_id", clientID,
+					"destination", dest.String(), "error", err)
+			}
 			continue
 		}
 		// WriteToUDPAddrPort copies the payload into the kernel buffer
 		// synchronously, so the payload can be handed over without an
 		// intermediate copy and the buffer reused afterwards.
 		n := buffer.Len()
-		err = s.send(target, buffer.Bytes())
+		err = s.send(target, dest, buffer.Bytes())
 		if err != nil {
 			m.logger.Debug("udp write failed", "client_id", clientID,
 				"destination", target.String(), "error", err)
@@ -201,10 +228,12 @@ func (h *handler) NewError(ctx context.Context, err error) {
 
 // udpClientSession owns the upstream UDP sockets of one client NAT session.
 type udpClientSession struct {
-	ctx      context.Context
-	m        *Manager
-	client   N.PacketConn
-	clientID int64
+	ctx       context.Context
+	m         *Manager
+	client    N.PacketConn
+	clientID  int64
+	inboundID int64
+	access    *udpAccess
 
 	// mu serializes socket creation against close. The sockets themselves are
 	// kept in an atomic array so the hot send path reads them without taking
@@ -216,23 +245,35 @@ type udpClientSession struct {
 	wg      sync.WaitGroup
 }
 
-func newUDPClientSession(ctx context.Context, m *Manager, client N.PacketConn, clientID int64) *udpClientSession {
+func newUDPClientSession(ctx context.Context, m *Manager, client N.PacketConn, clientID, inboundID int64) *udpClientSession {
 	return &udpClientSession{
-		ctx:      ctx,
-		m:        m,
-		client:   client,
-		clientID: clientID,
-		allowed:  newDestinationSet(maxDestinations),
+		ctx:       ctx,
+		m:         m,
+		client:    client,
+		clientID:  clientID,
+		inboundID: inboundID,
+		access:    m.newUDPAccess(clientID, inboundID),
+		allowed:   newDestinationSet(maxDestinations),
 	}
 }
 
-func (s *udpClientSession) send(target netip.AddrPort, payload []byte) error {
+func (s *udpClientSession) send(target netip.AddrPort, requested M.Socksaddr, payload []byte) error {
 	conn, err := s.socket(target.Addr().Is4())
 	if err != nil {
 		return err
 	}
 	s.allowed.add(target)
 	_, err = conn.WriteToUDPAddrPort(payload, target)
+	if err == nil {
+		if n := len(payload); n > 0 {
+			// addUp reads the requested host itself, and returns before
+			// formatting anything when this session has no tracker (recording
+			// off). Only what the kernel accepted is recorded: a rejected
+			// datagram never left the host and would otherwise show up as
+			// transferred bytes on the access page.
+			s.access.addUp(target, requested, int64(n))
+		}
+	}
 	return err
 }
 
@@ -293,6 +334,7 @@ func (s *udpClientSession) readLoop(conn *net.UDPConn) {
 		destination := M.SocksaddrFromNetIP(addr).Unwrap()
 		out := packetWithHeadroom(readBuf[:n])
 		s.m.usage.add(s.clientID, false, int64(n))
+		s.access.addDown(addr, int64(n))
 		if err := s.client.WritePacket(out, destination); err != nil {
 			out.Release()
 			return
@@ -323,6 +365,26 @@ func (s *udpClientSession) close() {
 	// expires even though the client was kicked, disabled or removed.
 	_ = s.client.Close()
 	s.wg.Wait()
+	s.access.finishAll()
+}
+
+// accessDestination is the destination as the client asked for it: a domain
+// name when one was requested, otherwise the IP literal. It is what the panel
+// shows, while the resolved address is recorded separately once dialed.
+type accessTarget struct {
+	host string
+	port int
+}
+
+func accessDestination(destination M.Socksaddr) accessTarget {
+	destination = destination.Unwrap()
+	if destination.Fqdn != "" {
+		return accessTarget{host: destination.Fqdn, port: int(destination.Port)}
+	}
+	if destination.Addr.IsValid() {
+		return accessTarget{host: destination.Addr.Unmap().String(), port: int(destination.Port)}
+	}
+	return accessTarget{}
 }
 
 func sourceIP(source M.Socksaddr) string {
