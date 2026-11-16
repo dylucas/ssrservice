@@ -250,6 +250,8 @@ func (s *Server) buildHandler() http.Handler {
 	api.GET("/export/clients", s.handleExportClients)
 	api.GET("/export/audit", s.handleExportAudit)
 	api.GET("/export/access", s.handleExportAccess)
+	api.GET("/export/config", s.handleExportConfig)
+	api.POST("/import/config", s.handleImportConfig)
 	api.POST("/inbounds/:id/clients/import", s.handleImportClients)
 	// Batch operations live outside /clients for the same reason the export does:
 	// a static sibling of /clients/:id would make gin panic.

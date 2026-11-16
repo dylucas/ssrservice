@@ -374,6 +374,8 @@ const (
 	AuditClientBatch       = "client.batch"
 	AuditExportAudit       = "export.audit"
 	AuditExportAccess      = "export.access"
+	AuditExportConfig      = "export.config"
+	AuditImportConfig      = "import.config"
 )
 
 // AuditActions lists every recorded action in display order.
@@ -403,6 +405,8 @@ var AuditActions = []string{
 	AuditClientBatch,
 	AuditExportAudit,
 	AuditExportAccess,
+	AuditExportConfig,
+	AuditImportConfig,
 	AuditSettingsUpdate,
 }
 
